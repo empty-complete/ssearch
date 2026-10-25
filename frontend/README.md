@@ -76,6 +76,13 @@ actual versions and binary SHA256 in ignored test artifacts. It proves source
 interception/CSP/sender behavior with synthetic ports, not real broker authority,
 service lifecycle, package/installer/native acceptance or final Win10 support.
 
+Remaining owner migration gate: the build-time `tools/read-product.ts` adapter
+reads the single PRODUCT catalog in `src/atom_search/content.py`; the workflow
+also observes that catalog and the existing service DTO source path. These are
+real dependencies awaiting the owner's namespace migration. This slice does not
+claim a complete branding migration. Frontend/desktop icon inputs now use
+`assets/ssearch.png` / `assets/ssearch.ico`, with the original icon bytes preserved.
+
 Open gates: remote RED/GREEN observations (tests were authored first, no local
 execution); candidate CI; independent combined visual/code review; real broker
 and ownership/security integration; Task 3 frozen service, package/installer/offline runtime;
