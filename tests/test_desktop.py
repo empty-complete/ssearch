@@ -78,7 +78,7 @@ def spin_until(predicate, timeout=2000):
         APP.processEvents()
         if predicate():
             return
-        QTest.qWait(10)
+        time.sleep(.01)  # Yield the Python GIL to workers between event-pump turns.
     assert predicate(), "Window did not reach the expected state"
 
 
@@ -96,6 +96,7 @@ def make_window(tmp_path, service=None, **kwargs):
 
 
 def test_folder_change_waits_for_registry_without_mutating_settings(tmp_path):
+    (tmp_path / 'settings.json').write_text(json.dumps({'root': 'C:/chosen'}), encoding='utf-8')
     release = threading.Event()
     service = Service()
     def blocked_factory():

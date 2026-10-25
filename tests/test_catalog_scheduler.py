@@ -434,12 +434,14 @@ def test_direct_owned_root_is_invalid_before_settings_commit_and_registration_is
     registry.register_owned_exclusion(tmp_path / 'cache', owner_id='host')
     with pytest.raises(ServiceError):
         registry.register_owned_exclusion(tmp_path / 'neighbor', owner_id='renderer')
-    candidate = original.settings
-    candidate['sources'][0]['path'] = str(tmp_path / 'cache' / 'child')
+    candidate = deepcopy(original.settings)
+    candidate['sources'] = [dict(id=str(uuid.uuid4()), path=str(tmp_path / 'cache' / 'child'),
+                                 label='', enabled=True)]
     coordinator = MutationCoordinator(repo, validate_sources=registry.validate_sources)
     validated = coordinator.validate(candidate, original.revision)
     assert not validated.valid and validated.errors[0].code == 'owned_source_root'
     assert repo.snapshot().revision == original.revision
+    assert repo.snapshot().settings == original.settings
 
 
 def test_interval_while_alive_and_sleep_has_one_wave_and_unavailable_backoff(tmp_path):

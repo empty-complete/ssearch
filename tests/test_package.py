@@ -620,6 +620,8 @@ foreach ($mode in @('development', 'development-quick')) {
         tools = self.root / "tools"
         tools.mkdir()
         shutil.copy(ROOT / "tools/build.ps1", tools / "build.ps1")
+        shutil.copy(ROOT / "tools/ci_pytest.py", tools / "ci_pytest.py")
+        pytest_runner = str(tools / "ci_pytest.py")
         packaging = self.root / "packaging"
         packaging.mkdir()
         shutil.copy(SUPPORT, packaging / "build_support.py")
@@ -635,6 +637,7 @@ foreach ($mode in @('development', 'development-quick')) {
         tests.mkdir(exist_ok=True)
         (tests / "test_sample.py").write_text("def test_ok(): pass\n", encoding="utf-8")
         (tests / "test_extra.py").write_text("def test_selected(): pass\n", encoding="utf-8")
+        (self.root / "pytest.ini").write_text("[pytest]\ntestpaths = tests\n", encoding="utf-8")
         targets = ["tests/test_sample.py", "tests/test_extra.py::test_selected"] if quick else []
         compiler = self.root / "compiler.exe"
         compiler.write_bytes(b"external compiler boundary")
@@ -661,10 +664,11 @@ function Invoke-Checked {
     @{program=$Program; arguments=@($Arguments)} | ConvertTo-Json -Compress |
         Add-Content -LiteralPath $Calls -Encoding UTF8
     Add-Content -LiteralPath $buildLog -Value ('checked: ' + $Program) -Encoding UTF8
-    if ($Arguments -contains 'pytest' -and $FailPostgres -eq 'yes') {
+    $isPytest = $Arguments -contains (Join-Path $repository 'tools/ci_pytest.py')
+    if ($isPytest -and $FailPostgres -eq 'yes') {
         Invoke-OriginalChecked $Python @('-c', 'import sys; print(''PG integration failed: owned runtime unavailable'', flush=True); sys.exit(1)')
     }
-    if ($Arguments -contains 'pytest') {
+    if ($isPytest) {
         if ($PytestExit -ne 0) { Invoke-OriginalChecked $Python @('-c', ('raise SystemExit(' + $PytestExit + ')')) }
         Invoke-OriginalChecked $Program $Arguments
     } elseif ($Arguments -contains 'development-manifest' -or $Arguments -contains 'verify-source' -or
@@ -753,7 +757,7 @@ foreach ($name in $before.Keys) {
             if fail_postgres:
                 self.assertIn('PG integration failed: owned runtime unavailable', result.stdout + result.stderr)
             records = [json.loads(line) for line in calls.read_text(encoding="utf-8-sig").splitlines()]
-            self.assertEqual(sum('pytest' in item['arguments'] for item in records), 1)
+            self.assertEqual(sum(pytest_runner in item['arguments'] for item in records), 1)
             self.assertFalse(any('PyInstaller' in item['arguments'] or
                                  'development-manifest' in item['arguments'] or
                                  item['program'] == str(compiler) for item in records))
@@ -765,8 +769,8 @@ foreach ($name in $before.Keys) {
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         records = [json.loads(line) for line in calls.read_text(encoding="utf-8-sig").splitlines()]
         base = self.root / ("artifacts/development-quick" if quick else "artifacts/development") / commit
-        pytest_calls = [item["arguments"] for item in records if "pytest" in item["arguments"]]
-        self.assertEqual(pytest_calls, [["-m", "pytest", "-q", *targets]])
+        pytest_calls = [item["arguments"] for item in records if pytest_runner in item["arguments"]]
+        self.assertEqual(pytest_calls, [["-u", pytest_runner, "--timeout-seconds", "3600", *targets]])
         manifest = json.loads((base / "build-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["test_scope"], "targeted" if quick else "full")
         self.assertEqual(manifest["test_targets"], targets)

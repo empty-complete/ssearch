@@ -88,12 +88,11 @@ os.environ['LOCALAPPDATA'] = sys.argv[2]
 sys.argv = ['AtomSearch', '--smoke-test']
 sys.stderr = io.StringIO()
 result = entry.launch()
-print(json.dumps({'code': result, 'message': sys.stderr.getvalue()}, ensure_ascii=False))
+print(json.dumps({'code': result, 'message': sys.stderr.getvalue()}, ensure_ascii=True))
 '''
     result = subprocess.run([sys.executable, "-I", "-c", script, str(source), str(tmp_path),
                              str(ROOT / "packaging/launcher.py"), str(archived)],
-                            capture_output=True, text=True, encoding="utf-8", timeout=20,
-                            env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+                            capture_output=True, text=True, encoding="utf-8", timeout=20)
     assert result.returncode == 0, result.stderr
     output = json.loads(result.stdout)
     assert output["code"] == 1
@@ -210,7 +209,7 @@ def test_window_labels_and_validation_message_follow_catalog_edits(tmp_path, mon
     monkeypatch.setitem(content.MESSAGES, "settings.root_required", "Выберите источник для {product_name}.")
     window = SearchWindow(data_dir=tmp_path, service_factory=lambda: None, auto_scan=False)
     try:
-        assert window.windowTitle() == "Editable Product — Атом поиск"
+        assert window.windowTitle() == "Editable Product — Simple Search"
         assert window.search_box.placeholderText() == "Введите запрос"
         assert not window.save_settings(" ", 1)
         assert window.message.text() == "Выберите источник для Editable Product."
