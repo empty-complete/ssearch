@@ -1,5 +1,10 @@
 # ssearch frontend candidate
 
+P4 Task 2 builtin slice: trusted appearance metadata feeds the existing in-memory
+theme preview; next package boundary remains Task 3. Required source scenarios:
+canonical resolution, immutable output, duplicate/spoof/version/capability/namespace
+refusal, and unchanged theme/search behavior through the existing selector.
+
 Task 1 introduces React 19, HeroUI v3, Tailwind 4 and Vite independently of the
 desktop host. This is source implementation awaiting GitHub checks, independent
 review and native acceptance. It is not a connected replacement for the Qt app.
