@@ -7,7 +7,7 @@ import type { ServicePort } from './ipc.js';
 import { operationBudget } from './ipc.js';
 import { BrokerFrameDecoder, encodeBrokerFrame } from './brokerFrames.js';
 import { exactKeys, failure, mutations, plainObject, publicUuid, validResponse, validateArguments } from './validation.js';
-import type { ProfileIdentity, SourceRuntime } from './sourceRuntime.js';
+import type { ProfileIdentity, ServiceRuntime } from './runtime.js';
 
 export interface ProcessProof { readonly pid: number; readonly executable: string; readonly created: string }
 export interface ServiceConnection {
@@ -44,7 +44,7 @@ export class ServiceBridgeClient implements ServicePort {
   private disconnected = new Set<() => void>();
   get authority(): ServicePort['authority'] { return this.closed ? null : this.verified; }
 
-  constructor(private runtime: Pick<SourceRuntime, 'spawnBroker'>) {}
+  constructor(private runtime: Pick<ServiceRuntime, 'spawnBroker'>) {}
   onDisconnect(callback: () => void): () => void {
     this.disconnected.add(callback);
     return () => this.disconnected.delete(callback);

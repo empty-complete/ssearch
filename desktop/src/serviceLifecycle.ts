@@ -3,7 +3,7 @@ import type { JsonObject, UiMethod, WireEnvelope } from './contracts.js';
 import type { ServicePort } from './ipc.js';
 import { failure } from './validation.js';
 import { ServiceBridgeClient, type ServiceConnection } from './serviceClient.js';
-import { SourceRuntime, type ProfileIdentity } from './sourceRuntime.js';
+import type { ProfileIdentity, ServiceRuntime } from './runtime.js';
 
 function exited(child: ChildProcess): boolean { return child.exitCode !== null || child.signalCode !== null; }
 function waitExit(child: ChildProcess, milliseconds: number, clean = false): Promise<void> {
@@ -31,7 +31,7 @@ export class ServiceLifecycle implements ServicePort {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   get authority(): ServicePort['authority'] { return this.bridge?.authority ?? null; }
-  constructor(readonly runtime: SourceRuntime, readonly profile: ProfileIdentity) {}
+  constructor(readonly runtime: ServiceRuntime, readonly profile: ProfileIdentity) {}
 
   ensureService(): Promise<{ mode: 'attached' | 'owned'; connection: ServiceConnection }> {
     if (this.stopped) return Promise.reject(new Error('service_stopping'));

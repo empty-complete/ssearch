@@ -2,17 +2,9 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams, type ChildProces
 import { isAbsolute, join, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { BrokerFrameDecoder, encodeBrokerFrame } from './brokerFrames.js';
-import { exactKeys, plainObject } from './validation.js';
-
-export interface ProfileIdentity {
-  readonly profile: string;
-  readonly key: string;
-  readonly serviceVersion: string;
-  readonly pythonBase: string;
-  readonly pythonVenv: string;
-  readonly parent: { readonly pid: number; readonly executable: string; readonly created: string };
-}
+import { encodeBrokerFrame } from './brokerFrames.js';
+import { decodeProfileIdentity, type ProfileIdentity, type ServiceRuntime } from './runtime.js';
+export type { ProfileIdentity } from './runtime.js';
 
 export interface SourceRuntimeOptions {
   repositoryRoot: string;
@@ -20,7 +12,7 @@ export interface SourceRuntimeOptions {
   modelDirectory: string;
 }
 
-export class SourceRuntime {
+export class SourceRuntime implements ServiceRuntime {
   readonly root: string;
   readonly python: string;
   readonly modelDirectory: string;
@@ -78,28 +70,7 @@ export class SourceRuntime {
         parent_pid: process.pid, parent_executable: realpathSync(process.execPath) }),
     });
     if (result.error || result.status !== 0) throw new Error('service_unavailable');
-    const decoder = new BrokerFrameDecoder();
-    const frames = decoder.push(result.stdout);
-    decoder.end();
-    const reply = frames[0];
-    if (frames.length !== 1 || !plainObject(reply)
-      || !exactKeys(reply, ['schema_version', 'kind', 'session_id', 'challenge', 'profile', 'key',
-        'service_version', 'python_base', 'python_venv', 'parent'])
-      || reply.schema_version !== 1 || reply.kind !== 'profile' || reply.session_id !== session
-      || reply.challenge !== challenge || typeof reply.key !== 'string' || !/^[0-9a-f]{64}$/.test(reply.key)
-      || typeof reply.profile !== 'string' || !isAbsolute(reply.profile)
-      || typeof reply.service_version !== 'string' || !/^\d+\.\d+\.\d+$/.test(reply.service_version)
-      || typeof reply.python_base !== 'string' || !isAbsolute(reply.python_base)
-      || typeof reply.python_venv !== 'string' || !isAbsolute(reply.python_venv)
-      || !plainObject(reply.parent) || !exactKeys(reply.parent, ['pid', 'executable', 'created'])
-      || reply.parent.pid !== process.pid || typeof reply.parent.executable !== 'string'
-      || realpathSync(reply.parent.executable).toLowerCase() !== realpathSync(process.execPath).toLowerCase()
-      || typeof reply.parent.created !== 'string' || !/^[1-9][0-9]{0,19}$/.test(reply.parent.created)) {
-      throw new Error('service_identity_mismatch');
-    }
-    return Object.freeze({ profile: reply.profile, key: reply.key, serviceVersion: reply.service_version,
-      pythonBase: realpathSync(reply.python_base), pythonVenv: realpathSync(reply.python_venv),
-      parent: Object.freeze({ pid: process.pid, executable: reply.parent.executable, created: reply.parent.created }) });
+    return decodeProfileIdentity(result.stdout, session, challenge);
   }
 
   async profileIdentity(profilePath?: string): Promise<ProfileIdentity> {
