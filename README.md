@@ -33,7 +33,7 @@ Current search uses file metadata and project context. Reading the contents of P
 
 ## Try it
 
-**The first public development installer is being prepared.** There is no Stable release yet. Windows 10/11 are the target platforms; final native acceptance is still pending. The `build-inputs-v1` release contains build dependencies, not an application installer.
+**The first public development installer is being prepared.** There is no Stable release yet. Windows 10/11 are the target platforms; final native acceptance is still pending. The `build-inputs-v1` and `build-inputs-v2` releases contain build dependencies, not application installers.
 
 Once an application prerelease is available:
 
@@ -52,6 +52,12 @@ Also planned: document-content indexing, a settings editor with custom theme pal
 ## Contribute
 
 Bug reports, small fixes, search examples using synthetic files, and UI improvements are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the fork → pull request → CI → independent review workflow. English and Russian are both welcome.
+
+## CI build inputs
+
+Windows CI pins its dependencies in [build-inputs.json](resources/ci/build-inputs.json). The PostgreSQL asset in [build-inputs-v2](https://github.com/empty-complete/ssearch/releases/tag/build-inputs-v2) is the exact archive tested in [source proof 40218661396](https://github.com/empty-complete/ssearch/actions/runs/40218661396), without repacking. Its five unsigned executables add a neutral-language `RT_MANIFEST #1` with UTF-8 process code pages and new assembly identities; none had an embedded application manifest before. Executable code sections, other PE sections and the remaining runtime files are unchanged. The original v1 release remains available unchanged.
+
+The embedded runtime [README](resources/postgresql/README.md) and [provenance.json](resources/postgresql/provenance.json) remain historical records of the original preparation and upstream inputs. They do not describe the transformed executable bytes; the derivation, five original/new hashes, tool commit and exact proof receipt are pinned separately in `build-inputs.json`. The receipt retains its experimental source-proof fields. This input promotion does not establish installer, Full-suite or Windows 10/11 native acceptance. The manifest feature starts at Windows 10 1903; the Windows 10 1809 legacy fallback remains open, and the product's platform floor is unchanged.
 
 ## License
 

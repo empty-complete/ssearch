@@ -174,6 +174,19 @@ jobs:
           path: artifacts/ci-source/test-receipt.json
           if-no-files-found: warn
           retention-days: 7
+      - name: Retain isolated native UTF-8 experiment only
+        if: >-
+          success() && env.BUILD_MODE == 'source' &&
+          hashFiles(format('artifacts/ci-native-utf8/{0}/ssearch-pg-utf8-candidate.zip', env.SOURCE_SHA)) != '' &&
+          hashFiles(format('artifacts/ci-native-utf8/{0}/candidate-receipt.json', env.SOURCE_SHA)) != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-utf8-experiment-${{ env.SOURCE_SHA }}
+          path: |
+            artifacts/ci-native-utf8/${{ env.SOURCE_SHA }}/ssearch-pg-utf8-candidate.zip
+            artifacts/ci-native-utf8/${{ env.SOURCE_SHA }}/candidate-receipt.json
+          if-no-files-found: error
+          retention-days: 7
 
   publish:
     needs: [changes, build]

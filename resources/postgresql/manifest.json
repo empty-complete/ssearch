@@ -66,8 +66,8 @@
     },
     {
       "path": "bin/initdb.exe",
-      "size": 246784,
-      "sha256": "d59423ea6106821670ea7289b6d5476feb8741d5fdc8537de25f22dda1f13532"
+      "size": 247296,
+      "sha256": "2079e5e5e0111f9bd1781ba8df0851917df6a8342135bff323ebb3e86b8312b8"
     },
     {
       "path": "bin/libcrypto-3-x64.dll",
@@ -216,13 +216,13 @@
     },
     {
       "path": "bin/pg_ctl.exe",
-      "size": 133120,
-      "sha256": "329daca106cab8f02abe15b3a2ea9d833c60f94995d57a54161c218a940f9193"
+      "size": 133632,
+      "sha256": "b3718a616aa45b92120c51d2f5cdb3b2d1aea9726f8cb7a531b367d425f89d27"
     },
     {
       "path": "bin/pg_dump.exe",
-      "size": 633344,
-      "sha256": "9414dac0554065aa6edf739d7126b6e6e6d6fc3b56b9706b72cee47cee45b22c"
+      "size": 633856,
+      "sha256": "73af1ffc2983da71b401d3498d75b4e054e3ffec9051e7447ff07636e7618f98"
     },
     {
       "path": "bin/pg_dumpall.exe",
@@ -251,8 +251,8 @@
     },
     {
       "path": "bin/pg_restore.exe",
-      "size": 379904,
-      "sha256": "94c2b545fb870c08414dcf03cd93723f78662e1d489a0272150b40a0267f0d55"
+      "size": 380416,
+      "sha256": "247d615fe1e56225241b7a02e822a4ccdbad9d9d44477a152868f3175213daeb"
     },
     {
       "path": "bin/pg_rewind.exe",
@@ -296,8 +296,8 @@
     },
     {
       "path": "bin/postgres.exe",
-      "size": 10266624,
-      "sha256": "8b8bf5d400487159e3e117053d3f5a89fad0c740b310a3ac69e5720ce4f818e1"
+      "size": 10267136,
+      "sha256": "3a3967c4c75176b4b211ac7cbd99988f5d1f0e46cb97555207a5e0184ea25c32"
     },
     {
       "path": "bin/psql.exe",

@@ -22,7 +22,7 @@ prepare = load_tool('prepare_ci')
 exporter = load_tool('export_ci_artifacts')
 
 
-@pytest.mark.parametrize('scenario, expected_exit', [('normal', 0), ('timeout', 124), ('suppressed', 1)])
+@pytest.mark.parametrize('scenario, expected_exit', [('normal', 0), ('timeout', 124), ('suppressed', 1), ('full', 0)])
 def test_source_pytest_reports_current_test_and_stacks_without_local_values(tmp_path, scenario, expected_exit):
     """Exercise actual threads/pytest in a subprocess, including the hard exit."""
     # Confine nested discovery even when CI's tmp_path lives under the checkout.
@@ -48,13 +48,17 @@ def test_source_pytest_reports_current_test_and_stacks_without_local_values(tmp_
     environment['PYTEST_ADDOPTS'] = ''
     environment.pop('PYTEST_PLUGINS', None)
     environment['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
-    result = subprocess.run([sys.executable, '-u', '-c', script, str(wrapper), str(target)],
+    command = ([sys.executable, '-u', str(wrapper), '--timeout-seconds', '5'] if scenario == 'full' else
+               [sys.executable, '-u', '-c', script, str(wrapper), str(target)])
+    result = subprocess.run(command,
                             cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=15)
     assert result.returncode == expected_exit
     starting = 'CI pytest starting: test_slow_source.py::test_slow_source\n'
     assert starting in result.stderr
     assert 'PRIVATE_LOCAL_SENTINEL' not in result.stdout + result.stderr
     assert ('CI pytest hard timeout: 5s' in result.stderr) is (scenario == 'timeout')
+    if scenario == 'full':
+        assert 'CI pytest budget: stack=120s timeout=5s\n' in result.stderr
     if scenario == 'suppressed':
         prefix = 'CI pytest failure: '
         reports = [json.loads(line[len(prefix):]) for line in result.stderr.splitlines() if line.startswith(prefix)]
@@ -66,7 +70,7 @@ def test_source_pytest_reports_current_test_and_stacks_without_local_values(tmp_
         assert any(location['file'] == target.name and location['line'] > 0 for location in locations)
         assert all('/' not in location['file'] and '\\' not in location['file'] for location in locations)
         assert str(tmp_path) not in result.stderr and str(wrapper) not in result.stderr
-    else:
+    elif scenario != 'full':
         assert 'CI pytest stack after: 0.1s' in result.stderr[result.stderr.index(starting):]
         assert 'in test_slow_source' in result.stderr
 
