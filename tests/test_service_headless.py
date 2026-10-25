@@ -120,7 +120,14 @@ def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path, profile
     profile = tmp_path / profile_name
     endpoint = profile / 'engine' / 'runtime' / 'endpoint.json'
     environment = source_environment()
-    args = [sys.executable, '-m', 'atom_search.service.headless', '--data-dir', str(profile),
+    executable = sys.executable
+    base_executable = getattr(sys, '_base_executable', None) or executable
+    if os.name == 'nt' and os.path.normcase(base_executable) != os.path.normcase(executable):
+        # Match CPython's multiprocessing Windows venv launch: retain the venv,
+        # but own the interpreter PID directly instead of its redirector PID.
+        environment['__PYVENV_LAUNCHER__'] = executable
+        executable = base_executable
+    args = [executable, '-m', 'atom_search.service.headless', '--data-dir', str(profile),
             '--model-dir', str(tmp_path / 'missing-model'), '--control-stdin']
     process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=environment, creationflags=subprocess.CREATE_NO_WINDOW)
