@@ -55,11 +55,22 @@ function Invoke-CiChild {
     $roaming = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
     $profileKey = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$ExpectedSid"
     $registered = (Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath
-    if (-not (Test-Path -LiteralPath "Registry::HKEY_USERS\$ExpectedSid") -or
-        -not $profile -or -not $local -or -not $roaming -or
-        [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($registered)) -ine $profile -or
-        -not $local.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase) -or
-        -not $roaming.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    # Diagnose the boundary using only fixed predicate names and booleans:
+    # never expose account identifiers, paths, environment values or credentials.
+    $profileChecks = [ordered]@{
+        HKU_loaded = [bool](Test-Path -LiteralPath "Registry::HKEY_USERS\$ExpectedSid")
+        knownfolder_profile_nonempty = [bool]$profile
+        knownfolder_local_nonempty = [bool]$local
+        knownfolder_roaming_nonempty = [bool]$roaming
+        registered_profile_matches = [bool]($profile -and $registered -and
+            [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($registered)) -ieq $profile)
+        local_within_profile = [bool]($profile -and $local -and
+            $local.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase))
+        roaming_within_profile = [bool]($profile -and $roaming -and
+            $roaming.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase))
+    }
+    Write-Host ('CI loaded profile predicates: ' + ($profileChecks | ConvertTo-Json -Compress))
+    if ($profileChecks.Values -contains $false) {
         throw 'CI_LOADED_PROFILE_REQUIRED'
     }
     foreach ($item in @(Get-ChildItem Env:)) {
