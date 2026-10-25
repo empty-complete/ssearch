@@ -1,5 +1,18 @@
 # ssearch frontend candidate
 
+P4 transport/lifecycle source slice: bounded TS broker frames and a private
+MAIN-owned Python adapter reuse P2 identity/nonce and read-only owner IPC proof;
+spawned/attached mode never grants mutation rights. One canonical user/profile
+session owns the broker and any verified source-process control lease; windows
+share it, close-to-tray differs from quit, and EOF covers parent crash/shutdown.
+The next package boundary belongs to the CI/Task 3 owner, not this source slice.
+Live inputs: Node 24.22.1/Electron 45, pinned CPython 3.12.10 venv and verified PG
+payload/wheels under the existing loaded standard-user/DPAPI CI job; source
+PYTHONPATH uses src and packages/atom-search-core/src, with a missing-model fixture.
+Required cases cover scopes/revisions/errors, 64 pending/frame bounds, owner proof,
+simultaneous views/launches, crash/reconnect/stale replies, attached-safe release
+and source-parent orphan EOF. Packaging/frozen/native/Win10 remain separate gates.
+
 P4 Task 1 palette-input slice: one canonical set of the existing 16 semantic
 color roles generates static default CSS in the current stylesheet; noncolor
 tokens and selector behavior stay in place. Next package boundary is Task 3.
