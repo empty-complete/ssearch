@@ -66,7 +66,7 @@ public static class SsearchCiKnownFolders {
         IntPtr path = IntPtr.Zero;
         try {
             int result = SHGetKnownFolderPath(ref id, 0, token, out path);
-            if (result != 0) throw new COMException("CI_KNOWN_FOLDER_FAILED", result);
+            if (result != 0) throw new COMException("CI_KNOWN_FOLDER_FAILED folder=" + id.ToString("D") + " hresult=" + result.ToString("X8"), result);
             if (path == IntPtr.Zero) throw new InvalidOperationException("CI_KNOWN_FOLDER_EMPTY");
             return Marshal.PtrToStringUni(path);
         } finally {
