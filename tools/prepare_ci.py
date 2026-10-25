@@ -167,6 +167,12 @@ def main() -> None:
     run(python, '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install',
         '--no-index', '--no-deps', '--force-reinstall', '--require-hashes',
         '--find-links', wheelhouse, '-r', ROOT / 'resources/postgresql/wheels.lock.txt')
+    if args.source:
+        # Proof identity reads installed core metadata even with source imports.
+        # PEP 660 uses the already pinned backend; no distributable is exported.
+        run(python, '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install',
+            '--no-index', '--no-deps', '--no-build-isolation', '--editable',
+            ROOT / 'packages/atom-search-core')
     run(python, ROOT / 'tools/fetch_model.py')
     print('Public inputs prepared; source tests can start.' if args.source else
           'Public inputs prepared; the offline build can start.')

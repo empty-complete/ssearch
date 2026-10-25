@@ -253,7 +253,10 @@ def test_restored_cluster_keeps_rows_and_vector_search(tmp_path, monkeypatch):
         value = json.loads(report.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         pytest.fail("proof_report_unavailable", pytrace=False)
-    assert result == 0, {"error_code": value.get("error_code"), "failures": failures}
+    failure_detail = value.get("failure_detail", {})
+    assert result == 0, {"error_code": value.get("error_code"), "failures": failures,
+                         "failure_detail": {"type": failure_detail.get("type"),
+                                            "locations": failure_detail.get("locations", [])}}
     assert value.get("backup", {}).get("method") == "logical-schema"
     assert value["backup"]["bytes"] > 0
     assert value["backup"]["runtime_marker_excluded"] is True
