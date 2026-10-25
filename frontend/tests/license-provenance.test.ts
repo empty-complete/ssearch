@@ -40,7 +40,8 @@ async function fixture() {
     lock_sha256: digest(lock), evidence_sha256: digest(evidence),
     telemetry: { graph_api: 'rolldown.getModuleIds', complete: true, module_count: 12,
       parsed_module_count: 12, application_entry_observed: true, output_modules_observed: true },
-    package_modules: [{ id: 'node_modules/client-only/index.js', source_bytes: 0,
+    resolve_conditions: ['browser', 'module', 'production'],
+    package_modules: [{ id: 'node_modules/client-only/index.js', module_parsed: true, source_bytes: 0,
       source_sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
       transformed_bytes: 0 }],
     rendered_modules: [] as Array<{ id: string; file: string; rendered_length: number }>,
@@ -122,4 +123,31 @@ it('keeps the exact entry/file/integrity guard and rejects every other missing-l
     }
     await expect(f.collect()).rejects.toThrow(/client-only source differs|No license text/);
   }
+});
+
+it('rejects missing, changed and added current output chunks rather than trusting stale graph hashes', async () => {
+  for (const scenario of ['missing', 'changed', 'added']) {
+    const f = await fixture();
+    await f.save();
+    if (scenario === 'missing') await rm(join(f.root, 'dist/assets/browser.js'));
+    if (scenario === 'changed') await writeFile(join(f.root, 'dist/assets/browser.js'), 'changed output');
+    if (scenario === 'added') await writeFile(join(f.root, 'dist/assets/unobserved.js'), 'unobserved output');
+    await expect(f.collect()).rejects.toThrow(/client-only build proof/);
+  }
+});
+
+it('checks the proof source SHA against actual git HEAD in the final bundle verifier', async () => {
+  // Keep this fixture ignored inside the real checkout so the verifier reads a real HEAD.
+  const parent = join(source, 'artifacts');
+  await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, 'source-proof-'));
+  temporary.push(root);
+  await mkdir(join(root, 'frontend/tools'), { recursive: true });
+  await mkdir(join(root, 'frontend/dist/licenses/client-only'), { recursive: true });
+  await cp(join(source, 'tools/check-bundle.mjs'), join(root, 'frontend/tools/check-bundle.mjs'));
+  const actual = (await execute('git', ['rev-parse', 'HEAD'], { cwd: source })).stdout.trim();
+  const stale = actual === '0'.repeat(40) ? '1'.repeat(40) : '0'.repeat(40);
+  await writeFile(join(root, 'frontend/dist/licenses/client-only/build-graph.json'), JSON.stringify({ source_sha: stale }));
+  await expect(execute(process.execPath, [join(root, 'frontend/tools/check-bundle.mjs')], { cwd: root }))
+    .rejects.toThrow(/client-only build proof source SHA mismatch/);
 });

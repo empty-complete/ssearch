@@ -117,7 +117,7 @@
       "file": "catppuccin-LICENSE"
     },
     {
-      "sha256": "1acbf323b0704d09fbb02bc40d081e390f9983e057e6398c22afe4c334d16b74",
+      "sha256": "ba6418bc9831c07e97fb3e2418ad421e31b78df24ef0b8db1312a7d2d33808ed",
       "file": "client-only-0.0.1-evidence.json"
     },
     {
@@ -189,6 +189,6 @@
     "Win11 native IME Narrator high contrast DPI Snap crash recovery",
     "Final Win10 1809+ acceptance only at the end",
     "Full P4 and Stable acceptance",
-    "client-only0.0.1 upstream MIT license-text omission: packaging provenance acceptance"
+    "client-only0.0.1 actual frozen/package contents acceptance; source-only empty-marker disposition requires measured graph proof"
   ]
 }

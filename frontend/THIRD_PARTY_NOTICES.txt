@@ -16,8 +16,8 @@ https://github.com/heroui-inc/tailwind-variants
 Catppuccin palette — MIT, Catppuccin contributors.
 https://github.com/catppuccin/palette
 
-The CI artifact licenses/ contains the exact installed production dependency
-license texts and package identity/integrity inventory. Build/test dependencies
+The CI artifact licenses/ contains available original production dependency
+license texts and the exact package identity/integrity inventory. Build/test dependencies
 retain their licenses in npm packages and the exact package-lock.json.
 Upstream design/skill snapshots are development references only; their source
 licenses are included alongside snapshots in compatibility/upstream/.
@@ -27,4 +27,10 @@ browser entry, index.js (0 bytes). It supplies no LICENSE text or copyright
 notice. No copyright holder is inferred here. The collector permits only its
 known locked tarball integrity and all three original file hashes. Its original
 package metadata and provenance are preserved in licenses/client-only/.
-Packaging provenance acceptance for this upstream omission remains open.
+Source-bundle acceptance also requires the actual Vite/Rolldown graph receipt:
+the marker is either absent from a supported complete graph or resolves to its
+empty default entry, with zero rendered implementation, no server branch,
+external marker import or package asset. The receipt binds every current browser
+chunk and input/source SHA. This is a source-bundle-only disposition; no original
+license text or copyright notice is fabricated. Actual frozen/package acceptance
+remains open.

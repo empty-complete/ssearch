@@ -108,9 +108,22 @@ actual Win11 IME, keyboard, Narrator, high contrast, DPI/Snap and crash recovery
 final Win10 1809+ test only at the end. Generic documented Windows 10 support
 does not establish the exact 1809 native gate. No Stable claim.
 
-License provenance exception: the inspected client-only 0.0.1 npm tarball declares
-MIT but supplies no license text or copyright notice. Its browser entry is empty.
-Only this exact version, tarball integrity and three original file hashes are
-accepted; its original metadata and inspection evidence are preserved. The
-collector still rejects every other missing license. No upstream copyright
-holder is invented; packaging acceptance of this omission remains an open gate.
+The exact client-only 0.0.1 tarball declares MIT, has a zero-byte default entry and
+a separate 144-byte server error entry, and supplies no license text/copyright
+notice or repository/gitHead. The npm publisher is not treated as a copyright
+statement; the primary React RFC corroborates marker conventions, not a notice.
+Original metadata, SRI, all three file hashes and primary-source observations are
+preserved in compatibility/upstream and licenses/client-only. No replacement
+license text or copyright holder is invented.
+
+The source-bundle disposition now requires a build-only observer of the actual
+Vite/Rolldown graph and output. It changes no resolution or module semantics.
+`licenses/client-only/build-graph.json` distinguishes observed empty default entry
+from absence in a supported complete browser graph. Server branch, rendered
+implementation, external marker imports, package assets, unsupported telemetry
+or stale/missing/added chunks fail closed. The collector binds lock/evidence and
+all current script hashes; final bundle verification binds the actual source SHA.
+Every other missing-license package is still rejected. The existing Forge inputs
+copy frontend/dist into the desktop renderer and do not declare frontend
+node_modules as an input. This source inspection does not prove a future frozen
+package's actual contents; that acceptance remains open.

@@ -7,6 +7,8 @@ const repository = resolve(root, '../..');
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim();
 execFileSync('git', ['diff', '--exit-code', 'HEAD', '--'], { cwd: repository });
+const markerProof = JSON.parse(await readFile(join(root, 'licenses/client-only/build-graph.json'), 'utf8'));
+if (markerProof.source_sha !== sourceSha) throw new Error('client-only build proof source SHA mismatch');
 const candidate = JSON.parse(await readFile(join(repository, 'frontend/compatibility/candidate-versions.json'), 'utf8'));
 const locks = [];
 for (const path of ['frontend/package-lock.json', 'desktop/package-lock.json']) {
@@ -30,6 +32,18 @@ for (const file of await files(root)) {
   inventory.push({ file: name, sha256: sha256(bytes), bytes: bytes.length });
 }
 for (const required of ['index.html', 'app-icon.png', 'LICENSE.txt', 'THIRD_PARTY_NOTICES.txt']) if (!inventory.some(item => item.file === required)) throw new Error(`Missing local asset: ${required}`);
+const browserScripts = inventory.filter(item => item.file.endsWith('.js') && !item.file.startsWith('licenses/'));
+if (!Array.isArray(markerProof.chunks) || markerProof.chunks.length !== browserScripts.length
+  || new Set(markerProof.chunks.map(chunk => chunk.file)).size !== browserScripts.length
+  || browserScripts.some(script => !markerProof.chunks.some(chunk => chunk.file === script.file
+    && chunk.bytes === script.bytes && chunk.sha256 === script.sha256))) {
+  throw new Error('client-only build proof does not cover the current browser chunks');
+}
+if (markerProof.lock_sha256 !== locks.find(lock => lock.path === 'frontend/package-lock.json').sha256
+  || markerProof.evidence_sha256 !== sha256(await readFile(join(repository,
+    'frontend/compatibility/upstream/client-only-0.0.1-evidence.json')))) {
+  throw new Error('client-only build proof input hashes mismatch');
+}
 const npmVersion = execFileSync(process.execPath, [process.env.npm_execpath, '--version'], { encoding: 'utf8' }).trim();
 const offlineDependencies = JSON.parse(await readFile(join(repository,
   'frontend/.cache/offline-dependencies.json'), 'utf8'));
@@ -53,6 +67,11 @@ await writeFile(join(root, 'asset-inventory.json'), JSON.stringify({
   locks,
   offline_dependencies: offlineDependencies,
   offline_cache_negative: offlineNegative,
+  client_only_build_proof: {
+    file: 'licenses/client-only/build-graph.json',
+    sha256: sha256(await readFile(join(root, 'licenses/client-only/build-graph.json'))),
+    source_sha: markerProof.source_sha,
+  },
   assets: inventory,
 }, null, 2));
 console.log(`Verified ${inventory.length} local production assets; development fixtures excluded.`);
