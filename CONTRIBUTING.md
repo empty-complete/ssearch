@@ -39,7 +39,7 @@ An independent reviewer checks the change and relevant evidence. Merge only afte
 
 ## Architecture and UI
 
-The current desktop uses Qt; the planned desktop uses Electron with a React/HeroUI/TypeScript frontend. The Python/PostgreSQL search service owns the index, model and jobs. Keep UI changes behind its public API instead of duplicating search or database ownership in a window. Existing internal `atom_search` names may remain for compatibility even though the product is ssearch.
+The current desktop uses Qt; the planned desktop uses Electron with a React/HeroUI/TypeScript frontend. The Python/PostgreSQL search service owns the index, model and jobs. Keep UI changes behind its public API instead of duplicating search or database ownership in a window. Legacy `atom_search` imports and related identities are temporary compatibility names pending a controlled migration to ssearch. That separate gated migration must preserve user profiles, indexed data, IPC owner discovery and upgrades of existing installations.
 
 For UI changes, preserve the product's existing tokens and behavior. Use the [official HeroUI React skill and documentation](https://github.com/heroui-inc/heroui/blob/v3/skills/heroui-react/SKILL.md) for component APIs. [Impeccable's Operate guidance](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/operate.md) and [Hallmark's app-screen guidance](https://github.com/Nutlope/hallmark/blob/main/skills/hallmark/references/flow.md#app-screens) can help with clarity and restraint; they are optional guidance, not required installations or automatic hooks.
 
