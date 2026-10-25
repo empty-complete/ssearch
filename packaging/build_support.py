@@ -5,6 +5,7 @@ that name belongs to a dependency used by the build tools themselves.
 """
 
 import argparse
+import ast
 import hashlib
 import importlib.metadata
 import json
@@ -82,6 +83,43 @@ def validate_test_selection(repository: Path, *, development=False, quick=False,
             raise BuildError(f"Test target must be an existing tests/test_*.py file or nodeid: {target}")
         normalized.append(relative.as_posix() + (separator + node if separator else ""))
     return {"scope": "targeted" if quick else "full", "test_targets": normalized}
+
+
+def validate_desktop_test_selection(repository: Path, *, development=False, quick=False,
+                                    test_targets=(), frontend_test_targets=(), desktop_test_targets=()):
+    """Validate the union before any Python, frontend or desktop build work.
+
+    An empty Python list in a UI-only Quick means no pytest invocation. It must
+    never be passed to a runner whose empty selection means the full suite.
+    """
+    python, frontend, desktop = list(test_targets), list(frontend_test_targets), list(desktop_test_targets)
+    if quick and (not development or not (python or frontend or desktop)):
+        raise BuildError('Quick requires Development and a nonempty combined test selection.')
+    if not quick and (python or frontend or desktop):
+        raise BuildError('Explicit test targets require Quick.')
+    selection = validate_test_selection(repository, development=development,
+                                        quick=bool(quick and python), test_targets=python)
+    root = Path(repository).resolve()
+
+    def validate_typescript(project, targets, suffixes):
+        normalized = []
+        for target in targets:
+            if (not isinstance(target, str) or not target
+                    or any(char in target for char in '\x00\r\n:*?[]')):
+                raise BuildError('Invalid TypeScript test target.')
+            relative = Path(target.replace('\\', '/'))
+            path = (root / project / relative).resolve()
+            if (relative.is_absolute() or relative.drive or '..' in relative.parts
+                    or not relative.parts or relative.parts[0] != 'tests'
+                    or not any(relative.name.endswith(suffix) for suffix in suffixes)
+                    or not path.is_relative_to(root / project / 'tests') or not path.is_file()):
+                raise BuildError('TypeScript target must be an existing test file in its own project.')
+            normalized.append(relative.as_posix())
+        return normalized
+
+    return {'scope': 'targeted' if quick else 'full', 'test_targets': selection['test_targets'],
+            'frontend_test_targets': validate_typescript('frontend', frontend, ('.test.ts', '.test.tsx')),
+            'desktop_test_targets': validate_typescript('desktop', desktop, ('.test.ts',))}
 
 
 def write_test_receipt(repository: Path, commit: str, *, quick=False, test_targets=(), exit_code: int):
@@ -261,6 +299,45 @@ def project_version(root: Path = ROOT) -> str:
         raise BuildError("Не удалось прочитать версию из pyproject.toml.") from error
 
 
+def export_product_metadata(repository: Path, destination: Path) -> Path:
+    """Export the sole product catalog without importing application code.
+
+    Forge and the shared installer consume this exact clean-source input. An
+    existing export is never replaced, so a stale build cannot silently acquire
+    the identity of a later source tree.
+    """
+    repository, destination = Path(repository).resolve(), Path(destination)
+    commit = verify_source_commit(repository)
+    try:
+        tree = ast.parse((repository / 'src/atom_search/content.py').read_text(encoding='utf-8'))
+        definitions = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == 'PRODUCT'
+                               for target in node.targets)]
+        if len(definitions) != 1:
+            raise ValueError('one product catalog required')
+        product = ast.literal_eval(definitions[0])
+        required = {'product_name', 'product_name_ru', 'support_email', 'author_name',
+                    'author_title', 'organization_group', 'copyright_holder'}
+        if (type(product) is not dict or not required.issubset(product)
+                or any(type(key) is not str or not key or type(value) is not str
+                       or not value.strip() or any(ord(char) < 32 for char in value)
+                       for key, value in product.items())):
+            raise ValueError('invalid product catalog')
+    except (OSError, SyntaxError, ValueError, TypeError) as error:
+        raise BuildError('Product catalog is missing or invalid.') from error
+    metadata = {'schema_version': 1, 'source_commit': commit,
+                'app_version': project_version(repository),
+                'core_version': project_version(repository / 'packages/atom-search-core'),
+                'product': product}
+    verify_source_commit(repository, commit)
+    try:
+        with destination.open('x', encoding='utf-8', newline='\n') as output:
+            output.write(json.dumps(metadata, ensure_ascii=False, indent=2) + '\n')
+    except FileExistsError as error:
+        raise BuildError('Product metadata export already exists.') from error
+    return destination
+
+
 def _require_file(path: Path) -> None:
     if not path.is_file() or path.stat().st_size == 0:
         raise BuildError(f"Отсутствует или пуст обязательный файл: {path}")
@@ -419,23 +496,25 @@ def build_core_wheel(root: Path = ROOT, output_directory: Path | None = None) ->
     return wheel
 
 
-def validate_bundle(directory: Path) -> None:
+def validate_bundle(directory: Path, *, service_only=False) -> None:
     """Check real onedir output before it is handed to the installer compiler."""
-    _require_file(directory / "ssearch.exe")
+    _require_file(directory / ('ssearch-service.exe' if service_only else 'ssearch.exe'))
     internal = directory / "_internal"
     _verify_resources(internal)
     _require_file(internal / "resources/licenses/ssearch-core/LICENSE.txt")
     _verify_project_corpus(internal / 'resources/project-search-v2')
     verify_model(internal / "models")
     _verify_postgresql(internal / 'resources/postgresql')
-    patterns = ("python312.dll", "PySide6/Qt6Core.dll", "PySide6/Qt6Gui.dll",
-                "PySide6/Qt6Widgets.dll", "PySide6/plugins/platforms/qwindows.dll",
+    patterns = ("python312.dll",
                 "numpy/_core/_multiarray_umath*.pyd", "numpy.libs/*.dll",
                 "onnxruntime/capi/onnxruntime_pybind11_state.pyd",
                 "onnxruntime/capi/onnxruntime_providers_shared.dll", "tokenizers/tokenizers.pyd",
                 'psycopg_binary/pq*.pyd', 'psycopg_binary/_psycopg*.pyd',
                 'psycopg_binary.libs/libpq-*.dll', 'psycopg_binary.libs/libssl-*.dll',
                 'psycopg_binary.libs/libcrypto-*.dll', 'vcruntime140.dll', 'tzdata/zoneinfo/UTC')
+    if not service_only:
+        patterns += ('PySide6/Qt6Core.dll', 'PySide6/Qt6Gui.dll', 'PySide6/Qt6Widgets.dll',
+                     'PySide6/plugins/platforms/qwindows.dll')
     for pattern in patterns:
         if not any(item.is_file() and item.stat().st_size for item in internal.glob(pattern)):
             raise BuildError(f"В автономной папке отсутствует компонент: {pattern}")
@@ -445,6 +524,11 @@ def validate_bundle(directory: Path) -> None:
             raise BuildError(f"Ожидается одна копия {name} в _internal/models.")
     for item in directory.rglob("*"):
         name = item.name.lower()
+        parts = tuple(part.lower() for part in item.relative_to(directory).parts)
+        if service_only and ((len(parts) >= 2 and parts[0] == '_internal'
+                              and parts[1] in {'pyside6', 'shiboken6', 'pyqt5', 'pyqt6', 'qtpy'})
+                             or (item.suffix.lower() in {'.dll', '.pyd'} and name.startswith(('qt5', 'qt6')))):
+            raise BuildError('GUI toolkit found in service-only bundle.')
         if item.is_file() and (name in {"settings.json", "pg_version", "pg_control", "owner.json",
                                        "pgpass", ".pgpass", "pgpass.conf", "qa-owner.json",
                                        "postmaster.pid", "postmaster.opts"}
@@ -458,19 +542,33 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="ssearch offline build verification")
     parser.add_argument("command", choices=("version", "core-wheel", "preflight", "verify-bundle",
                                              "development-start", "development-manifest", "verify-source",
-                                             "test-selection", "test-receipt"))
+                                             "test-selection", "test-receipt", "export-product",
+                                             "desktop-test-selection", "verify-service-bundle"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--directory", type=Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--check-dependencies", action="store_true")
     parser.add_argument("--commit")
     parser.add_argument("--development", action="store_true")
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--test-target", action="append", default=[])
+    parser.add_argument("--frontend-test-target", action="append", default=[])
+    parser.add_argument("--desktop-test-target", action="append", default=[])
     parser.add_argument("--exit-code", type=int)
     args = parser.parse_args(argv)
     try:
+        if args.command != 'desktop-test-selection' and (args.frontend_test_target or args.desktop_test_target):
+            raise BuildError('This command does not accept frontend or desktop targets.')
         options = {"quick": args.quick, "test_targets": args.test_target}
-        if args.command == "test-selection":
+        if args.command == "desktop-test-selection":
+            print(json.dumps(validate_desktop_test_selection(
+                args.root, development=args.development, **options,
+                frontend_test_targets=args.frontend_test_target, desktop_test_targets=args.desktop_test_target)))
+        elif args.command == "export-product":
+            if args.output is None:
+                raise BuildError('Product metadata export requires --output.')
+            print(export_product_metadata(args.root, args.output))
+        elif args.command == "test-selection":
             print(json.dumps(validate_test_selection(args.root, development=args.development, **options)))
         elif args.command == "test-receipt":
             if args.commit is None:
@@ -497,7 +595,7 @@ def main(argv=None) -> int:
         else:
             if args.directory is None:
                 raise BuildError("Укажите --directory с автономной папкой приложения.")
-            validate_bundle(args.directory)
+            validate_bundle(args.directory, service_only=args.command == 'verify-service-bundle')
             print(f"Автономная папка проверена: {args.directory}")
         return 0
     except (BuildError, OSError) as error:
