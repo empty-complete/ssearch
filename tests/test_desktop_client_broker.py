@@ -136,3 +136,23 @@ def test_partial_frame_has_deadline_without_leaking_reader_errors(owner_profile,
     finally:
         release.set()
 
+
+def test_idle_session_is_not_a_partial_frame_timeout(owner_profile, monkeypatch):
+    import time
+    from atom_search.service import desktop_client
+
+    class Idle(BytesIO):
+        waiting = True
+
+        def read(self, length):
+            if self.waiting:
+                self.waiting = False
+                time.sleep(.05)
+            return super().read(length)
+
+    monkeypatch.setattr(desktop_client, 'FRAME_TIMEOUT', .01)
+    output = BytesIO()
+    sent = request(owner_profile, 'status')
+    assert desktop_client.run_desktop_client(Idle(frame(sent)), output, profile=owner_profile.profile_dir) == 0
+    assert replies(output)[0]['envelope']['data']['api_version'] == '1'
+
