@@ -1,10 +1,12 @@
 import { app, BrowserWindow, ipcMain, Tray, Menu } from 'electron';
-import { join, resolve } from 'node:path';
-import { createHash } from 'node:crypto';
+import { dirname, join, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { createWindow } from './windowHost.js';
 import { registerAssetScheme } from './assetProtocol.js';
 import { registerDesktopIpc } from './ipc.js';
 import { SourceRuntime } from './sourceRuntime.js';
+import { PackagedRuntime } from './packagedRuntime.js';
+import type { ServiceRuntime } from './runtime.js';
 import { ServiceLifecycle } from './serviceLifecycle.js';
 import { installWindowLifecycle } from './windowLifecycle.js';
 import { acquireDesktopSingleton } from './desktopSingleton.js';
@@ -16,24 +18,25 @@ let quitting = false;
 let released = false;
 let tray: Tray | null = null;
 let bootstrapOkay = true;
-let profileKey = createHash('sha256').update('ssearch-packaged-candidate-unavailable').digest('hex');
+let profileKey = '';
 const repository = resolve(__dirname, '../..');
-if (!app.isPackaged) {
-  try {
-    const runtime = new SourceRuntime({ repositoryRoot: repository,
+try {
+  const runtime: ServiceRuntime = app.isPackaged
+    ? new PackagedRuntime({ installationRoot: dirname(realpathSync(process.execPath)),
+      expectedServiceVersion: app.getVersion() })
+    : new SourceRuntime({ repositoryRoot: repository,
       python: join(repository, '.venv/Scripts/python.exe'), modelDirectory: join(repository, 'models') });
-    const selector = process.argv.indexOf('--data-dir');
-    if (selector >= 0 && (!process.argv[selector + 1] || process.argv[selector + 1].startsWith('--'))) {
-      throw new Error('profile_selector_required');
-    }
-    const profile = runtime.profileIdentitySync(selector >= 0 ? process.argv[selector + 1] : undefined);
-    profileKey = profile.key;
-    service = new ServiceLifecycle(runtime, profile);
-  } catch {
-    bootstrapOkay = false;
-    console.error('source_service_bootstrap_unavailable');
-    app.exit(1);
+  const selector = process.argv.indexOf('--data-dir');
+  if (selector >= 0 && (!process.argv[selector + 1] || process.argv[selector + 1].startsWith('--'))) {
+    throw new Error('profile_selector_required');
   }
+  const profile = runtime.profileIdentitySync(selector >= 0 ? process.argv[selector + 1] : undefined);
+  profileKey = profile.key;
+  service = new ServiceLifecycle(runtime, profile);
+} catch {
+  bootstrapOkay = false;
+  console.error('service_bootstrap_unavailable');
+  app.exit(1);
 }
 const activate = () => {
   const window = BrowserWindow.getAllWindows()[0];
@@ -58,7 +61,7 @@ if (primary) void app.whenReady().then(() => {
     { label: 'Выход', click: () => app.quit() },
   ]));
   tray.on('double-click', activate);
-  void service?.ensureService().catch(() => console.error('source_service_unavailable'));
+  void service?.ensureService().catch(() => console.error('service_unavailable'));
   app.on('activate', () => {
     activate();
   });
