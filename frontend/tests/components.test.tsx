@@ -18,6 +18,10 @@ it('keeps one named icon button and exposes its tooltip on keyboard focus and ho
   await user.keyboard('{Enter}');
   expect(press).toHaveBeenCalledTimes(1);
   await user.tab();
+  // Move outside first: userEvent.hover teleports directly onto the target and
+  // dispatches hover-start before its pointer-move. React Aria intentionally
+  // ignores hover-start while the last interaction modality is still keyboard.
+  await user.pointer({ target: document.body, coords: { clientX: 1, clientY: 1 } });
   await user.hover(screen.getByRole('button', { name: 'О программе' }));
   expect(await screen.findByRole('tooltip')).toHaveTextContent('О программе');
 });

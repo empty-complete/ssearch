@@ -1,5 +1,20 @@
 import { test, expect } from '@playwright/test';
 
+test('icon tooltip appears on real keyboard focus and pointer hover', async ({ page }) => {
+  await page.goto('/');
+  const input = page.getByRole('searchbox');
+  const about = page.getByRole('button', { name: 'О программе' });
+  await expect(input).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(about).toBeFocused();
+  await expect(page.getByRole('tooltip')).toHaveText('О программе');
+  await page.keyboard.press('Tab');
+  await expect(input).toBeFocused();
+  await page.mouse.move(1, 1);
+  await about.hover();
+  await expect(page.getByRole('tooltip')).toHaveText('О программе');
+});
+
 test('loading skeleton respects reduced motion while results remain usable', async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
