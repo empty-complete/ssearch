@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import re
 
 import pytest
 
@@ -96,7 +97,22 @@ def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path, profile
     environment = source_environment()
     args = [sys.executable, '-m', 'atom_search.service.headless', '--data-dir', str(profile),
             '--model-dir', str(tmp_path / 'missing-model'), '--control-stdin']
-    process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    stack_file = tmp_path / 'source-startup-stack.txt'
+    # Execute the real entry, adding only a bounded, test-owned child stack dump.
+    # Its raw file stays in the disposable fixture; failures expose basenames and
+    # line numbers only, never profile paths, locals, credentials or raw output.
+    entry = '''
+import faulthandler, runpy, sys
+trace = open(sys.argv.pop(1), 'wb')
+faulthandler.dump_traceback_later(60, file=trace)
+try:
+    runpy.run_module('atom_search.service.headless', run_name='__main__', alter_sys=True)
+finally:
+    faulthandler.cancel_dump_traceback_later()
+    trace.close()
+'''
+    observed_args = [sys.executable, '-c', entry, str(stack_file), *args[3:]]
+    process = subprocess.Popen(observed_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=environment, creationflags=subprocess.CREATE_NO_WINDOW)
     attached = None
     try:
@@ -116,8 +132,14 @@ def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path, profile
         if first is None or process.poll() is not None:
             # Preserve the client exception context for CI's safe type/file/line
             # chain, without exporting the private profile or subprocess output.
+            frames = []
+            if stack_file.is_file():
+                text = stack_file.read_text(encoding='utf-8', errors='replace')
+                frames = [(Path(path).name, int(line)) for path, line in
+                          re.findall(r'  File "([^"]+)", line ([0-9]+)', text)][:48]
             raise AssertionError('source serve did not become ready; '
-                f'endpoint_exists={endpoint.exists()} child_exited={process.poll() is not None}') from last_failure
+                f'endpoint_exists={endpoint.exists()} child_exited={process.poll() is not None} '
+                f'child_frames={frames}') from last_failure
         second = ServiceClient(endpoint, None)
         assert first.descriptor == second.descriptor
         assert first.descriptor['pid'] == process.pid
