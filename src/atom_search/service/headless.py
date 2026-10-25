@@ -13,6 +13,30 @@ import threading
 import time
 
 
+def _wait_control_eof(stream):
+    """Wait on the inherited Windows pipe without holding a CRT stdin lock.
+
+    Native libraries imported during composition can inspect CRT descriptors;
+    a simultaneous buffered stdin read must not prevent their initialization.
+    This handle belongs to Python's stream and is never closed here.
+    """
+    import ctypes as c
+    from ctypes import wintypes as w
+    import msvcrt
+    from atom_search.runtime import _windows
+    handle = msvcrt.get_osfhandle(stream.fileno())
+    read = _windows._api(_windows._dll('kernel32'), 'ReadFile',
+        [w.HANDLE, c.c_void_p, w.DWORD, c.POINTER(w.DWORD), c.c_void_p], w.BOOL)
+    buffer, transferred = c.create_string_buffer(1), w.DWORD()
+    while True:
+        if not read(handle, buffer, 1, c.byref(transferred), None):
+            if c.get_last_error() in (109, 38):  # Broken pipe / end of file.
+                return
+            raise _windows.WindowsError('control_read_failed')
+        if not transferred.value:
+            return
+
+
 def serve(profile: Path, *, model_dir: Path | None = None, stop: threading.Event | None = None,
           startup_timeout: float = 120, shutdown_timeout: float = 45) -> int:
     """Run one owner (or P2 attach) until stop, with bounded lifecycle replies.
@@ -86,8 +110,7 @@ def main(argv=None) -> int:
     if args.control_stdin:
         def control():
             try:
-                while sys.stdin.buffer.read(1):
-                    pass  # No token, arbitrary command or second settings writer.
+                _wait_control_eof(sys.stdin)  # Only EOF, no commands or settings writer.
             except Exception:
                 control_failed.set()  # Suppress threading.excepthook/private traceback.
             finally:

@@ -54,8 +54,7 @@ def test_control_reader_failure_is_redacted_and_stops_cleanly(tmp_path, monkeypa
     from atom_search.service.headless import main
 
     class BrokenInput:
-        @property
-        def buffer(self):
+        def fileno(self):
             raise OSError('private control pipe secret/path')
 
     monkeypatch.setattr(sys, 'stdin', BrokenInput())
@@ -136,7 +135,8 @@ finally:
             if stack_file.is_file():
                 text = stack_file.read_text(encoding='utf-8', errors='replace')
                 frames = [(Path(path).name, int(line)) for path, line in
-                          re.findall(r'  File "([^"]+)", line ([0-9]+)', text)][:48]
+                          re.findall(r'  File "([^"]+)", line ([0-9]+)', text)
+                          if not path.startswith('<frozen ')][:48]
             raise AssertionError('source serve did not become ready; '
                 f'endpoint_exists={endpoint.exists()} child_exited={process.poll() is not None} '
                 f'child_frames={frames}') from last_failure
