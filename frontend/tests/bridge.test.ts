@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { SearchClientError, createSearchClient } from '../src/bridge/client';
-import type { DesktopApi, SearchResponse, WireEnvelope } from '../src/bridge/types';
+import type { CallControl, DesktopApi, SearchResponse, WireEnvelope } from '../src/bridge/types';
+
+function closedApi(overrides: Partial<DesktopApi>): DesktopApi {
+  const deny = async (_args: unknown, control: CallControl): Promise<WireEnvelope<never>> => ({
+    schema_version: 1, request_id: control.request_id, data: null,
+    error: { code: 'access_denied', message: 'access_denied', retryable: false, details: {} },
+  });
+  return {
+    search: deny, fetch: deny, status: deny, settingsGet: deny,
+    settingsValidate: deny, settingsApply: deny, startCatalog: deny, cancelJob: deny,
+    ...overrides,
+  };
+}
 
 const response: SearchResponse = {
   results: [], query_interpretation: {
@@ -22,7 +34,7 @@ describe('typed browser bridge', () => {
             details: { current_revision: 5 } } };
       },
     } satisfies Pick<DesktopApi, 'search' | 'settingsApply'>;
-    const client = createSearchClient(api as DesktopApi);
+    const client = createSearchClient(closedApi(api));
     for (const source_ids of [null, []]) expect(await client.search({
       query: 'drawing', source_ids, mode: 'literal',
     })).toEqual(response);
@@ -52,7 +64,7 @@ describe('typed browser bridge', () => {
         return new Promise(resolve => { release = resolve; });
       },
     };
-    const client = createSearchClient(api as DesktopApi);
+    const client = createSearchClient(closedApi(api));
     const abort = new AbortController();
     const pending = client.search({ query: 'drawing' }, abort.signal);
     abort.abort();
@@ -76,7 +88,7 @@ describe('typed browser bridge', () => {
           error: { code: 'access_denied', message: 'access_denied', retryable: false, details: {} } };
       },
     };
-    const client = createSearchClient(api as DesktopApi);
+    const client = createSearchClient(closedApi(api));
     await expect(client.settingsApply({ candidate: {}, expected_revision: 1 })).rejects.toMatchObject({
       code: 'request_timeout', details: { outcome: 'unknown' },
     });

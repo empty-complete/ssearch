@@ -23,7 +23,7 @@ const pause = milliseconds => new Promise(resolve => setTimeout(resolve, millise
 
 async function waitFor(check) {
   for (let i = 0; i < 100; i++) {
-    const result = check();
+    const result = await check();
     if (result) return result;
     await pause(25);
   }
@@ -41,6 +41,23 @@ void app.whenReady().then(async () => {
     });
     await once(product.webContents, 'did-finish-load');
     assert.equal(product.isVisible(), false);
+    assert.equal(product.webContents.getURL(), 'ssearch://ui/');
+    await waitFor(() => product.webContents.executeJavaScript(`!!document.querySelector('input[type="search"]')`));
+    await product.webContents.executeJavaScript(`{
+      const input=document.querySelector('input[type="search"]');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'source protocol probe');
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+    }`);
+    await waitFor(() => product.webContents.executeJavaScript(`
+      Array.from(document.querySelectorAll('button')).some(button=>button.textContent==='Найти' && !button.disabled)
+    `));
+    await product.webContents.executeJavaScript(`document.querySelector('input[type="search"]').dispatchEvent(
+      new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,cancelable:true})
+    )`);
+    await waitFor(() => product.webContents.executeJavaScript(`
+      document.querySelector('[role="alert"]')?.textContent.includes('Локальный поиск недоступен')
+        && document.querySelector('input[type="search"]').value==='source protocol probe'
+    `));
     const exposure = await product.webContents.executeJavaScript(`(async () => ({
       node: [typeof require, typeof process, typeof Buffer, typeof ipcRenderer],
       keys: Object.keys(window.ssearch).sort(), serialized: JSON.stringify(window.ssearch),
@@ -182,7 +199,8 @@ void app.whenReady().then(async () => {
       synthetic_service_port: true,
       passed: [
         'sandboxed_self_contained_preload', 'eight_named_methods_no_node_or_secrets',
-        'default_unavailable', 'inline_and_eval_scripts_denied', 'csp_remote_loads_denied',
+        'actual_react_search_and_unavailable_flow', 'default_unavailable',
+        'inline_and_eval_scripts_denied', 'csp_remote_loads_denied',
         'bound_session_network_interception', 'navigation_and_new_windows_denied',
         'permission_and_download_denied', 'actual_main_frame_allowed',
         'forged_session_oversized_unknown_method_denied',
