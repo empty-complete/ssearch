@@ -7,8 +7,11 @@ the hard deadline exits without pytest teardown. No profiles or logs are exporte
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import faulthandler
+import json
 import os
+from pathlib import Path
 import sys
 import threading
 
@@ -65,6 +68,35 @@ class Progress:
 
     def pytest_sessionstart(self, session):
         self.arm('collection')
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_runtest_makereport(self, item, call):
+        outcome = yield
+        report = outcome.get_result()
+        if not report.failed or call.excinfo is None or report.when not in ('setup', 'call', 'teardown'):
+            return
+        # Inspect the chain even when `raise ... from None` hides its context.
+        # Never stringify exceptions or read locals, arguments or source lines.
+        chain, seen = [], set()
+        error = call.excinfo.value
+        while error is not None and id(error) not in seen and len(chain) < 8:
+            seen.add(id(error))
+            chain.append(error)
+            cause = error.__cause__
+            error = cause if cause is not None else error.__context__
+        details = []
+        for error in chain:
+            # Bound the whole report to 12 frames, retaining the innermost ones.
+            locations = deque(maxlen=12 // len(chain))
+            trace = error.__traceback__
+            while trace is not None:
+                locations.append({'file': Path(trace.tb_frame.f_code.co_filename).name,
+                                  'line': trace.tb_lineno})
+                trace = trace.tb_next
+            details.append({'type': type(error).__name__, 'locations': list(locations)})
+        with self.lock:
+            print('CI pytest failure: ' + json.dumps({'phase': report.when, 'exceptions': details}),
+                  file=self.output, flush=True)
 
     @pytest.hookimpl(hookwrapper=True, tryfirst=True)
     def pytest_runtest_protocol(self, item, nextitem):
