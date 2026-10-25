@@ -1,7 +1,7 @@
 name: Frontend candidate
 on:
   pull_request:
-    paths: ['frontend/**', 'desktop/**', 'tools/build_frontend.ps1', '.github/workflows/frontend-checks.yml', 'src/atom_search/content.py', 'resources/branding/**']
+    paths: ['frontend/**', 'desktop/**', 'tools/build_frontend.ps1', '.github/workflows/frontend-checks.yml', 'LICENSE.txt', 'src/atom_search/content.py', 'src/atom_search/service/contracts.py', 'resources/branding/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,14 +28,39 @@ jobs:
           npm run typecheck
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm test
-      - name: Offline frontend rebuild and local bundle proof
-        shell: pwsh
-        run: ./tools/build_frontend.ps1 -CachePath "$PWD/frontend/.cache/npm"
       - name: Resolve locked desktop build dependencies
         working-directory: desktop
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci --ignore-scripts --cache .cache/npm --no-audit --no-fund
+      - name: Missing and empty frontend cache fail before npm ci
+        shell: pwsh
+        run: |
+          $marker = Join-Path $PWD 'frontend/node_modules/.offline-negative-proof'
+          Set-Content -LiteralPath $marker -Value 'preserve-before-npm-ci'
+          $empty = Join-Path $PWD 'frontend/.cache/negative-empty'
+          New-Item -ItemType Directory -Path $empty | Out-Null
+          $cases = @(
+            @{ name='missing'; path=(Join-Path $PWD 'frontend/.cache/negative-missing'); error='Offline npm cache is missing.' },
+            @{ name='empty'; path=$empty; error='Offline locked cache incomplete:' }
+          )
+          $receipts = @()
+          foreach ($case in $cases) {
+            $message = ''
+            try {
+              ./tools/build_frontend.ps1 -CachePath $case.path -DesktopCachePath "$PWD/desktop/.cache/npm"
+              throw 'Unexpected success for incomplete cache'
+            } catch { $message = $_.Exception.Message }
+            if (!$message.StartsWith($case.error)) { throw "Unexpected cache failure: $message" }
+            if (!(Test-Path -LiteralPath $marker)) { throw 'npm ci ran before cache rejection' }
+            if (Test-Path -LiteralPath (Join-Path $case.path '_cacache/content-v2')) { throw 'Package content appeared in rejected cache' }
+            $receipts += @{ scenario=$case.name; rejected_before_npm_ci=$true; package_downloads=$false; error=$message }
+          }
+          Remove-Item -LiteralPath $marker
+          ConvertTo-Json -InputObject $receipts -Depth 6 | Set-Content frontend/.cache/offline-negative.json
+      - name: Offline rebuild of both locked dependency trees and frontend bundle
+        shell: pwsh
+        run: ./tools/build_frontend.ps1 -CachePath "$PWD/frontend/.cache/npm" -DesktopCachePath "$PWD/desktop/.cache/npm"
       - name: Desktop types, safety and compile
         working-directory: desktop
         run: |

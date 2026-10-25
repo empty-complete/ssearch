@@ -46,6 +46,10 @@ and production build, local-asset/license inventory and headless screenshots.
 Offline rebuild requires a prewarmed, integrity-verified npm cache; missing cache
 fails before npm ci, and npm ci itself uses --offline --ignore-scripts.
 `tools/build_frontend.ps1 -CachePath <prepared-cache>` is the CI entry point.
+It also takes `-DesktopCachePath <prepared-desktop-cache>` and verifies/reinstalls
+both dependency trees offline, with Electron binary download disabled. Missing
+and empty cache scenarios must reject before npm ci; receipts join the existing
+asset inventory with each lock's digest and verified package integrities.
 The workflow may download dependencies and browser tools during its online
 preparation step; application runtime and the offline rebuild do not do so.
 
@@ -61,3 +65,10 @@ and ownership/security; Task 3 frozen service, package/installer/offline runtime
 actual Win11 IME, keyboard, Narrator, high contrast, DPI/Snap and crash recovery;
 final Win10 1809+ test only at the end. Generic documented Windows 10 support
 does not establish the exact 1809 native gate. No Stable claim.
+
+License provenance exception: the inspected client-only 0.0.1 npm tarball declares
+MIT but supplies no license text or copyright notice. Its browser entry is empty.
+Only this exact version, tarball integrity and three original file hashes are
+accepted; its original metadata and inspection evidence are preserved. The
+collector still rejects every other missing license. No upstream copyright
+holder is invented; packaging acceptance of this omission remains an open gate.

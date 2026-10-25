@@ -1,0 +1,30 @@
+{
+  "package": "client-only",
+  "version": "0.0.1",
+  "declared_license": "MIT",
+  "metadata_source": "https://www.npmjs.com/package/client-only/v/0.0.1",
+  "tarball_source": "https://registry.npmjs.org/client-only/-/client-only-0.0.1.tgz",
+  "integrity": "sha512-IV3Ou0jSMzZrd3pZ48nLkT9DA7Ag1pnPzaiQhpW7c3RbcqqzvzzVu+L8gfqMp/8IM2MQtSiqaCxrrcfu8I8rMA==",
+  "upstream_license_text_supplied": false,
+  "copyright_holder": null,
+  "browser_entry": "index.js",
+  "browser_entry_bytes": 0,
+  "files": [
+    {
+      "file": "error.js",
+      "bytes": 144,
+      "sha256": "7d211552731db17e1ff8635eea0970ef57ecc91b04b95536b9fa5abbfafaec26"
+    },
+    {
+      "file": "index.js",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "package.json",
+      "bytes": 467,
+      "sha256": "4d6342705767832f299b9a59c28e4275bcf02db19472732f93f67d979441df8f"
+    }
+  ],
+  "disclosure": "Exact upstream npm package declares MIT but supplies no LICENSE or copyright notice. Its browser entry is empty. No upstream copyright holder is inferred. Packaging provenance remains open for review."
+}

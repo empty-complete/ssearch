@@ -116,6 +116,14 @@
       "file": "catppuccin-LICENSE"
     },
     {
+      "sha256": "1acbf323b0704d09fbb02bc40d081e390f9983e057e6398c22afe4c334d16b74",
+      "file": "client-only-0.0.1-evidence.json"
+    },
+    {
+      "sha256": "4d6342705767832f299b9a59c28e4275bcf02db19472732f93f67d979441df8f",
+      "file": "client-only-0.0.1-package.json"
+    },
+    {
       "sha256": "808a50e0e6c74617a07b0eaf7fd80f58d8e48a13f48e47c658c7534b1724e5c2",
       "file": "craft-floor.md"
     },
@@ -179,6 +187,7 @@
     "Task3 package frozen service installer offline native runtime",
     "Win11 native IME Narrator high contrast DPI Snap crash recovery",
     "Final Win10 1809+ acceptance only at the end",
-    "Full P4 and Stable acceptance"
+    "Full P4 and Stable acceptance",
+    "client-only0.0.1 upstream MIT license-text omission: packaging provenance acceptance"
   ]
 }

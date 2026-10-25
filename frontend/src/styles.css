@@ -46,7 +46,7 @@ p { margin:0 0 12px; }
 .result-row { display:flex; flex-direction:column; align-items:stretch; gap:3px; padding:12px; min-height:64px; border-radius:8px; cursor:default; transition:background-color var(--motion-feedback); }
 .result-row[data-hovered="true"] { background:var(--surface-secondary); }
 .result-row[data-selected="true"] { background:var(--selected); box-shadow:inset 0 0 0 1px var(--accent); color:var(--foreground); }
-.result-name { font-size:15px; font-weight:600; color:var(--foreground); }
+.result-name { font-size:15px; font-weight:600; color:var(--foreground); overflow-wrap:anywhere; min-width:0; }
 .result-path { font-size:13px; color:var(--muted); white-space:normal; overflow-wrap:anywhere; user-select:text; }
 .result-warning,.persistent-warning { font-size:13px; color:var(--warning); }
 .result-warning { display:block; margin-top:3px; }

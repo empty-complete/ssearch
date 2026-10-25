@@ -21,3 +21,10 @@ license texts and package identity/integrity inventory. Build/test dependencies
 retain their licenses in npm packages and the exact package-lock.json.
 Upstream design/skill snapshots are development references only; their source
 licenses are included alongside snapshots in compatibility/upstream/.
+
+client-only 0.0.1: the exact npm package declares MIT and contains an empty
+browser entry, index.js (0 bytes). It supplies no LICENSE text or copyright
+notice. No copyright holder is inferred here. The collector permits only its
+known locked tarball integrity and all three original file hashes. Its original
+package metadata and provenance are preserved in licenses/client-only/.
+Packaging provenance acceptance for this upstream omission remains open.

@@ -31,6 +31,19 @@ for (const file of await files(root)) {
 }
 for (const required of ['index.html', 'app-icon.png', 'LICENSE.txt', 'THIRD_PARTY_NOTICES.txt']) if (!inventory.some(item => item.file === required)) throw new Error(`Missing local asset: ${required}`);
 const npmVersion = execFileSync(process.execPath, [process.env.npm_execpath, '--version'], { encoding: 'utf8' }).trim();
+const offlineDependencies = JSON.parse(await readFile(join(repository,
+  'frontend/.cache/offline-dependencies.json'), 'utf8'));
+const offlineNegative = JSON.parse(await readFile(join(repository,
+  'frontend/.cache/offline-negative.json'), 'utf8'));
+if (offlineDependencies.source_sha !== sourceSha) throw new Error('Offline proof source SHA mismatch');
+for (const project of ['frontend', 'desktop']) {
+  const receipt = offlineDependencies.projects.find(item => item.project === project);
+  const digest = locks.find(item => item.path === `${project}/package-lock.json`).sha256;
+  if (!receipt?.offline_npm_ci || !receipt.cache_integrity_verified || receipt.install_scripts
+    || receipt.lock_sha256 !== digest) throw new Error(`Missing locked offline proof: ${project}`);
+}
+if (offlineNegative.length !== 2 || offlineNegative.some(item =>
+  !item.rejected_before_npm_ci || item.package_downloads)) throw new Error('Missing cache-negative proof');
 await writeFile(join(root, 'asset-inventory.json'), JSON.stringify({
   schema_version: 1,
   source_sha: sourceSha,
@@ -38,6 +51,8 @@ await writeFile(join(root, 'asset-inventory.json'), JSON.stringify({
   npm_version: npmVersion,
   candidate_sha256: sha256(await readFile(join(repository, 'frontend/compatibility/candidate-versions.json'))),
   locks,
+  offline_dependencies: offlineDependencies,
+  offline_cache_negative: offlineNegative,
   assets: inventory,
 }, null, 2));
 console.log(`Verified ${inventory.length} local production assets; development fixtures excluded.`);
