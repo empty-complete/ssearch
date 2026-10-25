@@ -111,6 +111,11 @@ public static class SsearchCiKnownFolders {
             [Environment]::SetEnvironmentVariable($item.Name, $null, 'Process')
         }
     }
+    $remainingPg = @(Get-ChildItem Env: | Where-Object { $_.Name.StartsWith('PG', [StringComparison]::OrdinalIgnoreCase) })
+    Write-Host ('CI PG cleanup predicates: ' + (@{
+        remaining = $remainingPg.Count
+        empty = @($remainingPg | Where-Object { $_.Value -eq '' }).Count
+    } | ConvertTo-Json -Compress))
     $env:USERPROFILE = $profile
     $env:LOCALAPPDATA = $local
     $env:APPDATA = $roaming
@@ -141,7 +146,9 @@ from pathlib import Path
 import sys
 from atom_search.runtime import _windows
 from atom_search.runtime.credentials import CredentialStore
-assert not any(name.upper().startswith('PG') for name in os.environ)
+pg_values = [value for name, value in os.environ.items() if name.upper().startswith('PG')]
+print(f'CI Python PG predicates: remaining={len(pg_values)} empty={sum(value == "" for value in pg_values)}', flush=True)
+assert not pg_values
 profile = Path(sys.argv[1])
 store = CredentialStore(profile, 'ci-preflight')
 reference = store.create('ci-preflight')
