@@ -42,7 +42,7 @@ export class ServiceBridgeClient implements ServicePort {
   private wireTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
   private disconnected = new Set<() => void>();
-  get authority(): ServicePort['authority'] { return this.verified; }
+  get authority(): ServicePort['authority'] { return this.closed ? null : this.verified; }
 
   constructor(private runtime: Pick<SourceRuntime, 'spawnBroker'>) {}
   onDisconnect(callback: () => void): () => void {
@@ -73,6 +73,7 @@ export class ServiceBridgeClient implements ServicePort {
       });
       child.on('close', fail);
       child.stdout.on('data', chunk => {
+        if (this.closed) return;
         try {
           const partial = this.decoder.partial;
           const frames = this.decoder.push(chunk);

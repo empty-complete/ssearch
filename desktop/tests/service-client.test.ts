@@ -73,3 +73,16 @@ test('correlated transport failures retain uncertainty without retrying a mutati
     } finally { await client.close(); }
   }
 });
+
+test('closing during handshake refuses a real child ready reply arriving after EOF', async () => {
+  const profile = { profile: __dirname, key: 'c'.repeat(64), serviceVersion: '0.2.0',
+    pythonBase: process.execPath, pythonVenv: process.execPath };
+  const client = new ServiceBridgeClient({ spawnBroker: () => spawn(process.execPath,
+    [join(__dirname, 'fixtures/correlated-error-broker.cjs'), profile.profile, profile.key, 'delayed_ready'],
+    { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }) });
+  let accepted = false;
+  const opening = client.connect(profile).then(() => { accepted = true; }, () => {});
+  await Promise.all([client.close(), opening]);
+  assert.equal(accepted, false);
+  assert.equal(client.authority, null);
+});
