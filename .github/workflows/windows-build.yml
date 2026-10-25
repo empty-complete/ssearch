@@ -137,22 +137,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $parameters = @{
-            Development = $true
-            Python = '.venv/Scripts/python.exe'
-            ISCC = '.tools/InnoSetup7/ISCC.exe'
-          }
-          if ($env:BUILD_MODE -eq 'quick') {
-            $parameters.Quick = $true
-            $parameters.TestTargets = [string[]](ConvertFrom-Json -InputObject $env:TEST_TARGETS_JSON -NoEnumerate)
-          }
-          & ./tools/build.ps1 @parameters
-      - name: Export installer and public receipts only
-        shell: pwsh
-        run: |
-          $arguments = @('tools/export_ci_artifacts.py', '--commit', $env:SOURCE_SHA)
-          if ($env:BUILD_MODE -eq 'quick') { $arguments += '--quick' }
-          & ./.venv/Scripts/python.exe @arguments
+          & ./tools/run_ci_build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain reviewed build outputs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

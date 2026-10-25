@@ -2,7 +2,9 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import zipfile
 
 import pytest
@@ -17,6 +19,34 @@ def load_tool(name):
 
 prepare = load_tool('prepare_ci')
 exporter = load_tool('export_ci_artifacts')
+
+
+@pytest.mark.parametrize('child', [False, True])
+def test_ci_launcher_rejects_a_process_outside_actions_before_creating_state(tmp_path, child):
+    environment = os.environ.copy()
+    environment['GITHUB_ACTIONS'] = 'false'
+    environment['GITHUB_WORKSPACE'] = str(tmp_path)
+    launcher = Path(__file__).parents[1] / 'tools/run_ci_build.ps1'
+    command = ['pwsh', '-NoProfile', '-NonInteractive', '-File', str(launcher)]
+    if child:
+        command.append('-Child')
+    result = subprocess.run(command, env=environment, cwd=tmp_path, capture_output=True,
+                            text=True, timeout=30)
+    assert result.returncode != 0
+    assert 'CI_ACTIONS_REQUIRED' in result.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_ci_launcher_refuses_an_unadmitted_child_before_creating_state(tmp_path):
+    environment = os.environ.copy()
+    environment['GITHUB_ACTIONS'] = 'true'
+    launcher = Path(__file__).parents[1] / 'tools/run_ci_build.ps1'
+    result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File', str(launcher),
+                             '-Child'], env=environment, cwd=tmp_path, capture_output=True,
+                            text=True, timeout=30)
+    assert result.returncode != 0
+    assert 'CI_OWNED_CHILD_REQUIRED' in result.stderr
+    assert list(tmp_path.iterdir()) == []
 
 
 def fixture_archive(tmp_path, *, extra=None, payload=b'public runtime'):
