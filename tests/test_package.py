@@ -637,6 +637,7 @@ foreach ($mode in @('development', 'development-quick')) {
         tests.mkdir(exist_ok=True)
         (tests / "test_sample.py").write_text("def test_ok(): pass\n", encoding="utf-8")
         (tests / "test_extra.py").write_text("def test_selected(): pass\n", encoding="utf-8")
+        (self.root / "pytest.ini").write_text("[pytest]\ntestpaths = tests\n", encoding="utf-8")
         targets = ["tests/test_sample.py", "tests/test_extra.py::test_selected"] if quick else []
         compiler = self.root / "compiler.exe"
         compiler.write_bytes(b"external compiler boundary")

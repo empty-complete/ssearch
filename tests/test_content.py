@@ -88,16 +88,11 @@ os.environ['LOCALAPPDATA'] = sys.argv[2]
 sys.argv = ['AtomSearch', '--smoke-test']
 sys.stderr = io.StringIO()
 result = entry.launch()
-try:
-    print(json.dumps({'code': result, 'message': sys.stderr.getvalue()}, ensure_ascii=False))
-except UnicodeEncodeError:
-    print('content_result_serialization_unicode_encode_error', file=sys.__stderr__, flush=True)
-    raise
+print(json.dumps({'code': result, 'message': sys.stderr.getvalue()}, ensure_ascii=True))
 '''
     result = subprocess.run([sys.executable, "-I", "-c", script, str(source), str(tmp_path),
                              str(ROOT / "packaging/launcher.py"), str(archived)],
-                            capture_output=True, text=True, encoding="utf-8", timeout=20,
-                            env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+                            capture_output=True, text=True, encoding="utf-8", timeout=20)
     assert result.returncode == 0, result.stderr
     output = json.loads(result.stdout)
     assert output["code"] == 1
