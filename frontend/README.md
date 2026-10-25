@@ -1,5 +1,11 @@
 # ssearch frontend candidate
 
+Notice provenance slice: preserve the exact client-only 0.0.1 inputs and measure
+its actual browser graph/output before accepting a source-bundle-only empty
+marker disposition. Required cases include missing/incomplete graph evidence,
+changed package bytes/integrity, server branch, emitted code/assets/imports and
+every other missing-license package. Actual package acceptance remains separate.
+
 P4 Task 2 builtin slice: trusted appearance metadata feeds the existing in-memory
 theme preview; next package boundary remains Task 3. Required source scenarios:
 canonical resolution, immutable output, duplicate/spoof/version/capability/namespace
