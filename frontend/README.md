@@ -1,5 +1,11 @@
 # ssearch frontend candidate
 
+P4 Task 1 palette-input slice: one canonical set of the existing 16 semantic
+color roles generates static default CSS in the current stylesheet; noncolor
+tokens and selector behavior stay in place. Next package boundary is Task 3.
+Required checks cover exact default colors, closed serialization, prepared-mode
+metadata, light/dark screenshots and query/selection during system media changes.
+
 Notice provenance slice: preserve the exact client-only 0.0.1 inputs and measure
 its actual browser graph/output before accepting a source-bundle-only empty
 marker disposition. Required cases include missing/incomplete graph evidence,
