@@ -11,6 +11,7 @@ export interface ProfileIdentity {
   readonly serviceVersion: string;
   readonly pythonBase: string;
   readonly pythonVenv: string;
+  readonly parent: { readonly pid: number; readonly executable: string; readonly created: string };
 }
 
 export interface SourceRuntimeOptions {
@@ -48,10 +49,18 @@ export class SourceRuntime {
   }
 
   spawnOwner(profile: ProfileIdentity): ChildProcess {
-    return spawn(profile.pythonBase, ['-m', 'atom_search.service.headless', '--data-dir', profile.profile,
-      '--model-dir', this.modelDirectory, '--control-stdin'], {
+    if (profile.parent.pid !== process.pid
+      || realpathSync(profile.parent.executable).toLowerCase() !== realpathSync(process.execPath).toLowerCase()) {
+      throw new Error('source_parent_identity_mismatch');
+    }
+    const child = spawn(profile.pythonBase, [join(this.root, 'desktop/src/ssearch_service_adapter.py'),
+      'owner', '--profile', profile.profile, '--model-dir', this.modelDirectory], {
       cwd: this.root, env: this.environment(profile), windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'],
     });
+    child.stdin!.on('error', () => {});
+    child.stdin!.write(encodeBrokerFrame({ schema_version: 1, session_id: randomUUID(),
+      challenge: randomUUID(), parent: profile.parent }));
+    return child;
   }
 
   /** Before Electron ready, so userData/lock identity cannot race browser initialization. */
@@ -61,7 +70,8 @@ export class SourceRuntime {
     const result = spawnSync(this.python, [join(this.root, 'desktop/src/ssearch_service_adapter.py'), 'profile',
       ...(profilePath ? ['--profile', resolve(profilePath)] : [])], {
       cwd: this.root, env: this.environment(), windowsHide: true, timeout: 20_000, maxBuffer: 65_536,
-      input: encodeBrokerFrame({ schema_version: 1, session_id: session, challenge }),
+      input: encodeBrokerFrame({ schema_version: 1, session_id: session, challenge,
+        parent_pid: process.pid, parent_executable: realpathSync(process.execPath) }),
     });
     if (result.error || result.status !== 0) throw new Error('service_unavailable');
     const decoder = new BrokerFrameDecoder();
@@ -70,15 +80,22 @@ export class SourceRuntime {
     const reply = frames[0];
     if (frames.length !== 1 || !plainObject(reply)
       || !exactKeys(reply, ['schema_version', 'kind', 'session_id', 'challenge', 'profile', 'key',
-        'service_version', 'python_base', 'python_venv'])
+        'service_version', 'python_base', 'python_venv', 'parent'])
       || reply.schema_version !== 1 || reply.kind !== 'profile' || reply.session_id !== session
       || reply.challenge !== challenge || typeof reply.key !== 'string' || !/^[0-9a-f]{64}$/.test(reply.key)
       || typeof reply.profile !== 'string' || !isAbsolute(reply.profile)
       || typeof reply.service_version !== 'string' || !/^\d+\.\d+\.\d+$/.test(reply.service_version)
       || typeof reply.python_base !== 'string' || !isAbsolute(reply.python_base)
-      || typeof reply.python_venv !== 'string' || !isAbsolute(reply.python_venv)) throw new Error('service_identity_mismatch');
+      || typeof reply.python_venv !== 'string' || !isAbsolute(reply.python_venv)
+      || !plainObject(reply.parent) || !exactKeys(reply.parent, ['pid', 'executable', 'created'])
+      || reply.parent.pid !== process.pid || typeof reply.parent.executable !== 'string'
+      || realpathSync(reply.parent.executable).toLowerCase() !== realpathSync(process.execPath).toLowerCase()
+      || typeof reply.parent.created !== 'string' || !/^[1-9][0-9]{0,19}$/.test(reply.parent.created)) {
+      throw new Error('service_identity_mismatch');
+    }
     return Object.freeze({ profile: reply.profile, key: reply.key, serviceVersion: reply.service_version,
-      pythonBase: realpathSync(reply.python_base), pythonVenv: realpathSync(reply.python_venv) });
+      pythonBase: realpathSync(reply.python_base), pythonVenv: realpathSync(reply.python_venv),
+      parent: Object.freeze({ pid: process.pid, executable: reply.parent.executable, created: reply.parent.created }) });
   }
 
   async profileIdentity(profilePath?: string): Promise<ProfileIdentity> {

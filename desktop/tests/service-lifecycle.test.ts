@@ -51,7 +51,8 @@ test('owner exit before MAIN consumes ready cannot publish a dead generation as 
   const runtime = new ExitingHandshakeRuntime({ repositoryRoot: process.cwd(),
     python: process.execPath, modelDirectory: process.cwd() });
   const profile = { profile: __dirname, key: 'd'.repeat(64), serviceVersion: '0.2.0',
-    pythonBase: process.execPath, pythonVenv: process.execPath };
+    pythonBase: process.execPath, pythonVenv: process.execPath,
+    parent: { pid: process.pid, executable: process.execPath, created: '1' } };
   const lifecycle = new ServiceLifecycle(runtime, profile);
   let primaryFailed = false;
   try {

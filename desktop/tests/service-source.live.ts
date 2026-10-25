@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { once } from 'node:events';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -72,6 +74,24 @@ test('actual source TS to private P2 broker and owner lifecycle', { timeout: 850
       const identity = await runtime.profileIdentity(join(directory, label));
       const same = await runtime.profileIdentity(join(directory, label, '..', label));
       assert.equal(identity.key, same.key);
+      assert.equal(identity.parent.pid, process.pid);
+      assert.equal(identity.parent.executable.toLowerCase(), process.execPath.toLowerCase());
+      assert.match(identity.parent.created, /^[1-9][0-9]{0,19}$/);
+      const rejectedProfile = await runtime.profileIdentity(join(directory, label + ' invalid parent'));
+      assert.throws(() => runtime.spawnOwner({ ...rejectedProfile,
+        parent: { ...rejectedProfile.parent, executable: runtime.python } }),
+      { message: 'source_parent_identity_mismatch' });
+      const invalidParent = runtime.spawnOwner({ ...rejectedProfile,
+        parent: { ...rejectedProfile.parent, created: '1' } });
+      let rejectionTimedOut = false;
+      const rejectionDeadline = setTimeout(() => { rejectionTimedOut = true; invalidParent.kill(); }, 15_000);
+      try {
+        const [code] = await once(invalidParent, 'close');
+        assert.equal(rejectionTimedOut, false);
+        assert.equal(code, 1);
+        assert.equal(existsSync(join(rejectedProfile.profile, 'engine/runtime/endpoint.json')), false);
+        assert.equal(existsSync(join(rejectedProfile.profile, 'engine/runtime/service-claim.json')), false);
+      } finally { clearTimeout(rejectionDeadline); }
       const owner = new ServiceLifecycle(runtime, identity);
       sessions.push(owner);
       const [first, second] = await Promise.all([owner.ensureService(), owner.ensureService()]);

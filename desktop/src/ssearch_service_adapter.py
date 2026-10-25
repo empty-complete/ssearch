@@ -8,13 +8,64 @@ import argparse
 import hashlib
 import os
 from pathlib import Path
+import re
 import sys
+import threading
+
+
+def serve_with_parent_lease(profile, model_dir, parent):
+    """Only the exact retained MAIN object and our private EOF can stop this source entry."""
+    from atom_search.runtime import _windows
+    if (type(parent) is not dict or set(parent) != {'pid', 'executable', 'created'}
+            or type(parent['pid']) is not int or parent['pid'] <= 0
+            or type(parent['executable']) is not str or not Path(parent['executable']).is_absolute()
+            or type(parent['created']) is not str or re.fullmatch('[1-9][0-9]{0,19}', parent['created']) is None):
+        return 1
+    identity = _windows.ProcessIdentity(parent['pid'],
+        os.path.normcase(str(Path(parent['executable']).resolve())), int(parent['created']))
+    stop, failed = threading.Event(), threading.Event()
+    with _windows.verified_process(identity) as handle:
+        if _windows.wait_process_exit(handle, timeout_seconds=0):
+            return 1
+
+        def watch_parent():
+            try:
+                while not stop.is_set():
+                    if _windows.wait_process_exit(handle, timeout_seconds=.1):
+                        stop.set()
+                        return
+            except BaseException:
+                failed.set()
+                stop.set()
+
+        watcher = threading.Thread(target=watch_parent, name='ssearch-source-parent', daemon=True)
+        watcher.start()  # Retained identity watch is installed before P2 owner composition.
+        from atom_search.service.headless import _wait_control_eof, serve
+
+        def watch_control():
+            try:
+                _wait_control_eof(sys.stdin, stop)
+            except BaseException:
+                failed.set()
+            finally:
+                stop.set()
+
+        control = threading.Thread(target=watch_control, name='ssearch-source-control', daemon=True)
+        control.start()
+        try:
+            result = 0 if stop.is_set() else serve(profile, model_dir=model_dir, stop=stop)
+        finally:
+            stop.set()
+            watcher.join(1)
+            control.join(1)
+        return 1 if failed.is_set() or watcher.is_alive() or control.is_alive() else result
 
 
 def main():
     parser = argparse.ArgumentParser(description='ssearch private source adapter')
-    parser.add_argument('mode', choices=('profile', 'broker'))
+    parser.add_argument('mode', choices=('profile', 'broker', 'owner'))
     parser.add_argument('--profile', type=Path)
+    parser.add_argument('--model-dir', type=Path)
     args = parser.parse_args()
     from atom_search import VERSION
     from atom_search.paths import data_path
@@ -29,7 +80,12 @@ def main():
         if not first:
             return 1
         context = _bounded(lambda: _read_frame(incoming, first), 10)
-        if (type(context) is not dict or set(context) != {'schema_version', 'session_id', 'challenge'}
+        expected = {'schema_version', 'session_id', 'challenge'}
+        if args.mode == 'profile':
+            expected |= {'parent_pid', 'parent_executable'}
+        elif args.mode == 'owner':
+            expected.add('parent')
+        if (type(context) is not dict or set(context) != expected
                 or type(context['schema_version']) is not int or context['schema_version'] != 1):
             return 1
         public_uuid(context['session_id']); public_uuid(context['challenge'])
@@ -39,11 +95,23 @@ def main():
         key = hashlib.sha256((user + '|' + str(profile).casefold()).encode('utf-8')).hexdigest()
         reply = dict(schema_version=1, session_id=context['session_id'], challenge=context['challenge'])
         if args.mode == 'profile':
+            if (type(context['parent_pid']) is not int or context['parent_pid'] <= 0
+                    or type(context['parent_executable']) is not str):
+                return 1
+            parent = _windows.process_identity(context['parent_pid'])
+            if (parent is None or parent.executable != os.path.normcase(
+                    str(Path(context['parent_executable']).resolve()))):
+                return 1
             reply.update(kind='profile', profile=str(profile), key=key, service_version=VERSION,
                          python_base=str(Path(getattr(sys, '_base_executable', sys.executable)).resolve()),
-                         python_venv=str(Path(sys.executable).absolute()))
+                         python_venv=str(Path(sys.executable).absolute()),
+                         parent=dict(pid=parent.pid, executable=parent.executable, created=str(parent.created)))
             _bounded(lambda: _write_frame(outgoing, reply), 10)
             return 0
+        if args.mode == 'owner':
+            if args.profile is None or args.model_dir is None:
+                return 1
+            return serve_with_parent_lease(profile, args.model_dir, context['parent'])
         from atom_search.service.client import ServiceClient, read_owner_state
         endpoint = profile / 'engine' / 'runtime' / 'endpoint.json'
         client = ServiceClient(endpoint, None)
@@ -88,4 +156,8 @@ def main():
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    code = main()
+    if code and sys.argv[1:2] == ['owner']:
+        # Preserve headless's terminal bounded failure, including outstanding native workers.
+        os._exit(code)
+    raise SystemExit(code)

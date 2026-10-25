@@ -4,20 +4,24 @@ P4 transport/lifecycle source slice: bounded TS broker frames and a private
 MAIN-owned Python adapter reuse P2 identity/nonce and read-only owner IPC proof;
 spawned/attached mode never grants mutation rights. One canonical user/profile
 session owns the broker and any verified source-process control lease; windows
-share it, close-to-tray differs from quit, and EOF covers parent crash/shutdown.
+share it, and close-to-tray differs from quit. A verified parent-process handle
+lease covers parent death; private control EOF requests graceful shutdown.
 The next package boundary belongs to the CI/Task 3 owner, not this source slice.
 Live inputs: Node 24.22.1/Electron 45, pinned CPython 3.12.10 venv and verified PG
 payload/wheels under the existing loaded standard-user/DPAPI CI job; source
 PYTHONPATH uses src and packages/atom-search-core/src, with a missing-model fixture.
 Required cases cover scopes/revisions/errors, 64 pending/frame bounds, owner proof,
 simultaneous views/launches, crash/reconnect/stale replies, attached-safe release
-and source-parent orphan EOF. Packaging/frozen/native/Win10 remain separate gates.
+and source-parent orphan lease/restart. Packaging/frozen/native/Win10 remain separate gates.
 Unpackaged MAIN now resolves the existing P2 user/profile through the fixed source
 adapter before the Electron singleton lock. Its inherited-pipe ready reply uses
 P2 nonce/version/process checks and owner-only read IPC; it contains no credentials.
 Windows share one verified broker lane, and correlated transport errors preserve
-unknown mutation outcomes without retry. A retained source-child EOF lease covers
-quit and parent death; attached owners have no stop channel. Query recovery uses
+unknown mutation outcomes without retry. The private source owner helper reuses
+headless serve/close and watches the exact bootstrap-verified MAIN PID, executable
+and creation time through a retained Windows handle before owner composition.
+Parent exit and control EOF share its stop event; a mismatched parent is refused
+before a claim is created. Attached owners have no stop channel. Query recovery uses
 only sessionStorage in the nonpersistent window partition. Frozen CLI/package
 launch remains unwired; a packaged candidate still fails closed without a port.
 

@@ -54,7 +54,8 @@ test('correlated transport failures retain uncertainty without retrying a mutati
   for (const code of ['service_unavailable', 'request_timeout', 'service_identity_mismatch',
     'authentication_required', 'access_denied', 'revision_conflict', 'invalid_request']) {
     const profile = { profile: __dirname, key: 'b'.repeat(64), serviceVersion: '0.2.0',
-      pythonBase: process.execPath, pythonVenv: process.execPath };
+      pythonBase: process.execPath, pythonVenv: process.execPath,
+      parent: { pid: process.pid, executable: process.execPath, created: '1' } };
     const client = new ServiceBridgeClient({ spawnBroker: () => spawn(process.execPath,
       [join(__dirname, 'fixtures/correlated-error-broker.cjs'), profile.profile, profile.key, code],
       { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }) });
@@ -76,7 +77,8 @@ test('correlated transport failures retain uncertainty without retrying a mutati
 
 test('closing during handshake refuses a real child ready reply arriving after EOF', async () => {
   const profile = { profile: __dirname, key: 'c'.repeat(64), serviceVersion: '0.2.0',
-    pythonBase: process.execPath, pythonVenv: process.execPath };
+    pythonBase: process.execPath, pythonVenv: process.execPath,
+    parent: { pid: process.pid, executable: process.execPath, created: '1' } };
   const client = new ServiceBridgeClient({ spawnBroker: () => spawn(process.execPath,
     [join(__dirname, 'fixtures/correlated-error-broker.cjs'), profile.profile, profile.key, 'delayed_ready'],
     { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }) });
