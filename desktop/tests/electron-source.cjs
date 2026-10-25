@@ -102,7 +102,7 @@ if (!primary) {
     child.on('close', code => {
       clearTimeout(timer);
       predicates.owned_test_child_exit_zero = code === 0;
-      code === 0 ? accept() : reject(new Error('owned_test_child_failed'));
+      code === 0 ? accept(child.pid) : reject(new Error('owned_test_child_failed'));
     });
   });
   const edit = (window, text, submit) => window.webContents.executeJavaScript(`{
@@ -123,7 +123,7 @@ if (!primary) {
       assert.equal(first.connection.owner, true);
       if (orphan) {
         writeFileSync(join(artifacts, 'orphan-source.json'), JSON.stringify({ ok: true, source_commit: sourceCommit,
-          generation: first.connection.generation }));
+          generation: first.connection.generation, parent: profile.parent, owner_pid: first.connection.process.pid }));
         app.exit(0); // Deliberately omit release: the private inherited control pipe must reach EOF.
         return;
       }
@@ -267,11 +267,18 @@ if (!primary) {
       current = 'actual_parent_orphan_eof_and_next_start'; receipt(false);
       const orphanProfile = join(temporary, 'orphan profile');
       subphase = 'orphan_child_ensure_and_abrupt_exit'; receipt(false);
-      await runChild(['--profile', orphanProfile, '--orphan']);
+      const orphanParentPid = await runChild(['--profile', orphanProfile, '--orphan']);
       subphase = 'orphan_ready_receipt'; receipt(false);
       const orphanReady = JSON.parse(readFileSync(join(artifacts, 'orphan-source.json')));
       predicates.orphan_ready_current = orphanReady.ok === true && orphanReady.source_commit === sourceCommit;
       assert.equal(predicates.orphan_ready_current, true);
+      predicates.orphan_main_pid_matches_spawn = orphanReady.parent.pid === orphanParentPid;
+      predicates.orphan_main_executable_matches_spawn = orphanReady.parent.executable.toLowerCase() === process.execPath.toLowerCase();
+      predicates.orphan_owner_distinct_from_main = Number.isInteger(orphanReady.owner_pid)
+        && orphanReady.owner_pid > 0 && orphanReady.owner_pid !== orphanParentPid;
+      assert.equal(predicates.orphan_main_pid_matches_spawn, true);
+      assert.equal(predicates.orphan_main_executable_matches_spawn, true);
+      assert.equal(predicates.orphan_owner_distinct_from_main, true);
       assert.match(orphanReady.generation, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
       const oldGeneration = orphanReady.generation;
       const endpoint = join(orphanProfile, 'engine/runtime/endpoint.json');

@@ -55,6 +55,10 @@ export class SourceRuntime {
     }
     const child = spawn(profile.pythonBase, [join(this.root, 'desktop/src/ssearch_service_adapter.py'),
       'owner', '--profile', profile.profile, '--model-dir', this.modelDirectory], {
+      // Avoid libuv's Windows kill-on-parent-close job so the verified lease can drain P2.
+      // UV_PROCESS_DETACHED does not request CREATE_BREAKAWAY_FROM_JOB: outer CI containment remains.
+      // Keep the retained child/stdin referenced; release still awaits its clean exit.
+      detached: process.platform === 'win32',
       cwd: this.root, env: this.environment(profile), windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'],
     });
     child.stdin!.on('error', () => {});
