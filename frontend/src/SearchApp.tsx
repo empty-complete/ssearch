@@ -8,6 +8,7 @@ import { SearchController } from './searchController';
 import type { SearchService } from './bridge/types';
 import license from '../../LICENSE.txt?raw';
 import notices from '../THIRD_PARTY_NOTICES.txt?raw';
+import { builtinExtensions } from '../../desktop/src/extensions/registry';
 
 interface SearchAppProps {
   service: SearchService;
@@ -135,9 +136,9 @@ export function SearchApp({ service, preview = false, mode = 'application' }: Se
           Тема
           <select aria-label="Тема предпросмотра" value={theme}
             onChange={event => setTheme(event.target.value as Theme)}>
-            <option value="system">Как в системе</option>
-            <option value="light">Светлая</option>
-            <option value="dark">Тёмная</option>
+            {builtinExtensions.themePreviewModes.map(option => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
           </select>
         </label>
       </footer>

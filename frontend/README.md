@@ -4,6 +4,14 @@ P4 Task 2 builtin slice: trusted appearance metadata feeds the existing in-memor
 theme preview; next package boundary remains Task 3. Required source scenarios:
 canonical resolution, immutable output, duplicate/spoof/version/capability/namespace
 refusal, and unchanged theme/search behavior through the existing selector.
+`DesktopExtensionDescriptor` v1 and the pure builtin registry use the host's
+static appearance catalog. Supplied metadata must match that catalog exactly;
+resolution returns canonical frozen data, with no caller-selected permissions,
+namespace, code or handlers. Its sole UI capability is theme preview. The bounded
+`ssearch.appearance` namespace is metadata only; P2 remains the only settings writer.
+The selector keeps the same modes, labels, order and in-memory behavior. External
+loading/execution, service capabilities, P7 agent plugins and persisted settings
+are outside this registry contract. Source evidence and review are linked in the PR.
 
 Task 1 introduces React 19, HeroUI v3, Tailwind 4 and Vite independently of the
 desktop host. This is source implementation awaiting GitHub checks, independent
@@ -73,10 +81,9 @@ state/revision read before any user retry; the client never retries mutations.
 Task 2 source security uses the pinned [Electron 45 protocol](https://raw.githubusercontent.com/electron/electron/v45.0.0/docs/api/protocol.md),
 [contextBridge](https://raw.githubusercontent.com/electron/electron/v45.0.0/docs/api/context-bridge.md)
 and [security guidance](https://raw.githubusercontent.com/electron/electron/v45.0.0/docs/tutorial/security.md).
-GitHub RED for the asset boundary: run 40206580329 (original protocol spelling),
-then the exact `ssearch://` checkpoint c1565de. Targeted unit/browser and actual
-hidden/offscreen Electron tests are authored; their current commit still needs
-GitHub execution and one combined independent review. The Electron receipt records
+Assets/IPC source checks and independent review are recorded in [PR 4](https://github.com/empty-complete/ssearch/pull/4).
+New source slices require their own GitHub checks and combined review.
+The Electron receipt records
 actual versions and binary SHA256 in ignored test artifacts. It proves source
 interception/CSP/sender behavior with synthetic ports, not real broker authority,
 service lifecycle, package/installer/native acceptance or final Win10 support.

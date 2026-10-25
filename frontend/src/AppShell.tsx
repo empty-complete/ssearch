@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { MotionProvider } from './motion/MotionProvider';
+import type { ThemePreviewMode } from '../../desktop/src/extensions/contracts';
 
-export type Theme = 'light' | 'dark' | 'system';
+export type Theme = ThemePreviewMode;
 export type ShellMode = 'application' | 'bootstrapper';
 
 interface AppShellProps {
