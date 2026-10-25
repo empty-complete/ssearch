@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ssearch-core"
+version = "0.2.0"
+description = "Independent offline file catalog and retrieval for ssearch"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "MIT"
+license-files = ["LICENSE.txt"]
+authors = [{name = "Филипп Белобородов", email = "filipp.beloborodoff@yandex.ru"}]
+maintainers = [{name = "Филипп Белобородов", email = "filipp.beloborodoff@yandex.ru"}]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/empty-complete/ssearch"
+Releases = "https://github.com/empty-complete/ssearch/releases"
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]==3.3.6"]
+semantic = ["numpy==2.2.6", "onnxruntime==1.22.1", "tokenizers==0.21.4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+atom_search_core = ["py.typed"]

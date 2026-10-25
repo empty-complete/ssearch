@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "python_version": "3.12.10",
+  "postgresql_runtime": {
+    "url": "https://github.com/empty-complete/ssearch/releases/download/build-inputs-v1/postgresql-18.6-pgvector-0.8.7-windows-x64.zip",
+    "size": 64507448,
+    "sha256": "b0e233c612f1bc439ac6fbef31754287c4bc7b74358bac7b9f48c4c112d496d0",
+    "manifest_sha256": "251124be4489be559175cd1165c08d255bf42805d5e1f7f6dc112652cb5d4903"
+  },
+  "inno_setup": {
+    "version": "7.1.0",
+    "url": "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe",
+    "size": 14304168,
+    "sha256": "0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f",
+    "compiler_sha256": "d06ebd38f38e3cee60a3c50cc45bd449d77e0bc6a5cabc607ea9886808e4de1a"
+  }
+}

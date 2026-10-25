@@ -1,0 +1,25 @@
+name: Feature request
+description: Describe a task that ssearch could make easier.
+body:
+  - type: markdown
+    attributes:
+      value: English and Russian are welcome. Focus on the task and use invented examples instead of private company data.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the task and what makes it difficult today.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What would a useful result look like?
+      description: Give a small example of the desired behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Optional approach or alternatives
+      description: Suggest an approach or describe a workaround you have tried.

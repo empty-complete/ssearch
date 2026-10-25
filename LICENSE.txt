@@ -1,6 +1,7 @@
 MIT License
 
-Copyright (c) 2026 Филипп Белобородов (empty-complete)
+Copyright (c) 2026 empty-complete (Филипп Белобородов)
+Contact: filipp.beloborodoff@yandex.ru
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

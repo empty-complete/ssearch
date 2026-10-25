@@ -1,10 +1,62 @@
-# ssearch — Simple Search
+<p align="center">
+  <img src="resources/branding/atom-search.png" width="88" alt="ssearch icon">
+</p>
 
-Independent local document search for Windows 10/11, focused on large personal and shared disks.
+<h1 align="center">ssearch</h1>
+<p align="center"><strong>Simple Search</strong><br>Find the file you remember, even when you forget its name.</p>
 
-This repository is being prepared for the first public development build. Application code and Windows CI arrive through a reviewed pull request. Development builds are not yet a stable release.
+<p align="center">
+  <a href="LICENSE.txt"><img src="https://img.shields.io/badge/license-MIT-89b4fa" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/platform-Windows-74c7ec" alt="Platform: Windows">
+  <a href="https://github.com/empty-complete/ssearch/actions/workflows/windows-build.yml"><img src="https://github.com/empty-complete/ssearch/actions/workflows/windows-build.yml/badge.svg" alt="Windows build status"></a>
+</p>
 
-- Source license: MIT. Author: Филипп Белобородов ([empty-complete](https://github.com/empty-complete)).
-- Contact: filipp.beloborodoff@yandex.ru.
-- Windows installers will be published in [Releases](https://github.com/empty-complete/ssearch/releases).
-- Automated tests and builds run on GitHub Actions. Changes arrive through pull requests and are merged by an independent reviewer after required checks pass.
+<p align="center">
+  <a href="https://github.com/empty-complete/ssearch/releases">Releases</a> ·
+  <a href="https://github.com/empty-complete/ssearch/issues">Report a problem</a> ·
+  <a href="CONTRIBUTING.md">Contribute</a>
+</p>
+
+ssearch is an independent document search app for large personal and shared disks on Windows. Its index and search model run on your computer; searching does not require a cloud service. Network folders are optional sources, and accessing them still requires their network connection and your permissions.
+
+## When it helps
+
+- **Large disks and archives.** Search an index of selected personal or corporate folders instead of navigating a deep folder tree every time.
+- **Many files with the same name.** Distinguish documents such as `Specification.pdf` or `Contract.docx` by their project and full path.
+- **You remember the project or purpose.** Combine that context with a document type; local semantic search uses names, paths and metadata when the model is available.
+- **Projects have several names.** Confirmed, configured aliases connect a full project name with an abbreviation used in folder names.
+- **Files live in several places.** Search selected local folders and optional UNC/DFS shares, then reveal the result in Windows Explorer. The index and search stay local, with no mandatory cloud account.
+
+For example, a project called **Северный завод** may store a file at `СЗ/Вентиляция/Спецификация.pdf`. With **СЗ** configured as its project alias, you can search for `Северный завод спецификация вентиляции` and use the result's path to identify the right document.
+
+Current search uses file metadata and project context. Reading the contents of PDF/Word documents and searching AtomDB notes are planned capabilities.
+
+## Try it
+
+**The first public development installer is being prepared.** There is no Stable release yet. Windows 10/11 are the target platforms; final native acceptance is still pending. The `build-inputs-v1` release contains build dependencies, not an application installer.
+
+Once an application prerelease is available:
+
+1. Open [Releases](https://github.com/empty-complete/ssearch/releases) and read that build's notes.
+2. Download `ssearch-Setup-<version>.exe` from its assets and install it.
+3. Choose the folders to index, let the initial scan finish, then search and open a result in Explorer.
+
+Development installers come from reviewed source and GitHub Actions. Updates are currently manual; the planned automatic updater is not available yet.
+
+## Where it is heading
+
+The current implementation uses Python, PostgreSQL/pgvector and a Qt desktop interface. An Electron interface with React, HeroUI and TypeScript is planned around the same separate search service.
+
+Also planned: document-content indexing, a settings editor with custom theme palettes, and an optional AtomDB integration. These are roadmap items, not features promised by the current development build.
+
+## Contribute
+
+Bug reports, small fixes, search examples using synthetic files, and UI improvements are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the fork → pull request → CI → independent review workflow. English and Russian are both welcome.
+
+## License
+
+[MIT](LICENSE.txt) · Филипп Белобородов ([empty-complete](https://github.com/empty-complete))
+
+[filipp.beloborodoff@yandex.ru](mailto:filipp.beloborodoff@yandex.ru)
+
+You can use, modify and fork ssearch. Third-party components and assets keep their own licenses and notices.

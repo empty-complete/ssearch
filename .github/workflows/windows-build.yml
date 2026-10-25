@@ -1,0 +1,255 @@
+name: Windows build
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build scope; Full runs the entire suite once
+        type: choice
+        options: [full, quick]
+        default: full
+      test_targets:
+        description: 'Quick only: JSON array of existing test files/nodeids'
+        type: string
+        default: '[]'
+      publish:
+        description: Publish a development prerelease (Full on main only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: windows-2025
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      build: ${{ steps.scope.outputs.build }}
+      tested_sha: ${{ steps.scope.outputs.tested_sha }}
+      pr_number: ${{ steps.scope.outputs.pr_number }}
+      pr_head_repository: ${{ steps.scope.outputs.pr_head_repository }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number || 0 }}
+      EVENT_NAME: ${{ github.event_name }}
+      SOURCE_SHA: ${{ github.sha }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+    steps:
+      - id: scope
+        name: Keep documentation changes out of the binary build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Read-GitHubJson([string]$Endpoint) {
+            $response = gh api $Endpoint
+            if ($LASTEXITCODE -ne 0) { throw "GitHub API request failed: $Endpoint" }
+            return $response | ConvertFrom-Json
+          }
+          $required = $true
+          $prNumber = [int]$env:PR_NUMBER
+          $testedSha = $env:SOURCE_SHA
+          $headRepository = $env:GH_REPO
+          if ($env:EVENT_NAME -eq 'push') {
+            $associated = Read-GitHubJson "repos/$env:GH_REPO/commits/$env:SOURCE_SHA/pulls?per_page=100"
+            $merged = @($associated | Where-Object {
+              $_.merged_at -and $_.base.ref -eq 'main' -and $_.base.repo.full_name -eq $env:GH_REPO -and
+              $_.merge_commit_sha -eq $env:SOURCE_SHA
+            })
+            if ($merged.Count -ne 1) { throw 'Push is not one exact merged PR; use an explicit Full main workflow to publish.' }
+            $prNumber = [int]$merged[0].number
+          }
+          if ($prNumber -gt 0) {
+            $pr = Read-GitHubJson "repos/$env:GH_REPO/pulls/$prNumber"
+            if ($env:EVENT_NAME -eq 'push' -and (-not $pr.merged -or $pr.base.ref -ne 'main' -or
+                $pr.base.repo.full_name -ne $env:GH_REPO -or $pr.merge_commit_sha -ne $env:SOURCE_SHA)) {
+              throw 'Associated PR is not the exact merge on main.'
+            }
+            if ($env:EVENT_NAME -eq 'pull_request' -and $pr.head.sha -ne $env:PR_HEAD_SHA) {
+              throw 'PR head changed while classifying this run.'
+            }
+            $testedSha = $pr.head.sha
+            $headRepository = $pr.head.repo.full_name
+            if ($pr.changed_files -gt 0 -and $pr.changed_files -le 3000) {
+              $files = @(gh api --paginate "repos/$env:GH_REPO/pulls/$prNumber/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)')
+              if ($LASTEXITCODE -ne 0 -or $files.Count -lt $pr.changed_files) { throw 'Incomplete changed-file inventory.' }
+              $documentation = '^(README\.md|CONTRIBUTING\.md|AGENTS\.md|docs/.*\.md|\.github/(pull_request_template\.md|PULL_REQUEST_TEMPLATE/.*\.md|ISSUE_TEMPLATE/[^/]+\.(md|yml|yaml)))$'
+              $required = @($files | Where-Object { $_ -notmatch $documentation }).Count -gt 0
+            }
+          }
+          if ($testedSha -notmatch '^[0-9a-f]{40}$' -or $headRepository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+            throw 'Invalid source identity returned by GitHub.'
+          }
+          "build=$($required.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tested_sha=$testedSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "pr_number=$prNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "pr_head_repository=$headRepository" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.build == 'true' && github.event_name != 'push'
+    runs-on: windows-2025
+    timeout-minutes: 355
+    env:
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      BUILD_MODE: ${{ inputs.mode || 'full' }}
+      TEST_TARGETS_JSON: ${{ inputs.test_targets || '[]' }}
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: requirements.lock.txt
+      - name: Validate requested build scope
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targets = ConvertFrom-Json -InputObject $env:TEST_TARGETS_JSON -NoEnumerate
+          if ($targets -isnot [array] -or @($targets | Where-Object { $_ -isnot [string] }).Count) {
+            throw 'test_targets must be a JSON array of strings.'
+          }
+          if ($env:BUILD_MODE -eq 'full' -and $targets.Count -ne 0) { throw 'Full does not accept test targets.' }
+          if ($env:BUILD_MODE -eq 'quick' -and $targets.Count -eq 0) { throw 'Quick requires explicit targets.' }
+          if ($env:BUILD_MODE -notin @('full', 'quick')) { throw 'Unknown build mode.' }
+      - name: Prepare verified public inputs
+        shell: pwsh
+        run: python tools/prepare_ci.py
+      - name: Offline tests, frozen proofs and installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $parameters = @{
+            Development = $true
+            Python = '.venv/Scripts/python.exe'
+            ISCC = '.tools/InnoSetup7/ISCC.exe'
+          }
+          if ($env:BUILD_MODE -eq 'quick') {
+            $parameters.Quick = $true
+            $parameters.TestTargets = [string[]](ConvertFrom-Json -InputObject $env:TEST_TARGETS_JSON -NoEnumerate)
+          }
+          & ./tools/build.ps1 @parameters
+      - name: Export installer and public receipts only
+        shell: pwsh
+        run: |
+          $arguments = @('tools/export_ci_artifacts.py', '--commit', $env:SOURCE_SHA)
+          if ($env:BUILD_MODE -eq 'quick') { $arguments += '--quick' }
+          & ./.venv/Scripts/python.exe @arguments
+      - name: Retain reviewed build outputs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-${{ env.SOURCE_SHA }}-${{ inputs.mode || 'full' }}
+          path: |
+            artifacts/ci-export/ssearch-Setup-*.exe
+            artifacts/ci-export/build-manifest.json
+            artifacts/ci-export/test-receipt.json
+            artifacts/ci-export/ci-evidence.json
+            artifacts/ci-export/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    needs: [changes, build]
+    if: >-
+      always() && !cancelled() && needs.changes.outputs.build == 'true' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+        inputs.publish && inputs.mode == 'full' && needs.build.result == 'success'))
+    runs-on: windows-2025
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_SHA: ${{ github.sha }}
+      TESTED_SHA: ${{ needs.changes.outputs.tested_sha }}
+      PR_NUMBER: ${{ needs.changes.outputs.pr_number }}
+      PR_HEAD_REPOSITORY: ${{ needs.changes.outputs.pr_head_repository }}
+      RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: Publish this successful Full build as a development prerelease
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Read-GitHubJson([string]$Endpoint) {
+            $response = gh api $Endpoint
+            if ($LASTEXITCODE -ne 0) { throw "GitHub API request failed: $Endpoint" }
+            return $response | ConvertFrom-Json
+          }
+          if ($env:SOURCE_SHA -notmatch '^[0-9a-f]{40}$' -or $env:TESTED_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw 'Publication requires full commit identities.'
+          }
+          $buildRunId = $env:RUN_ID
+          if ([int]$env:PR_NUMBER -gt 0) {
+            $workflow = Read-GitHubJson "repos/$env:GH_REPO/actions/workflows/windows-build.yml"
+            $runs = Read-GitHubJson "repos/$env:GH_REPO/actions/workflows/$($workflow.id)/runs?event=pull_request&head_sha=$env:TESTED_SHA&status=success&per_page=100"
+            $matches = @($runs.workflow_runs | Where-Object {
+              $_.workflow_id -eq $workflow.id -and $_.path -eq '.github/workflows/windows-build.yml' -and
+              $_.event -eq 'pull_request' -and $_.status -eq 'completed' -and $_.conclusion -eq 'success' -and
+              $_.head_sha -eq $env:TESTED_SHA -and $_.head_repository.full_name -eq $env:PR_HEAD_REPOSITORY -and
+              @($_.pull_requests | Where-Object { $_.number -eq [int]$env:PR_NUMBER }).Count -gt 0
+            } | Sort-Object id -Descending)
+            if ($matches.Count -eq 0) { throw 'No successful build of this exact PR head; run Full on main explicitly.' }
+            $buildRunId = [string]$matches[0].id
+          }
+          $artifacts = Read-GitHubJson "repos/$env:GH_REPO/actions/runs/$buildRunId/artifacts"
+          $expectedName = "windows-${env:TESTED_SHA}-full"
+          $artifact = @($artifacts.artifacts | Where-Object { $_.name -eq $expectedName -and -not $_.expired })
+          if ($artifact.Count -ne 1) { throw 'Missing or ambiguous Full build artifact.' }
+          gh run download $buildRunId --name $expectedName --dir package
+          if ($LASTEXITCODE -ne 0) { throw 'Could not retrieve this run artifact.' }
+          $manifest = Get-Content -LiteralPath package/build-manifest.json -Raw | ConvertFrom-Json
+          if ($manifest.source_commit -ne $env:TESTED_SHA -or $manifest.full_suite_passed -ne $true -or $manifest.test_scope -ne 'full' -or
+              $manifest.app_version -notmatch '^\d+\.\d+\.\d+$') {
+            throw 'Publication requires the matching successful Full build.'
+          }
+          $testedCommit = Read-GitHubJson "repos/$env:GH_REPO/git/commits/$env:TESTED_SHA"
+          $mergedCommit = Read-GitHubJson "repos/$env:GH_REPO/git/commits/$env:SOURCE_SHA"
+          if ($testedCommit.tree.sha -notmatch '^[0-9a-f]{40}$' -or $testedCommit.tree.sha -ne $mergedCommit.tree.sha) {
+            throw 'Merged tree differs from the tested tree; run Full on main explicitly. No automatic rebuild or proof transfer.'
+          }
+          $installerName = "ssearch-Setup-$($manifest.app_version).exe"
+          $installer = Join-Path package $installerName
+          if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.installer.sha256) {
+            throw 'Installer checksum mismatch.'
+          }
+          $files = @($installer, 'package/build-manifest.json', 'package/test-receipt.json', 'package/ci-evidence.json', 'package/SHA256SUMS.txt')
+          $tag = "dev-${env:SOURCE_SHA}"
+          $notes = @"
+          Development build tested at commit $env:TESTED_SHA and published after integration at $env:SOURCE_SHA.
+          The exact Git tree hashes match: $($testedCommit.tree.sha). Attached receipts retain the original tested commit.
+
+          Full tests and frozen PostgreSQL/application proofs passed on Windows Server 2025 x64.
+          Windows 10/11 native and visual acceptance remains open. This is not a Stable release or a signed update feed.
+
+          Source, installer checksums and public receipts are attached. Build workflow: https://github.com/$env:GH_REPO/actions/runs/$buildRunId
+          "@
+          Set-Content -LiteralPath release-notes.md -Value $notes -Encoding utf8
+          gh release view $tag --json tagName *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'A prerelease already exists for this exact commit; preserving its assets.'
+            exit 0
+          }
+          gh release create $tag @files --target $env:SOURCE_SHA --prerelease --title "ssearch development $($env:SOURCE_SHA.Substring(0, 8))" --notes-file release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the development prerelease.' }

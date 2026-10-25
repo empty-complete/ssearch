@@ -1,0 +1,37 @@
+{
+  "example": true,
+  "report": {
+    "example": true,
+    "schema_version": 1,
+    "id": "61ec26c4-7997-4d93-8f5f-68295f5b58d8",
+    "operation_id": "example-repair-operation",
+    "plan_id": "example-plan",
+    "started_at": "2026-10-20T08:28:00Z",
+    "finished_at": "2026-10-20T08:29:00Z",
+    "kind": "repair",
+    "code": "SOURCE_UNREACHABLE",
+    "symptoms": ["The last directory enumeration could not reach the configured source."],
+    "app_version": "0.2.0-example",
+    "api_version": "1",
+    "config_version": {"schema_version": 1, "revision": 7},
+    "source_id": "example-documents",
+    "config_diff": {"redacted": true, "changes": []},
+    "actions": [{"id": "probe-source", "type": "retry_source_probe", "stage": "completed", "timeout_seconds": 10, "error_code": "SOURCE_UNREACHABLE"}],
+    "health_before": {"observed_at": "2026-10-20T08:27:00Z", "source_availability": "unreachable", "index_generation": 12},
+    "health_after": {"observed_at": "2026-10-20T08:29:00Z", "source_availability": "unreachable", "index_generation": 12},
+    "verification": {"method": "bounded_directory_probe", "checked_at": "2026-10-20T08:29:00Z", "passed": false, "error_code": "SOURCE_UNREACHABLE"},
+    "rollback": {"required": false, "performed": false, "reason": "No configuration or index changes were made."},
+    "result": "not_fixed",
+    "agent_reason": {"code": "source_recheck_requested", "evidence_refs": ["health:example-before"]},
+    "agent_explanation": "The bounded retry did not restore access. The owner must check the source.",
+    "details_truncated": false
+  },
+  "delivery": {
+    "status": "queued",
+    "remote_directory": null,
+    "reason": "destination_not_configured",
+    "attempts": 0,
+    "next_attempt_at": null,
+    "sent_at": null
+  }
+}
