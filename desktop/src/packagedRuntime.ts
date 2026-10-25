@@ -83,7 +83,8 @@ export class PackagedRuntime implements ServiceRuntime {
 
   spawnOwner(profile: ProfileIdentity): ReturnType<ServiceRuntime['spawnOwner']> {
     this.verifyProfile(profile);
-    const child = this.host.owner(this.image, ['--serve', '--parent-lease', '--data-dir', profile.profile], {
+    const child = this.host.owner(this.image, ['--serve', '--parent-lease', '--data-dir', profile.profile,
+      '--model-dir', join(this.root, 'service/_internal/models')], {
       // Retain outer job containment while allowing the verified parent lease to close P2 gracefully.
       detached: process.platform === 'win32',
       cwd: this.root, env: this.environment(), windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'],

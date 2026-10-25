@@ -61,7 +61,7 @@
     "desktop": {
       "name": "ssearch-desktop",
       "productName": "ssearch",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "private": true,
       "license": "MIT",
       "description": "Simple Search local desktop shell",
@@ -106,7 +106,7 @@
     },
     {
       "path": "desktop/package-lock.json",
-      "sha256": "3729e8d09ee677634717c5b2aab25c700b633f6e1496b779f139e1cf11500771"
+      "sha256": "4495c9e3b1e5b9494ec00c4fc2302544f8ced2a7e6acf5989fb4f0d199a65a65"
     }
   ],
   "snapshots": [

@@ -78,7 +78,8 @@ test('packaged runtime uses only fixed installed service modes and preserves pri
     assert.deepEqual(f.calls.map(call => [call.role, call.executable, call.args]), [
       ['profile', f.image, ['--profile-info', '--data-dir', f.profilePath]],
       ['broker', f.image, ['--desktop-client', '--data-dir', f.profilePath]],
-      ['owner', f.image, ['--serve', '--parent-lease', '--data-dir', f.profilePath]],
+      ['owner', f.image, ['--serve', '--parent-lease', '--data-dir', f.profilePath,
+        '--model-dir', join(f.root, 'service/_internal/models')]],
     ]);
     for (const call of f.calls) {
       assert.equal((call.options as { cwd: string }).cwd, f.root);
