@@ -660,7 +660,7 @@ def test_project_filtered_ann_recall_and_index_plan(pg_connections):
                 recall_mean=statistics.mean(recalls), forbidden=forbidden, counts=counts,
                 distance_queries_per_call=distance_queries, plans=plans, exact_plan=exact_plan,
                 p50_ms=statistics.median(latencies), p95_ms=float(np.percentile(latencies, 95)))
-    evidence = Path(__file__).resolve().parents[2] / '.superpowers/sdd/2026-10-20-p3-project-search/task-4'
+    evidence = Path(__file__).resolve().parents[2] / 'artifacts/ci-benchmarks/project-search'
     evidence.mkdir(parents=True, exist_ok=True)
     with (evidence / ('project-ann-' + uuid.uuid4().hex[:12] + '.json')).open('x', encoding='utf-8') as stream:
         json.dump(report, stream, indent=2)

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -19,6 +20,39 @@ def load_tool(name):
 
 prepare = load_tool('prepare_ci')
 exporter = load_tool('export_ci_artifacts')
+
+
+@pytest.mark.parametrize('hard_timeout, expected_exit', [(False, 0), (True, 124)])
+def test_source_pytest_reports_current_test_and_stacks_without_local_values(tmp_path, hard_timeout, expected_exit):
+    """Exercise actual threads/pytest in a subprocess, including the hard exit."""
+    # Confine nested discovery even when CI's tmp_path lives under the checkout.
+    (tmp_path / 'pytest.ini').write_text('[pytest]\n', encoding='utf-8')
+    target = tmp_path / 'test_slow_source.py'
+    target.write_text(
+        'import time\n'
+        'def test_slow_source(capfd):\n'
+        '    private_value = "PRIVATE_LOCAL_SENTINEL"\n'
+        f'    time.sleep({10 if hard_timeout else 0.5})\n', encoding='utf-8')
+    wrapper = Path(__file__).parents[1] / 'tools/ci_pytest.py'
+    script = (
+        'import importlib.util, sys\n'
+        'spec = importlib.util.spec_from_file_location("ci_pytest", sys.argv[1])\n'
+        'module = importlib.util.module_from_spec(spec)\n'
+        'spec.loader.exec_module(module)\n'
+        'raise SystemExit(module.main([sys.argv[2]], dump_after=0.1, timeout=5))\n')
+    environment = os.environ.copy()
+    environment['PYTEST_ADDOPTS'] = ''
+    environment.pop('PYTEST_PLUGINS', None)
+    environment['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+    result = subprocess.run([sys.executable, '-u', '-c', script, str(wrapper), str(target)],
+                            cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=15)
+    assert result.returncode == expected_exit
+    starting = 'CI pytest starting: test_slow_source.py::test_slow_source\n'
+    assert starting in result.stderr
+    assert 'CI pytest stack after: 0.1s' in result.stderr[result.stderr.index(starting):]
+    assert 'in test_slow_source' in result.stderr
+    assert 'PRIVATE_LOCAL_SENTINEL' not in result.stdout + result.stderr
+    assert ('CI pytest hard timeout: 5s' in result.stderr) is hard_timeout
 
 
 @pytest.mark.parametrize('child', [False, True])
