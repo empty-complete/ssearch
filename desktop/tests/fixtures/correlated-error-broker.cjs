@@ -20,7 +20,7 @@ process.stdin.on('data', chunk => {
         generation: '00000000-0000-0000-0000-000000000001',
         installation_id: '00000000-0000-0000-0000-000000000002', owner: true,
         capabilities: ['settings_validate', 'settings_apply', 'start_catalog', 'cancel_job'],
-        process: { pid: 1, executable: process.execPath, created: '1' },
+        process: { pid: process.argv[5] ? Number(process.argv[5]) : 1, executable: process.execPath, created: '1' },
         broker: { pid: process.pid, executable: process.execPath, created: '1' } };
       if (process.argv[4] === 'delayed_ready') setTimeout(() => send(ready), 50);
       else send(ready);

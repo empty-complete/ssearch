@@ -45,18 +45,24 @@ export class ServiceLifecycle implements ServicePort {
     const deadline = Date.now() + 120_000;
     let attemptedStart = false;
     while (!this.stopped && Date.now() < deadline) {
+      // Keep this exact retained child even if its exit callback clears ownerChild during handshake.
+      const handshakeOwner = this.ownerChild;
       const bridge = new ServiceBridgeClient(this.runtime);
       this.connecting = bridge;
       try {
         const connection = await bridge.connect(this.profile);
         if (this.stopped) { await bridge.close(); throw new Error('service_stopping'); }
-        if (!bridge.authority) throw new Error('service_unavailable');
+        if (!bridge.authority || (handshakeOwner && exited(handshakeOwner)
+          && connection.process.pid === handshakeOwner.pid)) throw new Error('service_unavailable');
         if (this.ownerChild && !exited(this.ownerChild) && connection.process.pid !== this.ownerChild.pid) {
           // Our concurrent source entry attached; closing its pipe cannot stop the discovered owner.
           this.ownerChild.stdin?.end();
           await waitExit(this.ownerChild, 50_000);
           this.ownerChild = null;
         }
+        // Closing an attached startup helper above awaited another event-loop turn.
+        if (!bridge.authority || (handshakeOwner && exited(handshakeOwner)
+          && connection.process.pid === handshakeOwner.pid)) throw new Error('service_unavailable');
         const owned = this.ownerChild !== null && !exited(this.ownerChild) && connection.process.pid === this.ownerChild.pid;
         this.ownedGeneration = owned ? connection.generation : null;
         this.bridge = bridge;
