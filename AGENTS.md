@@ -13,16 +13,19 @@ third-party notices and the original application icon.
   PostgreSQL/pgvector. The planned desktop is Electron main/preload in TypeScript
   with React/HeroUI/Vite. Preserve the service/API boundary; UI windows do not
   create another owner of the model, database or queue.
-- Existing atom_search imports, profile IDs, pipe names and installer identity
-  remain for compatibility. Preserve user settings and indexed data on upgrade.
-  Do not globally rename these identifiers to change product branding.
+- Legacy `atom_search` imports, profile IDs, pipe names and installer identity
+  are temporary compatibility names pending a controlled migration to ssearch.
+  That separate gated migration must preserve user profiles, indexed data, IPC
+  owner discovery and upgrades of existing installations. Coordinate changes
+  across active branches rather than mass-renaming these identifiers.
 - Future Electron renderers must be sandboxed and context-isolated, with only a
   typed allowlist bridge; no Node, credentials, filesystem, SQL or shell access.
 - Settings use one versioned JSON contract, validation and atomic coordinator.
   Credentials and runtime state stay separate. New profiles select their own
   folders; never insert company shares or scan an arbitrary default folder.
-- Document-body indexing, AtomDB integration, extension loading and automatic
-  update installation are future capabilities. Do not claim they work now.
+- Document-body indexing, an optional integration for shared notes, extension
+  loading and automatic update installation are future capabilities. Do not
+  claim they work now.
   The configured GitHub update source does not establish a trusted update feed;
   signed update/recovery and native platform acceptance remain required.
 

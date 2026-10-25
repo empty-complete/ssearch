@@ -29,7 +29,7 @@ ssearch is an independent document search app for large personal and shared disk
 
 For example, a project called **Северный завод** may store a file at `СЗ/Вентиляция/Спецификация.pdf`. With **СЗ** configured as its project alias, you can search for `Северный завод спецификация вентиляции` and use the result's path to identify the right document.
 
-Current search uses file metadata and project context. Reading the contents of PDF/Word documents and searching AtomDB notes are planned capabilities.
+Current search uses file metadata and project context. Document-content indexing and an optional integration for shared notes are planned capabilities.
 
 ## Try it
 
@@ -47,7 +47,7 @@ Development installers come from reviewed source and GitHub Actions. Updates are
 
 The current implementation uses Python, PostgreSQL/pgvector and a Qt desktop interface. An Electron interface with React, HeroUI and TypeScript is planned around the same separate search service.
 
-Also planned: document-content indexing, a settings editor with custom theme palettes, and an optional AtomDB integration. These are roadmap items, not features promised by the current development build.
+Also planned: document-content indexing, a settings editor with custom theme palettes, and an optional integration for shared notes. These are roadmap items, not features promised by the current development build.
 
 ## Contribute
 
