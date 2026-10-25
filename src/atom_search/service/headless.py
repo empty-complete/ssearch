@@ -13,11 +13,12 @@ import threading
 import time
 
 
-def _wait_control_eof(stream):
-    """Wait on the inherited Windows pipe without holding a CRT stdin lock.
+def _wait_control_eof(stream, stop):
+    """Observe the inherited pipe without leaving a synchronous read pending.
 
-    Native libraries imported during composition can inspect CRT descriptors;
-    a simultaneous buffered stdin read must not prevent their initialization.
+    Native DLL initialization can query stdin and block behind a pending read
+    (numpy/numpy#24290). Peek, then consume only bytes already available. This
+    thread is the pipe's sole reader; no control message grants any authority.
     This handle belongs to Python's stream and is never closed here.
     """
     import ctypes as c
@@ -25,11 +26,24 @@ def _wait_control_eof(stream):
     import msvcrt
     from atom_search.runtime import _windows
     handle = msvcrt.get_osfhandle(stream.fileno())
-    read = _windows._api(_windows._dll('kernel32'), 'ReadFile',
+    kernel = _windows._dll('kernel32')
+    if _windows._api(kernel, 'GetFileType', [w.HANDLE], w.DWORD)(handle) != 3:
+        raise _windows.WindowsError('control_pipe_required')
+    peek = _windows._api(kernel, 'PeekNamedPipe',
+        [w.HANDLE, c.c_void_p, w.DWORD, c.POINTER(w.DWORD),
+         c.POINTER(w.DWORD), c.POINTER(w.DWORD)], w.BOOL)
+    read = _windows._api(kernel, 'ReadFile',
         [w.HANDLE, c.c_void_p, w.DWORD, c.POINTER(w.DWORD), c.c_void_p], w.BOOL)
-    buffer, transferred = c.create_string_buffer(1), w.DWORD()
-    while True:
-        if not read(handle, buffer, 1, c.byref(transferred), None):
+    buffer, transferred, available = c.create_string_buffer(4096), w.DWORD(), w.DWORD()
+    while not stop.is_set():
+        if not peek(handle, None, 0, None, c.byref(available), None):
+            if c.get_last_error() in (109, 38):
+                return
+            raise _windows.WindowsError('control_read_failed')
+        if not available.value:
+            stop.wait(.05)
+            continue
+        if not read(handle, buffer, min(available.value, len(buffer)), c.byref(transferred), None):
             if c.get_last_error() in (109, 38):  # Broken pipe / end of file.
                 return
             raise _windows.WindowsError('control_read_failed')
@@ -48,8 +62,6 @@ def serve(profile: Path, *, model_dir: Path | None = None, stop: threading.Event
     if startup_timeout <= 0 or shutdown_timeout <= 0:
         raise ValueError('positive_deadline_required')
     from atom_search.paths import model_path
-    # Lazy import keeps cold service/broker imports independent of composition.
-    from .owner import open_service_owner
     stop = stop if stop is not None else threading.Event()
     ready, done = threading.Event(), threading.Event()
     outcome = queue.Queue(maxsize=1)
@@ -58,6 +70,9 @@ def serve(profile: Path, *, model_dir: Path | None = None, stop: threading.Event
         owner = None
         code = 1
         try:
+            # Native dependency imports are part of startup's bounded work,
+            # not unbounded work on the thread observing the deadline.
+            from .owner import open_service_owner
             owner = open_service_owner(Path(profile), model_dir if model_dir is not None else model_path())
             if not stop.is_set():
                 owner.start()
@@ -110,7 +125,7 @@ def main(argv=None) -> int:
     if args.control_stdin:
         def control():
             try:
-                _wait_control_eof(sys.stdin)  # Only EOF, no commands or settings writer.
+                _wait_control_eof(sys.stdin, stop)  # Only EOF, no commands or settings writer.
             except Exception:
                 control_failed.set()  # Suppress threading.excepthook/private traceback.
             finally:

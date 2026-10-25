@@ -9,6 +9,33 @@ import re
 import pytest
 
 
+def test_startup_dependency_import_is_inside_the_deadline(monkeypatch, tmp_path):
+    import builtins
+    import threading
+    from atom_search.service.headless import serve
+    entered, release, finished = (threading.Event() for _ in range(3))
+    original = builtins.__import__
+
+    def delayed(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == 'owner' and level == 1 and (globals or {}).get('__package__') == 'atom_search.service':
+            entered.set()
+            try:
+                release.wait(10)
+                raise ImportError('controlled dependency startup failure')
+            finally:
+                finished.set()
+        return original(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, '__import__', delayed)
+    started = time.monotonic()
+    try:
+        assert serve(tmp_path / 'profile', startup_timeout=.2, shutdown_timeout=.1) == 1
+        assert entered.is_set() and time.monotonic() - started < 2
+    finally:
+        release.set()
+        assert finished.wait(10)
+
+
 def test_stop_during_blocked_start_uses_shutdown_budget(tmp_path, monkeypatch):
     import threading
     from atom_search.service.headless import serve
