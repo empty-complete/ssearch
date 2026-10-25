@@ -262,7 +262,8 @@ def test_restored_cluster_keeps_rows_and_vector_search(tmp_path, monkeypatch, pr
                 "locale": (b"invalid locale", b"could not create locale", b"locale is not supported", b"could not determine locale"),
                 "bootstrap_password_file": (b"password file", b"--pwfile", b"bootstrap-"),
             }
-            data_path = str(Path(arguments[arguments.index("-D") + 1]).absolute())
+            data_path = Path(arguments[arguments.index("-D") + 1])
+            data_path = str((data_path if data_path.is_absolute() else Path(directory) / data_path).absolute())
             import ctypes
             get_acp = ctypes.WinDLL("kernel32").GetACP
             get_acp.argtypes = []
