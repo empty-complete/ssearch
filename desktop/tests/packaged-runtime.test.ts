@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
@@ -11,7 +11,7 @@ import { BrokerFrameDecoder, encodeBrokerFrame } from '../src/brokerFrames.js';
 
 // Synthetic launch seam proves path/flag/correlation policy, never frozen authentication.
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'ssearch package Кириллица '));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ssearch package Кириллица ')));
   const image = join(root, 'service/ssearch-service.exe');
   mkdirSync(join(root, 'service/_internal/models'), { recursive: true });
   writeFileSync(image, 'synthetic image; never executed');
@@ -127,4 +127,42 @@ test('missing service/model closure and reparse escapes refuse launch', () => {
     assert.throws(() => new PackagedRuntime({ installationRoot: f.root, expectedServiceVersion: '0.2.0' }, f.processes));
     assert.equal(f.calls.length, 0);
   } finally { f.cleanup(); rmSync(foreign, { recursive: true, force: true }); }
+});
+
+test('verified profile cannot choose a different image and later resource removal prevents launch', () => {
+  const f = fixture();
+  try {
+    const runtime = new PackagedRuntime({ installationRoot: f.root, expectedServiceVersion: '0.2.0' }, f.processes);
+    const profile = runtime.profileIdentitySync(f.profilePath);
+    assert.throws(() => runtime.spawnOwner({ ...profile, pythonBase: process.execPath }),
+      { message: 'service_identity_mismatch' });
+    assert.equal(f.calls.length, 1);
+    rmSync(f.image);
+    assert.throws(() => runtime.spawnBroker(profile));
+    assert.equal(f.calls.length, 1);
+  } finally { f.cleanup(); }
+});
+
+test('frozen launches ignore external Python and Node bootstrap environment', () => {
+  const f = fixture();
+  const keys = ['PYTHONPATH', 'PYTHONHOME', '__PYVENV_LAUNCHER__', '_PYI_APPLICATION_HOME_DIR', 'NODE_OPTIONS'];
+  const previous = keys.map(key => process.env[key]);
+  try {
+    keys.forEach(key => { process.env[key] = key === 'NODE_OPTIONS' ? '--no-warnings' : 'synthetic-external-runtime'; });
+    const runtime = new PackagedRuntime({ installationRoot: f.root, expectedServiceVersion: '0.2.0' }, f.processes);
+    const profile = runtime.profileIdentitySync();
+    runtime.spawnBroker(profile);
+    runtime.spawnOwner(profile);
+    for (const call of f.calls) {
+      const environment = (call.options as { env: NodeJS.ProcessEnv }).env;
+      for (const key of keys) assert.equal(environment[key], undefined);
+    }
+    assert.deepEqual(f.calls[0].args, ['--profile-info']);
+  } finally {
+    keys.forEach((key, index) => {
+      if (previous[index] === undefined) delete process.env[key];
+      else process.env[key] = previous[index];
+    });
+    f.cleanup();
+  }
 });
