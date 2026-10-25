@@ -63,5 +63,6 @@ test('empty, partial, unavailable and reconnect preserve the current query', asy
   await expect(page.getByRole('alert')).toBeVisible(); await expect(input).toHaveValue('ошибка');
   await page.getByRole('button', { name: 'Повторить соединение' }).click();
   await expect(input).toHaveValue('ошибка');
+  await expect(page.getByRole('alert')).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('error.png'), fullPage: true });
 });
