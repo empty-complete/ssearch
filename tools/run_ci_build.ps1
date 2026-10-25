@@ -51,98 +51,14 @@ function Invoke-CiChild {
         throw 'CI_STANDARD_USER_REQUIRED'
     }
 
-    # Start-Process passes an explicit caller environment even with a loaded
-    # profile. Rebuild this process's environment for the verified token before
-    # Shell queries; never infer AppData paths or accept parent user folders.
+    # The parent requests the user's environment at process creation. Resolve
+    # folders for that verified identity without inferred paths or repairs.
     Add-Type -TypeDefinition @'
 using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Runtime.InteropServices;
-using Microsoft.Win32;
 public static class SsearchCiKnownFolders {
-    [DllImport("userenv.dll", ExactSpelling = true, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    static extern bool CreateEnvironmentBlock(out IntPtr block, SafeHandle token, [MarshalAs(UnmanagedType.Bool)] bool inherit);
-    [DllImport("userenv.dll", ExactSpelling = true, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    static extern bool DestroyEnvironmentBlock(IntPtr block);
-    public static Dictionary<string, string> EnvironmentFor(SafeHandle token) {
-        if (token == null || token.IsInvalid || token.IsClosed)
-            throw new InvalidOperationException("CI_PROFILE_TOKEN_REQUIRED");
-        IntPtr block = IntPtr.Zero;
-        if (!CreateEnvironmentBlock(out block, token, false))
-            throw new InvalidOperationException("CI_USER_ENVIRONMENT_FAILED winerror=" + Marshal.GetLastWin32Error());
-        bool complete = false;
-        try {
-            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            int start = 0;
-            for (int offset = 0; offset < 1048576; offset++) {
-                if (Marshal.ReadInt16(block, checked(offset * 2)) != 0) continue;
-                if (offset == start) { complete = true; return values; }
-                string entry = Marshal.PtrToStringUni(IntPtr.Add(block, checked(start * 2)), offset - start);
-                int separator = entry.IndexOf('=');
-                // Windows also carries special =drive entries, which are not
-                // named variables accepted by SetEnvironmentVariable.
-                if (separator > 0) values[entry.Substring(0, separator)] = entry.Substring(separator + 1);
-                start = offset + 1;
-            }
-            throw new InvalidOperationException("CI_USER_ENVIRONMENT_TOO_LARGE");
-        } finally {
-            if (!DestroyEnvironmentBlock(block) && complete)
-                throw new InvalidOperationException("CI_USER_ENVIRONMENT_CLEANUP_FAILED winerror=" + Marshal.GetLastWin32Error());
-        }
-    }
     [DllImport("shell32.dll", ExactSpelling = true)]
     static extern int SHGetKnownFolderPath(ref Guid id, uint flags, SafeHandle token, out IntPtr path);
-    public static Dictionary<string, bool> LocalRegistryChecks(string sid, string current, string osDefault) {
-        try {
-            var checks = new Dictionary<string, bool>();
-            using (var users = RegistryKey.OpenBaseKey(RegistryHive.Users, RegistryView.Default)) {
-                foreach (string name in new[] { "User Shell Folders", "Shell Folders" }) {
-                    using (var key = users.OpenSubKey(sid + @"\Software\Microsoft\Windows\CurrentVersion\Explorer\" + name, false)) {
-                        object raw = key?.GetValue("Local AppData", null, RegistryValueOptions.DoNotExpandEnvironmentNames);
-                        if (raw != null && !(raw is string)) throw new InvalidOperationException();
-                        string expanded = raw == null ? null : Environment.ExpandEnvironmentVariables((string)raw);
-                        string prefix = name == "User Shell Folders" ? "user_shell" : "shell";
-                        checks[prefix + "_present"] = raw != null;
-                        checks[prefix + "_expanded_equals_current"] = expanded != null && String.Equals(expanded, current, StringComparison.OrdinalIgnoreCase);
-                        checks[prefix + "_expanded_equals_OS_default"] = expanded != null && String.Equals(expanded, osDefault, StringComparison.OrdinalIgnoreCase);
-                    }
-                }
-            }
-            return checks;
-        } catch (Exception error) {
-            throw new InvalidOperationException("CI_LOCAL_REGISTRY_READ_FAILED hresult=" + error.HResult.ToString("X8"));
-        }
-    }
-    public static string InitializeLocal(string profile, string candidate) {
-        try {
-            if (!Path.IsPathFullyQualified(profile) || !Path.IsPathFullyQualified(candidate))
-                throw new InvalidOperationException("CI_DEFAULT_LOCAL_OUTSIDE_PROFILE");
-            string ownedProfile = Path.GetFullPath(profile).TrimEnd(Path.DirectorySeparatorChar);
-            string target = Path.GetFullPath(candidate);
-            if (!target.StartsWith(ownedProfile + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("CI_DEFAULT_LOCAL_OUTSIDE_PROFILE");
-            for (var entry = new DirectoryInfo(target); entry != null; entry = entry.Parent) {
-                try {
-                    FileAttributes attributes = File.GetAttributes(entry.FullName);
-                    if ((attributes & FileAttributes.ReparsePoint) != 0)
-                        throw new InvalidOperationException("CI_DEFAULT_LOCAL_REPARSE");
-                    if ((attributes & FileAttributes.Directory) == 0)
-                        throw new InvalidOperationException("CI_DEFAULT_LOCAL_NOT_DIRECTORY");
-                } catch (FileNotFoundException) {
-                } catch (DirectoryNotFoundException) {
-                }
-            }
-            Directory.CreateDirectory(target);
-            return target;
-        } catch (Exception error) when (error is IOException || error is UnauthorizedAccessException ||
-                                       error is ArgumentException || error is NotSupportedException ||
-                                       error is System.Security.SecurityException) {
-            throw new InvalidOperationException("CI_DEFAULT_LOCAL_INITIALIZATION_FAILED hresult=" + error.HResult.ToString("X8"));
-        }
-    }
     public static string Get(Guid id, SafeHandle token, uint flags) {
         if (token == null || token.IsInvalid || token.IsClosed)
             throw new InvalidOperationException("CI_PROFILE_TOKEN_REQUIRED");
@@ -159,24 +75,6 @@ public static class SsearchCiKnownFolders {
 }
 '@
     $token = $identity.AccessToken
-    $ciContext = @{}
-    foreach ($name in @('GITHUB_ACTIONS', 'GITHUB_WORKSPACE', 'SOURCE_SHA', 'BUILD_MODE',
-                        'TEST_TARGETS_JSON', 'PYTHONUTF8', 'PIP_DISABLE_PIP_VERSION_CHECK')) {
-        $ciContext[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
-    }
-    $userEnvironment = [SsearchCiKnownFolders]::EnvironmentFor($token)
-    foreach ($item in @(Get-ChildItem Env:)) {
-        [Environment]::SetEnvironmentVariable($item.Name, $null, 'Process')
-    }
-    foreach ($item in $userEnvironment.GetEnumerator()) {
-        if (-not $item.Key.StartsWith('PG', [StringComparison]::OrdinalIgnoreCase) -and
-            -not $item.Key.StartsWith('GIT_CONFIG_', [StringComparison]::OrdinalIgnoreCase)) {
-            [Environment]::SetEnvironmentVariable($item.Key, $item.Value, 'Process')
-        }
-    }
-    foreach ($item in $ciContext.GetEnumerator()) {
-        [Environment]::SetEnvironmentVariable($item.Key, $item.Value, 'Process')
-    }
     # Lexical lookup exposes only containment booleans before touching a folder.
     # DONT_VERIFY is not acceptance: flags0 verification is mandatory below.
     $profile = [SsearchCiKnownFolders]::Get([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173', $token, 0x4000)
@@ -199,28 +97,6 @@ public static class SsearchCiKnownFolders {
             $roaming.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase))
     }
     Write-Host ('CI loaded profile predicates: ' + ($profileChecks | ConvertTo-Json -Compress))
-    # Normalize only this disposable process to its validated OS-defined default.
-    # The current Shell lookup below must still verify that exact location.
-    if (-not $profileChecks.local_within_profile -and
-        -not (@($profileChecks.GetEnumerator() | Where-Object { $_.Key -ne 'local_within_profile' } |
-            ForEach-Object { $_.Value }) -contains $false)) {
-        if ($identity.Name.Split('\')[-1] -notmatch '^ssci[0-9a-f]{12}$' -or
-            [SsearchCiKnownFolders]::Get([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173', $token, 0) -ine $profile) {
-            throw 'CI_FRESH_PROFILE_REQUIRED'
-        }
-        $candidate = [SsearchCiKnownFolders]::Get([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091', $token, 0x4400)
-        $candidate = [SsearchCiKnownFolders]::InitializeLocal($profile, $candidate)
-        $env:LOCALAPPDATA = $candidate
-        $currentLocal = [SsearchCiKnownFolders]::Get([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091', $token, 0x4000)
-        $registryChecks = [SsearchCiKnownFolders]::LocalRegistryChecks($ExpectedSid, $currentLocal, $candidate)
-        Write-Host ('CI LocalAppData registry predicates: ' + ($registryChecks | ConvertTo-Json -Compress))
-        $local = [SsearchCiKnownFolders]::Get([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091', $token, 0)
-        if ($local -ine $candidate) { throw 'CI_KNOWN_FOLDER_CHANGED' }
-        $profileChecks.knownfolder_local_nonempty = [bool]$local
-        $profileChecks.local_within_profile = [bool]($local -and
-            $local.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase))
-        Write-Host ('CI initialized profile predicates: ' + ($profileChecks | ConvertTo-Json -Compress))
-    }
     if ($profileChecks.Values -contains $false) {
         throw 'CI_LOADED_PROFILE_REQUIRED'
     }
@@ -391,18 +267,51 @@ try {
     & "$env:SystemRoot\System32\icacls.exe" $repository /grant "*$($account.SID.Value):(OI)(CI)M" /T /Q | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'CI_WORKSPACE_ACCESS_FAILED' }
     $job = [SsearchCiJob]::new()
+    # No caller environment is passed at creation. Transfer only public CI
+    # context afterward, in this same process, before the normal child entry.
+    $bootstrapPath = Join-Path $run 'bootstrap.ps1'
+    $bootstrapData = @{
+        sid = $account.SID.Value; run = $run
+        context = @{
+            GITHUB_ACTIONS = 'true'; GITHUB_WORKSPACE = $repository
+            SOURCE_SHA = $env:SOURCE_SHA; BUILD_MODE = $env:BUILD_MODE
+            TEST_TARGETS_JSON = $env:TEST_TARGETS_JSON; PYTHONUTF8 = '1'
+            PIP_DISABLE_PIP_VERSION_CHECK = '1'
+        }
+    }
+    $bootstrapText = @'
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+try {
+    $data = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'launch.json') -Raw | ConvertFrom-Json
+    foreach ($name in @('GITHUB_ACTIONS', 'GITHUB_WORKSPACE', 'SOURCE_SHA', 'BUILD_MODE',
+                        'TEST_TARGETS_JSON', 'PYTHONUTF8', 'PIP_DISABLE_PIP_VERSION_CHECK')) {
+        [Environment]::SetEnvironmentVariable($name, [string]$data.context.$name, 'Process')
+    }
+} catch {
+    Write-Error ('CI_BOOTSTRAP_FAILED hresult=' + $_.Exception.HResult.ToString('X8')) -ErrorAction Continue
+    exit 1
+}
+& (Join-Path $env:GITHUB_WORKSPACE 'tools/run_ci_build.ps1') -Child -ExpectedSid $data.sid -RunDirectory $data.run
+exit $LASTEXITCODE
+'@
+    try {
+        [IO.File]::WriteAllText((Join-Path $run 'launch.json'), ($bootstrapData | ConvertTo-Json -Depth 3 -Compress))
+        [IO.File]::WriteAllText($bootstrapPath, $bootstrapText)
+    } catch {
+        throw ('CI_BOOTSTRAP_WRITE_FAILED hresult=' + $_.Exception.HResult.ToString('X8'))
+    }
     $launch = @{
         FilePath = (Get-Process -Id $PID).Path
-        ArgumentList = @('-NoProfile', '-NonInteractive', '-File', ('"' + $PSCommandPath + '"'),
-                         '-Child', '-ExpectedSid', $account.SID.Value, '-RunDirectory', ('"' + $run + '"'))
+        ArgumentList = @('-NoProfile', '-NonInteractive', '-File', ('"' + $bootstrapPath + '"'))
         Credential = $credential; LoadUserProfile = $true; WindowStyle = 'Hidden'; PassThru = $true
-        Environment = @{ GITHUB_ACTIONS = 'true'; GITHUB_WORKSPACE = $repository
-                         SOURCE_SHA = $env:SOURCE_SHA; BUILD_MODE = $env:BUILD_MODE
-                         TEST_TARGETS_JSON = $env:TEST_TARGETS_JSON; PYTHONUTF8 = '1'
-                         PIP_DISABLE_PIP_VERSION_CHECK = '1' }
+        UseNewEnvironment = $true
         WorkingDirectory = $repository
         RedirectStandardOutput = (Join-Path $run 'stdout.log')
         RedirectStandardError = (Join-Path $run 'stderr.log')
+    }
+    if ($launch.FilePath.Length + 4 + ($launch.ArgumentList -join ' ').Length -ge 1024) {
+        throw 'CI_BOOTSTRAP_COMMAND_TOO_LONG'
     }
     $process = Start-Process @launch
     $childStopped = $false
