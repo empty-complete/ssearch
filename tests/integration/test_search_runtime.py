@@ -15,7 +15,7 @@ from atom_search.runtime.storage import StorageBudgetError
 from atom_search.runtime import _windows
 
 RUNTIME = Path(__file__).resolve().parents[2] / 'resources/postgresql'
-EVIDENCE = RUNTIME.parents[1] / '.superpowers/sdd/2026-10-20-postgres-search-backend/task-5-evidence'
+EVIDENCE = RUNTIME.parents[1] / 'artifacts/ci-native/search-runtime'
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +45,7 @@ def native_receipt(request, monkeypatch):
         except Exception as error:
             record['cleanup_error_type'] = type(error).__name__
         records.append(record)
-    EVIDENCE.mkdir(exist_ok=True)
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
     receipt = {'test': request.node.name, 'profiles': records, 'source_hashes': {
         **before}, 'source_hashes_after': hashes(), 'invocation': os.environ.get('ATOM_TEST_INVOCATION')}
     (EVIDENCE / (request.node.name + '-' + uuid.uuid4().hex + '.json')).write_text(

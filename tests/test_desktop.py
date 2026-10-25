@@ -1,6 +1,8 @@
 """Exercise the real offscreen window without contacting corporate sources."""
 import json
 import os
+from pathlib import Path
+import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import threading
@@ -82,6 +84,70 @@ def spin_until(predicate, timeout=2000):
     assert predicate(), "Window did not reach the expected state"
 
 
+@pytest.fixture
+def observe_window_factory(monkeypatch):
+    """Temporary safe observations for the two source-cutover failures only."""
+    from atom_search._postgres_proof import _failure_detail
+    from atom_search.desktop.workers import Workers
+    from atom_search.runtime.postgres import PostgresRuntimeError
+    from atom_search.service.contracts import ServiceError
+    from atom_search.settings.schema import SettingsValidationError
+    observed = dict(entered=0, returned=0, errors=[], window=None, expected_root=None)
+    original_init, original_spin = Workers.__init__, spin_until
+
+    def observed_init(worker, service_factory, parent):
+        observed['window'] = parent
+        def factory(*args, **kwargs):
+            observed['entered'] += 1
+            try:
+                service = service_factory(*args, **kwargs)
+            except BaseException as error:
+                if len(observed['errors']) < 3:
+                    observed['errors'].append(dict(
+                        type=type(error).__name__,
+                        code=error.code if isinstance(error, (ServiceError, PostgresRuntimeError)) else None,
+                        validation_codes=[field.code for field in error.errors[:8]]
+                        if isinstance(error, SettingsValidationError) else [],
+                        cause=_failure_detail(error)))
+                raise
+            observed['returned'] += 1
+            return service
+        return original_init(worker, factory, parent)
+
+    def observed_spin(predicate, timeout=2000):
+        try:
+            return original_spin(predicate, timeout)
+        except AssertionError:
+            window = observed['window']
+            workers = getattr(window, 'workers', None)
+            frames, stacks = sys._current_frames(), []
+            for thread in threading.enumerate():
+                if not thread.name.startswith('atom-') or thread.ident not in frames:
+                    continue
+                frame, locations = frames[thread.ident], []
+                while frame is not None and len(locations) < 8:
+                    locations.append(dict(file=Path(frame.f_code.co_filename).name, line=frame.f_lineno))
+                    frame = frame.f_back
+                stacks.append(locations)
+                if len(stacks) == 3:
+                    break
+            snapshot = dict(factory_entered=observed['entered'], factory_returned=observed['returned'],
+                            factory_errors=observed['errors'], worker_stacks=stacks,
+                            registry_ready=getattr(window, 'source_registry', None) is not None,
+                            starting_registry_ready=getattr(window, '_starting_registry', None) is not None,
+                            service_ready=getattr(workers, '_service', None) is not None,
+                            worker_job_count=len(getattr(workers, '_jobs', {})),
+                            worker_closing=bool(getattr(workers, '_closing', False)),
+                            factory_cleanup_unknown=bool(getattr(workers, '_factory_cleanup_unknown', False)),
+                            root_matches_expected=getattr(window, 'root', None) == observed['expected_root'])
+            print('desktop_factory_observation ' + json.dumps(snapshot), file=sys.stderr, flush=True)
+            raise
+
+    monkeypatch.setattr(Workers, '__init__', observed_init)
+    monkeypatch.setitem(globals(), 'spin_until', observed_spin)
+    return observed
+
+
 def make_window(tmp_path, service=None, **kwargs):
     service = service or Service()
     # These interaction fixtures start with an already selected folder. The
@@ -117,7 +183,8 @@ def test_folder_change_waits_for_registry_without_mutating_settings(tmp_path):
         release.set(); window.close(); window.workers.wait()
 
 
-def test_cli_root_warming_cannot_restore_persisted_root_behind_factory(tmp_path):
+def test_cli_root_warming_cannot_restore_persisted_root_behind_factory(tmp_path, observe_window_factory):
+    observe_window_factory['expected_root'] = 'D:/requested'
     (tmp_path / 'settings.json').write_text(json.dumps({'root': 'C:/persisted'}))
     release = threading.Event()
     service = Service()
@@ -436,9 +503,10 @@ def test_same_source_interval_save_preserves_refresh_times_and_search(tmp_path):
         window.workers.wait()
 
 
-def test_switching_source_limits_real_window_search_and_count_to_current_root(tmp_path):
+def test_switching_source_limits_real_window_search_and_count_to_current_root(tmp_path, observe_window_factory):
     first = tmp_path / "source-a"
     second = tmp_path / "source-b"
+    observe_window_factory['expected_root'] = str(first)
     first.mkdir()
     second.mkdir()
     (first / "onlyA.pdf").touch()
@@ -462,6 +530,7 @@ def test_switching_source_limits_real_window_search_and_count_to_current_root(tm
         assert window.results.item(0).data(Qt.ItemDataRole.UserRole).name == "onlyA.pdf"
 
         assert window.save_settings(str(second), 1)
+        observe_window_factory['expected_root'] = str(second)
         window.refresh()
         spin_until(lambda: window._scan_job == -1 and not window.workers._jobs)
         APP.processEvents()

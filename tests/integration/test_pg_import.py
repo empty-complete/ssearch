@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = json.loads((ROOT / 'models/manifest.json').read_text(encoding='utf-8'))
 KEY = MANIFEST['model_id'] + '|filename-parent-v1'
 VECTOR = (0.5, -0.25) + (0.,) * 382
-EVIDENCE = ROOT / '.superpowers/sdd/2026-10-20-postgres-search-backend/task-4-evidence'
+EVIDENCE = ROOT / 'artifacts/ci-native/pg-import'
 
 
 def api():
@@ -664,6 +664,6 @@ def test_schema_dump_restore_keeps_search_without_local_runtime_paths(tmp_path):
                 'installation_id': (runtime._record or {}).get('installation_id'),
                 'clean_stop':runtime.status().state=='stopped',
                 'owned_process_absent':runtime._record is None or runtime._claimed_process() is None})
-        destination = ROOT / '.superpowers/sdd/2026-10-20-postgres-search-backend/task-5-evidence'
-        destination.mkdir(exist_ok=True)
+        destination = ROOT / 'artifacts/ci-native/search-runtime'
+        destination.mkdir(parents=True, exist_ok=True)
         (destination / ('schema-transfer-'+uuid.uuid4().hex+'.json')).write_text(json.dumps(report,indent=2),encoding='utf-8')
