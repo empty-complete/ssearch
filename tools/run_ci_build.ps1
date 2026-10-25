@@ -51,13 +51,46 @@ function Invoke-CiChild {
         throw 'CI_STANDARD_USER_REQUIRED'
     }
 
-    # Ambient KnownFolder resolution returned Local/Roaming outside this user's
-    # verified profile in CI. Bind the queries to its token and loaded hive;
-    # never infer AppData paths or accept folders outside that profile.
+    # Start-Process passes an explicit caller environment even with a loaded
+    # profile. Rebuild this process's environment for the verified token before
+    # Shell queries; never infer AppData paths or accept parent user folders.
     Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 public static class SsearchCiKnownFolders {
+    [DllImport("userenv.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool CreateEnvironmentBlock(out IntPtr block, SafeHandle token, [MarshalAs(UnmanagedType.Bool)] bool inherit);
+    [DllImport("userenv.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool DestroyEnvironmentBlock(IntPtr block);
+    public static Dictionary<string, string> EnvironmentFor(SafeHandle token) {
+        if (token == null || token.IsInvalid || token.IsClosed)
+            throw new InvalidOperationException("CI_PROFILE_TOKEN_REQUIRED");
+        IntPtr block = IntPtr.Zero;
+        if (!CreateEnvironmentBlock(out block, token, false))
+            throw new InvalidOperationException("CI_USER_ENVIRONMENT_FAILED winerror=" + Marshal.GetLastWin32Error());
+        bool complete = false;
+        try {
+            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            int start = 0;
+            for (int offset = 0; offset < 1048576; offset++) {
+                if (Marshal.ReadInt16(block, checked(offset * 2)) != 0) continue;
+                if (offset == start) { complete = true; return values; }
+                string entry = Marshal.PtrToStringUni(IntPtr.Add(block, checked(start * 2)), offset - start);
+                int separator = entry.IndexOf('=');
+                // Windows also carries special =drive entries, which are not
+                // named variables accepted by SetEnvironmentVariable.
+                if (separator > 0) values[entry.Substring(0, separator)] = entry.Substring(separator + 1);
+                start = offset + 1;
+            }
+            throw new InvalidOperationException("CI_USER_ENVIRONMENT_TOO_LARGE");
+        } finally {
+            if (!DestroyEnvironmentBlock(block) && complete)
+                throw new InvalidOperationException("CI_USER_ENVIRONMENT_CLEANUP_FAILED winerror=" + Marshal.GetLastWin32Error());
+        }
+    }
     [DllImport("shell32.dll", ExactSpelling = true)]
     static extern int SHGetKnownFolderPath(ref Guid id, uint flags, SafeHandle token, out IntPtr path);
     public static string Get(Guid id, SafeHandle token) {
@@ -76,6 +109,24 @@ public static class SsearchCiKnownFolders {
 }
 '@
     $token = $identity.AccessToken
+    $ciContext = @{}
+    foreach ($name in @('GITHUB_ACTIONS', 'GITHUB_WORKSPACE', 'SOURCE_SHA', 'BUILD_MODE',
+                        'TEST_TARGETS_JSON', 'PYTHONUTF8', 'PIP_DISABLE_PIP_VERSION_CHECK')) {
+        $ciContext[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    }
+    $userEnvironment = [SsearchCiKnownFolders]::EnvironmentFor($token)
+    foreach ($item in @(Get-ChildItem Env:)) {
+        [Environment]::SetEnvironmentVariable($item.Name, $null, 'Process')
+    }
+    foreach ($item in $userEnvironment.GetEnumerator()) {
+        if (-not $item.Key.StartsWith('PG', [StringComparison]::OrdinalIgnoreCase) -and
+            -not $item.Key.StartsWith('GIT_CONFIG_', [StringComparison]::OrdinalIgnoreCase)) {
+            [Environment]::SetEnvironmentVariable($item.Key, $item.Value, 'Process')
+        }
+    }
+    foreach ($item in $ciContext.GetEnumerator()) {
+        [Environment]::SetEnvironmentVariable($item.Key, $item.Value, 'Process')
+    }
     $profile = [SsearchCiKnownFolders]::Get([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173', $token)
     $local = [SsearchCiKnownFolders]::Get([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091', $token)
     $roaming = [SsearchCiKnownFolders]::Get([Guid]'3EB685DB-65F9-4CF6-A03A-E3EF65729F3D', $token)
