@@ -1,14 +1,14 @@
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
 
 const execute = promisify(execFile);
-const source = fileURLToPath(new URL('../', import.meta.url));
+// npm test runs with frontend as its explicit working directory; no jsdom URL conversion.
+const source = resolve(process.cwd());
 const temporary: string[] = [];
 const integrity = 'sha512-IV3Ou0jSMzZrd3pZ48nLkT9DA7Ag1pnPzaiQhpW7c3RbcqqzvzzVu+L8gfqMp/8IM2MQtSiqaCxrrcfu8I8rMA==';
 const digest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
