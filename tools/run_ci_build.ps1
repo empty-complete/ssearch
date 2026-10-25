@@ -57,6 +57,7 @@ function Invoke-CiChild {
     Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Runtime.InteropServices;
 public static class SsearchCiKnownFolders {
     [DllImport("userenv.dll", ExactSpelling = true, SetLastError = true)]
@@ -93,6 +94,38 @@ public static class SsearchCiKnownFolders {
     }
     [DllImport("shell32.dll", ExactSpelling = true)]
     static extern int SHGetKnownFolderPath(ref Guid id, uint flags, SafeHandle token, out IntPtr path);
+    [DllImport("shell32.dll", ExactSpelling = true, CharSet = CharSet.Unicode)]
+    static extern int SHSetKnownFolderPath(ref Guid id, uint flags, SafeHandle token, string path);
+    public static string InitializeLocal(SafeHandle token, string profile, string candidate) {
+        try {
+            if (!Path.IsPathFullyQualified(profile) || !Path.IsPathFullyQualified(candidate))
+                throw new InvalidOperationException("CI_DEFAULT_LOCAL_OUTSIDE_PROFILE");
+            string ownedProfile = Path.GetFullPath(profile).TrimEnd(Path.DirectorySeparatorChar);
+            string target = Path.GetFullPath(candidate);
+            if (!target.StartsWith(ownedProfile + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("CI_DEFAULT_LOCAL_OUTSIDE_PROFILE");
+            for (var entry = new DirectoryInfo(target); entry != null; entry = entry.Parent) {
+                try {
+                    FileAttributes attributes = File.GetAttributes(entry.FullName);
+                    if ((attributes & FileAttributes.ReparsePoint) != 0)
+                        throw new InvalidOperationException("CI_DEFAULT_LOCAL_REPARSE");
+                    if ((attributes & FileAttributes.Directory) == 0)
+                        throw new InvalidOperationException("CI_DEFAULT_LOCAL_NOT_DIRECTORY");
+                } catch (FileNotFoundException) {
+                } catch (DirectoryNotFoundException) {
+                }
+            }
+            Directory.CreateDirectory(target);
+            Guid id = new Guid("F1B32785-6FBA-4FCF-9D55-7B8E7F157091");
+            int result = SHSetKnownFolderPath(ref id, 0, token, target);
+            if (result != 0) throw new COMException("CI_SET_KNOWN_FOLDER_FAILED folder=" + id.ToString("D") + " hresult=" + result.ToString("X8"), result);
+            return target;
+        } catch (Exception error) when (error is IOException || error is UnauthorizedAccessException ||
+                                       error is ArgumentException || error is NotSupportedException ||
+                                       error is System.Security.SecurityException) {
+            throw new InvalidOperationException("CI_DEFAULT_LOCAL_INITIALIZATION_FAILED hresult=" + error.HResult.ToString("X8"));
+        }
+    }
     public static string Get(Guid id, SafeHandle token, uint flags) {
         if (token == null || token.IsInvalid || token.IsClosed)
             throw new InvalidOperationException("CI_PROFILE_TOKEN_REQUIRED");
@@ -149,6 +182,25 @@ public static class SsearchCiKnownFolders {
             $roaming.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase))
     }
     Write-Host ('CI loaded profile predicates: ' + ($profileChecks | ConvertTo-Json -Compress))
+    # The new disposable account can inherit a redirected LocalAppData setting.
+    # Initialize only its own OS-defined default, never inspect the old target.
+    if (-not $profileChecks.local_within_profile -and
+        -not (@($profileChecks.GetEnumerator() | Where-Object { $_.Key -ne 'local_within_profile' } |
+            ForEach-Object { $_.Value }) -contains $false)) {
+        if ($identity.Name.Split('\')[-1] -notmatch '^ssci[0-9a-f]{12}$' -or
+            [SsearchCiKnownFolders]::Get([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173', $token, 0) -ine $profile) {
+            throw 'CI_FRESH_PROFILE_REQUIRED'
+        }
+        $candidate = [SsearchCiKnownFolders]::Get([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091', $token, 0x4400)
+        $candidate = [SsearchCiKnownFolders]::InitializeLocal($token, $profile, $candidate)
+        $env:LOCALAPPDATA = $candidate
+        $local = [SsearchCiKnownFolders]::Get([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091', $token, 0)
+        if ($local -ine $candidate) { throw 'CI_KNOWN_FOLDER_CHANGED' }
+        $profileChecks.knownfolder_local_nonempty = [bool]$local
+        $profileChecks.local_within_profile = [bool]($local -and
+            $local.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase))
+        Write-Host ('CI initialized profile predicates: ' + ($profileChecks | ConvertTo-Json -Compress))
+    }
     if ($profileChecks.Values -contains $false) {
         throw 'CI_LOADED_PROFILE_REQUIRED'
     }
