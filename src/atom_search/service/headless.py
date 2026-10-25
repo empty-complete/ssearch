@@ -52,7 +52,7 @@ def serve(profile: Path, *, model_dir: Path | None = None, stop: threading.Event
             outcome.put(code)
             done.set()
 
-    threading.Thread(target=lifecycle, name='atom-headless-owner', daemon=True).start()
+    threading.Thread(target=lifecycle, name='ssearch-headless-owner', daemon=True).start()
     deadline = time.monotonic() + startup_timeout
     startup_failed = False
     while not ready.is_set() and not stop.is_set():
@@ -92,7 +92,7 @@ def main(argv=None) -> int:
                 control_failed.set()  # Suppress threading.excepthook/private traceback.
             finally:
                 stop.set()
-        threading.Thread(target=control, name='atom-headless-control', daemon=True).start()
+        threading.Thread(target=control, name='ssearch-headless-control', daemon=True).start()
     try:
         result = serve(args.data_dir, model_dir=args.model_dir, stop=stop)
         return 1 if control_failed.is_set() else result

@@ -34,7 +34,7 @@ def _bounded(operation, timeout):
         except BaseException as failure:
             result.put((False, failure))
 
-    threading.Thread(target=run, name='atom-broker-io', daemon=True).start()
+    threading.Thread(target=run, name='ssearch-broker-io', daemon=True).start()
     try:
         ok, value = result.get(timeout=timeout)
     except queue.Empty:
