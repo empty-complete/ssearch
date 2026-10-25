@@ -3,23 +3,14 @@
 @import "tailwindcss";
 @import "@heroui/styles";
 
-/* Catppuccin Latte/Mocha. System Segoe keeps Windows text scaling native. */
+/* ssearch:default-palette-tokens */
+
+/* System Segoe keeps Windows text scaling native; noncolor tokens stay here. */
 :root, .light, [data-theme="light"] {
-  color-scheme: light; --background:#eff1f5; --surface:#ffffff; --surface-secondary:#e6e9ef;
-  --foreground:#4c4f69; --muted:#5c5f77; --accent:#1e66f5; --accent-foreground:#ffffff;
-  --border:#bcc0cc; --focus:#1e66f5; --danger:#d20f39; --warning:#7f4f0b;
-  --selected:#dce0e8; --field-background:#ffffff; --field-foreground:#4c4f69;
-  --field-placeholder:#5c5f77; --field-border:#8c8fa1; --field-radius:8px;
+  --field-radius:8px;
   --font-ui:"Segoe UI Variable","Segoe UI",sans-serif;
   --motion-feedback:120ms; --motion-transition:180ms; --motion-overlay:220ms;
   font-family:var(--font-ui); font-size:14px; line-height:1.5;
-}
-.dark, [data-theme="dark"] {
-  color-scheme:dark; --background:#1e1e2e; --surface:#181825; --surface-secondary:#313244;
-  --foreground:#cdd6f4; --muted:#bac2de; --accent:#89b4fa; --accent-foreground:#11111b;
-  --border:#585b70; --focus:#89b4fa; --danger:#f38ba8; --warning:#f9e2af;
-  --selected:#313244; --field-background:#181825; --field-foreground:#cdd6f4;
-  --field-placeholder:#bac2de; --field-border:#7f849c;
 }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--background); color:var(--foreground); }

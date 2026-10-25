@@ -57,6 +57,41 @@ test('search, duplicate paths, focus, keyboard and theme screenshots', async ({ 
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.screenshot({ path: testInfo.outputPath('reduced.png'), fullPage: true });
 });
+
+test('system palette follows media without losing query or selection; manual mode remains fixed', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto('/');
+  const input = page.getByRole('searchbox');
+  await input.fill('ведомость');
+  await input.press('Enter');
+  const results = page.getByRole('listbox', { name: 'Найденные документы' });
+  await expect(results.getByRole('option')).toHaveCount(2);
+  await results.getByRole('option').first().click();
+  const selection = await results.getByRole('option', { selected: true }).innerText();
+  const theme = page.getByRole('combobox', { name: 'Тема предпросмотра' });
+  await theme.selectOption('system');
+  for (const [mode, background, foreground] of [
+    ['dark', 'rgb(30, 30, 46)', 'rgb(205, 214, 244)'],
+    ['light', 'rgb(239, 241, 245)', 'rgb(76, 79, 105)'],
+  ] as const) {
+    await page.emulateMedia({ colorScheme: mode });
+    await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+    await expect(page.locator('body')).toHaveCSS('background-color', background);
+    await expect(page.locator('body')).toHaveCSS('color', foreground);
+    await expect(input).toHaveValue('ведомость');
+    await expect(results.getByRole('option', { selected: true })).toHaveText(selection, { useInnerText: true });
+  }
+  await theme.selectOption('dark');
+  for (const mode of ['dark', 'light'] as const) {
+    await page.emulateMedia({ colorScheme: mode });
+    // Observe the media event and React's following paint before asserting no manual change.
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(30, 30, 46)');
+    await expect(input).toHaveValue('ведомость');
+    await expect(results.getByRole('option', { selected: true })).toHaveText(selection, { useInnerText: true });
+  }
+});
 test('empty, partial, unavailable and reconnect preserve the current query', async ({ page }, testInfo) => {
   await page.goto('/'); const input = page.getByRole('searchbox');
   await input.fill('пусто'); await input.press('Enter');

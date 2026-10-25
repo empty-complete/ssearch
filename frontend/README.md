@@ -5,6 +5,16 @@ color roles generates static default CSS in the current stylesheet; noncolor
 tokens and selector behavior stay in place. Next package boundary is Task 3.
 Required checks cover exact default colors, closed serialization, prepared-mode
 metadata, light/dark screenshots and query/selection during system media changes.
+The existing Catppuccin default pair now has one typed semantic source. A small
+build transform fills one placeholder in the existing stylesheet, preserving its
+imports, selectors, color-scheme and static first-paint link. Fonts, motion and
+spacing remain in CSS. Existing white surfaces and light warning color are
+explicit ssearch adaptations; every default color stays unchanged. Nord and
+Dracula are pinned dark-only prepared mappings, with future light composition
+requiring an explicit choice and accessibility still unaccepted. Custom inputs
+are a data-only RGB-byte type over the same finite roles; no ingestion, picker,
+CSS/URL path, persistence or settings writer is introduced. Original license
+texts for all three palettes accompany local dist notices.
 
 Notice provenance slice: preserve the exact client-only 0.0.1 inputs and measure
 its actual browser graph/output before accepting a source-bundle-only empty

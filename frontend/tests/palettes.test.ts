@@ -2,6 +2,8 @@ import { expect, it } from 'vitest';
 import { defaultPaletteCss } from '../tools/palette-css';
 import { getPaletteInputs } from '../src/theme/palettes';
 import type { ColorByte, CustomPaletteInputV1, RgbBytes } from '../src/theme/contracts';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 // Independent baseline of the accepted CSS, including existing first-party white/warning choices.
 const accepted = {
@@ -58,6 +60,22 @@ it('never reads or serializes custom CSS/URL data supplied as an extra runtime a
   const custom = Object.defineProperty({}, 'tokens', { get() { reads++; return 'url(https://invalid.example)'; } });
   expect(Reflect.apply(defaultPaletteCss, undefined, [custom])).toBe(defaultPaletteCss());
   expect(reads).toBe(0);
+});
+
+it('keeps prepared semantic mappings inside their complete pinned primary palettes', () => {
+  const sources = resolve(process.cwd(), 'compatibility/upstream');
+  const nord = readFileSync(resolve(sources, 'nord-palette.css'), 'utf8');
+  const dracula = readFileSync(resolve(sources, 'dracula-palette.md'), 'utf8')
+    .split('### Dracula')[1].split('### Alucard')[0];
+  const colors = {
+    nord: new Set([...nord.matchAll(/--nord\d+:\s*(#[0-9a-f]{6});/g)].map(match => match[1])),
+    dracula: new Set([...dracula.matchAll(/`(#[0-9a-f]{6})`/g)].map(match => match[1])),
+  };
+  expect(colors.nord.size).toBe(16);
+  for (const input of getPaletteInputs()) {
+    if (input.status !== 'prepared') continue;
+    for (const color of Object.values(input.tokens.dark)) expect(colors[input.id].has(color)).toBe(true);
+  }
 });
 
 // Compile-time public contract checks; these shapes do not activate any runtime input path.

@@ -15,6 +15,13 @@ Tailwind Variants — MIT, NextUI Inc.
 https://github.com/heroui-inc/tailwind-variants
 Catppuccin palette — MIT, Catppuccin contributors.
 https://github.com/catppuccin/palette
+Nord palette — MIT, Copyright (c) 2016-present Sven Greb.
+https://github.com/nordtheme/nord
+Dracula palette — MIT, Copyright (c) 2023 Dracula Theme.
+https://github.com/dracula/dracula-theme
+Nord and Dracula are prepared source inputs, not active UI presets or accepted
+accessibility combinations. Exact palette pins and complete originals are in
+the candidate evidence. Original palette license texts ship in licenses/palettes/.
 
 The CI artifact licenses/ contains available original production dependency
 license texts and the exact package identity/integrity inventory. Build/test dependencies

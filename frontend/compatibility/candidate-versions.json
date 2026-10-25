@@ -95,7 +95,9 @@
     "heroui": "31a6261590798d3c46f9cd0adf507653b3bc29ad",
     "impeccable": "9fa16a06d8957fde5687984629fd028c9f2abf10",
     "hallmark": "7ec868225c6caa040558c321ee0fefa0e73f83a8",
-    "catppuccin": "07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd"
+    "catppuccin": "07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd",
+    "nord": "1cef71605416a222e57225b544540ce0fcec18d4",
+    "dracula": "e22ebcc048b8aff586f9bc94db30ff5347070b42"
   },
   "locks": [
     {
@@ -179,6 +181,26 @@
     {
       "sha256": "1fc6112b1dfeb0f16953ba1b7ac04b1a7cad690ead4a74282718aa58dd4e7d4c",
       "file": "tooltip.mdx"
+    },
+    {
+      "sha256": "4bc114bb6b3c9a9c9e156564aa84625aef32c5da514d9dd431cf1fcad433a05f",
+      "file": "catppuccin-palette.json"
+    },
+    {
+      "sha256": "b931ac3732582b2066b2d6cadec02d9820ba7081e6e3e404c31cb62d9315a962",
+      "file": "nord-palette.css"
+    },
+    {
+      "sha256": "25ac8188d670bd2ad2ce2f4f55ab88573010ee9f7a4502543cb1eea1e2274f8a",
+      "file": "nord-LICENSE"
+    },
+    {
+      "sha256": "3f798014d8e25a4c15f6ad26bc767d99bfc367ec3f9883bd4b5ce0fe562647d0",
+      "file": "dracula-palette.md"
+    },
+    {
+      "sha256": "38b806a7e799cca4e9821e6f8d65cf0d8bfaaddbe454b41f12e5baad52d310f1",
+      "file": "dracula-LICENSE"
     }
   ],
   "open_gates": [
@@ -190,5 +212,45 @@
     "Final Win10 1809+ acceptance only at the end",
     "Full P4 and Stable acceptance",
     "client-only0.0.1 actual frozen/package contents acceptance; source-only empty-marker disposition requires measured graph proof"
-  ]
+  ],
+  "palette_inputs": {
+    "default_pair": [
+      "catppuccin-latte",
+      "catppuccin-mocha"
+    ],
+    "default_first_party_adaptations": {
+      "neutral_white": "#ffffff",
+      "light_warning": "#7f4f0b"
+    },
+    "serialization": "Closed no-argument build transform in the existing static stylesheet; no runtime custom ingestion",
+    "prepared": [
+      {
+        "id": "nord",
+        "availableModes": [
+          "dark"
+        ],
+        "lightComposition": "requires_explicit_choice",
+        "palette_source": "https://raw.githubusercontent.com/nordtheme/nord/1cef71605416a222e57225b544540ce0fcec18d4/src/nord.css",
+        "license_source": "https://raw.githubusercontent.com/nordtheme/nord/1cef71605416a222e57225b544540ce0fcec18d4/license",
+        "accessibility": "not_accepted"
+      },
+      {
+        "id": "dracula",
+        "availableModes": [
+          "dark"
+        ],
+        "lightComposition": "requires_explicit_choice",
+        "palette_source": "https://raw.githubusercontent.com/dracula/dracula-theme/e22ebcc048b8aff586f9bc94db30ff5347070b42/README.md",
+        "license_source": "https://raw.githubusercontent.com/dracula/dracula-theme/e22ebcc048b8aff586f9bc94db30ff5347070b42/LICENSE",
+        "accessibility": "not_accepted"
+      }
+    ],
+    "catppuccin_palette_source": "https://raw.githubusercontent.com/catppuccin/palette/07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd/palette.json",
+    "distributed_original_licenses": [
+      "licenses/palettes/catppuccin-LICENSE.txt",
+      "licenses/palettes/nord-LICENSE.txt",
+      "licenses/palettes/dracula-LICENSE.txt"
+    ],
+    "custom_contract": "Finite semantic roles and RGB byte tuples only; P5/P2 ingestion and settings ownership remain unimplemented"
+  }
 }
