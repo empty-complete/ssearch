@@ -49,7 +49,7 @@ jobs:
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
     steps:
       - id: scope
-        name: Keep documentation changes out of the binary build
+        name: Keep documentation and unpackaged UI candidates out of the binary build
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -86,7 +86,15 @@ jobs:
               $files = @(gh api --paginate "repos/$env:GH_REPO/pulls/$prNumber/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)')
               if ($LASTEXITCODE -ne 0 -or $files.Count -lt $pr.changed_files) { throw 'Incomplete changed-file inventory.' }
               $documentation = '^(README\.md|CONTRIBUTING\.md|AGENTS\.md|docs/.*\.md|\.github/(pull_request_template\.md|PULL_REQUEST_TEMPLATE/.*\.md|ISSUE_TEMPLATE/[^/]+\.(md|yml|yaml)))$'
-              $required = @($files | Where-Object { $_ -notmatch $documentation }).Count -gt 0
+              # P4 source candidates have their own frontend-checks workflow and
+              # are not inputs to the current Qt installer. Remove this exemption
+              # when P4 Task 3 connects them to the shared package/build contract.
+              # Both sides of renames are classified above; all other paths fail
+              # closed to the binary chain, including shared tools and packaging.
+              $uiCandidate = '^(frontend/.*|desktop/.*|tools/build_frontend\.ps1|\.github/workflows/frontend-checks\.yml)$'
+              $required = @($files | Where-Object {
+                $_ -notmatch $documentation -and $_ -notmatch $uiCandidate
+              }).Count -gt 0
             }
           }
           if ($testedSha -notmatch '^[0-9a-f]{40}$' -or $headRepository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
