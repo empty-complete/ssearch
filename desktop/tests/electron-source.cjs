@@ -43,8 +43,13 @@ registerAssetScheme();
 class TrackingRuntime extends SourceRuntime {
   brokers = [];
   owners = [];
-  spawnBroker(identity) { const child = super.spawnBroker(identity); this.brokers.push(child); return child; }
-  spawnOwner(identity) { const child = super.spawnOwner(identity); this.owners.push(child); return child; }
+  failSpawns = false;
+  faultIdentity(identity) {
+    // OS-level ENOENT injection only; successful recovery still uses the real P2 adapter/owner.
+    return this.failSpawns ? { ...identity, pythonBase: join(artifacts, 'absent-source-python.exe') } : identity;
+  }
+  spawnBroker(identity) { const child = super.spawnBroker(this.faultIdentity(identity)); this.brokers.push(child); return child; }
+  spawnOwner(identity) { const child = super.spawnOwner(this.faultIdentity(identity)); this.owners.push(child); return child; }
 }
 const alive = child => child.exitCode === null && child.signalCode === null;
 const runtime = new TrackingRuntime({ repositoryRoot: root,
@@ -105,6 +110,7 @@ if (!primary) {
       let dispatched = 0;
       const port = {
         get authority() { return service.authority; },
+        ensureReadConnection() { return service.ensureReadConnection(); },
         request(method, args, id, signal) {
           if (method === 'search') dispatched++;
           return service.request(method, args, id, signal).then(reply => {
@@ -124,6 +130,70 @@ if (!primary) {
       assert.equal(runtime.owners.filter(alive).length, 1);
       assert.equal(runtime.brokers.filter(alive).length, 1);
       second.destroy();
+      completed.push(current);
+
+      current = 'actual_explicit_read_retry_after_initial_and_exhausted_spawn_failure'; receipt(false);
+      const retryRuntime = new TrackingRuntime({ repositoryRoot: root,
+        python: join(root, '.venv/Scripts/python.exe'), modelDirectory: join(profilePath, 'missing-model') });
+      const retryService = new ServiceLifecycle(retryRuntime, profile);
+      const retryReplies = [];
+      const retryPort = {
+        get authority() { return retryService.authority; },
+        ensureReadConnection() { return retryService.ensureReadConnection(); },
+        request(method, args, id, signal) {
+          return retryService.request(method, args, id, signal).then(reply => {
+            if (method === 'search' && !reply.error) retryReplies.push(reply.data.query_interpretation.original_query);
+            return reply;
+          });
+        },
+      };
+      let retryWindow;
+      try {
+        retryRuntime.failSpawns = true;
+        await assert.rejects(retryService.ensureService());
+        assert.equal(retryService.authority, null);
+        retryWindow = createWindow({ mode: 'application', assetRoot: join(root, 'frontend/dist'),
+          bridge, servicePort: retryPort, show: false });
+        await once(retryWindow.webContents, 'did-finish-load');
+        const retryVisible = () => retryWindow.webContents.executeJavaScript(
+          "[...document.querySelectorAll('button')].some(button=>button.textContent.includes('Повторить соединение'))");
+        const clickRetry = () => retryWindow.webContents.executeJavaScript(
+          "[...document.querySelectorAll('button')].find(button=>button.textContent.includes('Повторить соединение')).click()");
+        await until(() => retryWindow.webContents.executeJavaScript('!!document.querySelector(\'input[type="search"]\')'));
+        await edit(retryWindow, 'explicit retry after startup failure', true);
+        await until(retryVisible);
+        retryRuntime.failSpawns = false;
+        await clickRetry();
+        await until(() => retryService.authority !== null);
+        await until(() => retryReplies.includes('explicit retry after startup failure'));
+        await until(async () => !(await retryVisible()));
+        assert.equal(retryService.authority.generation, first.connection.generation);
+        assert.equal((await retryService.ensureService()).mode, 'attached');
+        assert.equal(runtime.owners.filter(alive).length, 1);
+
+        const successfulBroker = retryRuntime.brokers.filter(alive)[0];
+        assert.ok(successfulBroker);
+        const beforeFailures = retryRuntime.brokers.length;
+        retryRuntime.failSpawns = true;
+        successfulBroker.kill(); // Only our retained broker, never the shared attached owner.
+        await until(() => retryRuntime.brokers.length >= beforeFailures + 6, 30_000);
+        // Each failed opening tries before/after its failed owner child; three openings exhaust backoff.
+        const exhaustedCount = retryRuntime.brokers.length;
+        await pause(6000);
+        assert.equal(retryRuntime.brokers.length, exhaustedCount);
+        assert.equal(retryService.authority, null);
+        assert.equal(runtime.owners.filter(alive).length, 1);
+        retryRuntime.failSpawns = false;
+        await edit(retryWindow, 'explicit retry after exhausted reconnect', true);
+        await until(() => retryService.authority !== null);
+        await until(() => retryReplies.includes('explicit retry after exhausted reconnect'));
+        await until(async () => !(await retryVisible()));
+        assert.equal(retryService.authority.generation, first.connection.generation);
+        assert.equal(runtime.owners.filter(alive).length, 1);
+      } finally {
+        retryWindow?.destroy();
+        await retryService.releaseService();
+      }
       completed.push(current);
 
       current = 'actual_second_instance_activation_without_service_start'; receipt(false);

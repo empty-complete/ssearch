@@ -4,9 +4,10 @@ import type { JsonObject, UiMethod, WireEnvelope } from './contracts.js';
 import { exactKeys, failure, methods, mutations, plainObject, publicUuid, validResponse, validateArguments } from './validation.js';
 import { isRendererUrl } from './windowPolicy.js';
 
-/** Supplied by a future verified MAIN-side broker adapter, never by the renderer. */
+/** Supplied by the verified MAIN-side broker adapter, never by the renderer. */
 export interface ServicePort {
   authority: { generation: string; owner: boolean; capabilities: ReadonlySet<UiMethod> } | null;
+  ensureReadConnection?(): Promise<void>;
   request(method: UiMethod, args: JsonObject, id: string, signal: AbortSignal): Promise<WireEnvelope<unknown>>;
 }
 
@@ -96,11 +97,10 @@ export class RendererBoundary {
     if (mutations.has(method) && (!authority?.owner || !authority.capabilities.has(method))) {
       return failure(id, 'access_denied');
     }
-    if (!authority || !publicUuid(authority.generation)) return failure(id, 'service_unavailable');
+    if (!authority && !this.port.ensureReadConnection) return failure(id, 'service_unavailable');
     if (this.pending.has(id)) return failure(id, 'invalid_request');
     if (this.pending.size >= 64) return failure(id, 'too_many_requests');
     const context = this.context;
-    const generation = authority.generation;
     return new Promise(resolve => {
       const abort = new AbortController();
       let settled = false;
@@ -116,28 +116,47 @@ export class RendererBoundary {
       this.pending.set(id, { method, finish });
       stopTimer = this.schedule(() => finish(failure(id, 'request_timeout',
         mutations.has(method) ? { outcome: 'unknown' } : {})), operationBudget(method));
-      let result: Promise<WireEnvelope<unknown>>;
-      try {
-        result = this.port.request(method, request.arguments as JsonObject, id, abort.signal);
-      } catch {
-        finish(failure(id, 'service_unavailable', mutations.has(method) ? { outcome: 'unknown' } : {}));
-        return;
-      }
-      void result.then(response => {
+      const dispatch = () => {
         if (settled) return;
-        if (context !== this.context || this.port.authority !== authority
-          || this.port.authority.generation !== generation) {
-          finish(failure(id, 'stale_session', mutations.has(method) ? { outcome: 'unknown' } : {}));
-        } else if (!validResponse(response, id)) {
-          finish(failure(id, 'invalid_service_response', mutations.has(method) ? { outcome: 'unknown' } : {}));
-        } else if (response.error) {
-          // A transport's raw message can contain secrets. Keep public code/details.
-          finish({ ...response, error: { ...response.error, message: response.error.code } });
-        } else {
-          finish(response);
+        if (context !== this.context || !this.senderAllowed(event) || this.frame !== event.senderFrame) {
+          finish(failure(id, 'stale_session'));
+          return;
         }
-      }).catch(() => finish(failure(id, 'service_unavailable',
-        mutations.has(method) ? { outcome: 'unknown' } : {})));
+        const connected = this.port.authority;
+        if (!connected || !publicUuid(connected.generation)) {
+          finish(failure(id, 'service_unavailable'));
+          return;
+        }
+        const generation = connected.generation;
+        let result: Promise<WireEnvelope<unknown>>;
+        try {
+          result = this.port.request(method, request.arguments as JsonObject, id, abort.signal);
+        } catch {
+          finish(failure(id, 'service_unavailable', mutations.has(method) ? { outcome: 'unknown' } : {}));
+          return;
+        }
+        void result.then(response => {
+          if (settled) return;
+          if (context !== this.context || this.port.authority !== connected
+            || this.port.authority.generation !== generation) {
+            finish(failure(id, 'stale_session', mutations.has(method) ? { outcome: 'unknown' } : {}));
+          } else if (!validResponse(response, id)) {
+            finish(failure(id, 'invalid_service_response', mutations.has(method) ? { outcome: 'unknown' } : {}));
+          } else if (response.error) {
+            // A transport's raw message can contain secrets. Keep public code/details.
+            finish({ ...response, error: { ...response.error, message: response.error.code } });
+          } else {
+            finish(response);
+          }
+        }).catch(() => finish(failure(id, 'service_unavailable',
+          mutations.has(method) ? { outcome: 'unknown' } : {})));
+      };
+      if (!authority && !mutations.has(method)) {
+        void Promise.resolve().then(() => settled ? undefined : this.port.ensureReadConnection!())
+          .then(dispatch).catch(() => finish(failure(id, 'service_unavailable')));
+      } else {
+        dispatch();
+      }
     });
   }
 }

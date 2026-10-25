@@ -116,6 +116,53 @@ test('64 pending limit, cancellation and rollover reject stale replies', async (
   assert.equal(operationBudget('settings_apply') >= 30_000, true);
 });
 
+test('only validated reads can explicitly retry unavailable MAIN readiness', async () => {
+  const f = fixture();
+  const authority = f.port.authority;
+  f.port.authority = null;
+  let attempts = 0;
+  f.port.ensureReadConnection = async () => {
+    attempts++;
+    if (attempts === 1) throw new Error('private startup failure');
+    f.port.authority = authority;
+  };
+  assert.equal((await f.boundary.invoke(f.event as never,
+    f.request('settings_apply', { candidate: {}, expected_revision: 1 }))).error?.code, 'access_denied');
+  assert.equal((await f.boundary.invoke(f.event as never,
+    f.request('status', { owner: true }))).error?.code, 'invalid_request');
+  assert.equal((await f.boundary.invoke({ ...f.event, sender: {} } as never,
+    f.request('status', {}))).error?.code, 'access_denied');
+  assert.equal(attempts, 0);
+  const failed = await f.boundary.invoke(f.event as never, f.request('status', {}));
+  assert.equal(failed.error?.code, 'service_unavailable');
+  assert.equal(JSON.stringify(failed).includes('private startup failure'), false);
+  assert.deepEqual(f.calls, []);
+  assert.equal((await f.boundary.invoke(f.event as never, f.request('status', {}))).error, null);
+  assert.equal(attempts, 2);
+  assert.deepEqual(f.calls, [['status', {}]]);
+});
+
+test('read readiness waits stay bounded and cannot dispatch after timeout or renderer rollover', async () => {
+  const timers: Array<() => void> = [];
+  const f = fixture(true, timers);
+  const authority = f.port.authority;
+  f.port.authority = null;
+  let ready!: () => void;
+  const waiting = new Promise<void>(resolve => { ready = resolve; });
+  f.port.ensureReadConnection = () => waiting;
+  const pending = Array.from({ length: 64 }, () => f.boundary.invoke(f.event as never, f.request('status', {})));
+  assert.equal((await f.boundary.invoke(f.event as never, f.request('status', {}))).error?.code, 'too_many_requests');
+  timers[0]();
+  assert.equal((await pending[0]).error?.code, 'request_timeout');
+  f.boundary.rollover();
+  assert.equal((await pending[1]).error?.code, 'stale_session');
+  f.port.authority = authority;
+  ready();
+  await Promise.all(pending);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.calls, []);
+});
+
 test('timeouts have unknown mutation outcome and late results cannot overwrite a new request', async () => {
   const timers: Array<() => void> = [];
   const f = fixture(true, timers);

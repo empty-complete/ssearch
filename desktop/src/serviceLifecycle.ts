@@ -50,6 +50,7 @@ export class ServiceLifecycle implements ServicePort {
       try {
         const connection = await bridge.connect(this.profile);
         if (this.stopped) { await bridge.close(); throw new Error('service_stopping'); }
+        if (!bridge.authority) throw new Error('service_unavailable');
         if (this.ownerChild && !exited(this.ownerChild) && connection.process.pid !== this.ownerChild.pid) {
           // Our concurrent source entry attached; closing its pipe cannot stop the discovered owner.
           this.ownerChild.stdin?.end();
@@ -62,6 +63,7 @@ export class ServiceLifecycle implements ServicePort {
         this.connecting = null;
         bridge.onDisconnect(() => {
           if (this.bridge !== bridge) return;
+          this.bridge = null;
           this.ready = null;
           void bridge.close();
           this.reconnect();
@@ -75,9 +77,23 @@ export class ServiceLifecycle implements ServicePort {
         if (this.ownerChild && exited(this.ownerChild)) this.ownerChild = null;
         if (!this.ownerChild && !attemptedStart) {
           attemptedStart = true;
-          this.ownerChild = this.runtime.spawnOwner(this.profile);
-          this.ownerChild.on('error', () => {});
-          this.ownerChild.once('exit', () => { if (!this.stopped) this.reconnect(); });
+          const child = this.runtime.spawnOwner(this.profile);
+          this.ownerChild = child;
+          const ended = () => {
+            if (this.ownerChild !== child) return;
+            this.ownerChild = null;
+            if (this.ready?.mode === 'owned' && this.ready.connection.process.pid === child.pid
+              && this.ready.connection.generation === this.ownedGeneration) {
+              const obsolete = this.bridge;
+              this.bridge = null;
+              this.ready = null;
+              this.ownedGeneration = null;
+              void obsolete?.close();
+            }
+            if (!this.stopped) this.reconnect();
+          };
+          child.once('error', ended);
+          child.once('exit', ended);
         } else if (!this.ownerChild && attemptedStart) break;
         await new Promise(resolve => setTimeout(resolve, 250));
       }
@@ -92,6 +108,11 @@ export class ServiceLifecycle implements ServicePort {
       this.reconnectTimer = null;
       void this.ensureService().catch(() => this.reconnect());
     }, delay);
+  }
+
+  /** MAIN-only readiness hook for a new validated read, never a mutation replay. */
+  async ensureReadConnection(): Promise<void> {
+    await this.ensureService();
   }
 
   request(method: UiMethod, args: JsonObject, id: string, signal: AbortSignal): Promise<WireEnvelope<unknown>> {

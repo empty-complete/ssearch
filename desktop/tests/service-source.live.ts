@@ -156,7 +156,7 @@ test('actual source TS to private P2 broker and owner lifecycle', { timeout: 850
       assert.ok(process);
       process.kill(); // Fault injection only: retained child created by this test/runtime.
       await until(() => !alive(process));
-      await call(owner, 'status');
+      // Recovery must be driven by the retained owner's exit, without any probe request.
       await until(() => owner.authority !== null && owner.authority.generation !== first.connection.generation);
       assert.equal((await call(owner, 'status')).error, null);
       assert.equal(runtime.owners.filter(alive).length, 1);
