@@ -888,6 +888,38 @@ foreach ($name in $before.Keys) {
     def test_complete_onedir_layout_is_accepted(self):
         self.module.validate_bundle(self.make_bundle())
 
+    def test_service_only_bundle_requires_service_executable_and_excludes_qt(self):
+        bundle = self.make_bundle()
+        (bundle / 'ssearch.exe').rename(bundle / 'ssearch-service.exe')
+        shutil.rmtree(bundle / '_internal/PySide6')
+        notice = bundle / '_internal/resources/licenses/dependencies/shiboken6/LICENSE.txt'
+        notice.parent.mkdir(parents=True)
+        notice.write_text('Retained third-party notice')
+        self.module.validate_bundle(bundle, service_only=True)
+        leaked = bundle / '_internal/PySide6/Qt6Core.dll'
+        leaked.parent.mkdir()
+        leaked.write_bytes(b'GUI toolkit is not a service dependency')
+        with self.assertRaisesRegex(self.module.BuildError, 'GUI'):
+            self.module.validate_bundle(bundle, service_only=True)
+
+    def test_service_only_bundle_keeps_driver_model_and_private_data_guards(self):
+        bundle = self.make_bundle()
+        (bundle / 'ssearch.exe').rename(bundle / 'ssearch-service.exe')
+        shutil.rmtree(bundle / '_internal/PySide6')
+        driver = bundle / '_internal/psycopg_binary/pq.cp312-win_amd64.pyd'
+        original = driver.read_bytes()
+        driver.unlink()
+        with self.assertRaises(self.module.BuildError):
+            self.module.validate_bundle(bundle, service_only=True)
+        driver.write_bytes(original)
+        shutil.copy(bundle / '_internal/models/model_quantized.onnx', bundle)
+        with self.assertRaisesRegex(self.module.BuildError, 'model_quantized.onnx'):
+            self.module.validate_bundle(bundle, service_only=True)
+        (bundle / 'model_quantized.onnx').unlink()
+        (bundle / 'owner.json').write_text('{}')
+        with self.assertRaises(self.module.BuildError):
+            self.module.validate_bundle(bundle, service_only=True)
+
     def test_packaged_runtime_is_complete_without_user_database_or_credentials(self):
         bundle = self.make_bundle()
         self.module.validate_bundle(bundle)
