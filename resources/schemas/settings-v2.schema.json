@@ -1,0 +1,559 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Atom Search owner settings v2",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "database": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "const": "managed_postgresql"
+        },
+        "runtime_manifest": {
+          "type": "string",
+          "const": "resources/postgresql/manifest.json"
+        },
+        "data_subdirectory": {
+          "type": "string",
+          "const": "engine/postgresql/18/data"
+        }
+      },
+      "required": [
+        "mode",
+        "runtime_manifest",
+        "data_subdirectory"
+      ],
+      "additionalProperties": false
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "label",
+          "enabled"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 64
+    },
+    "indexing": {
+      "type": "object",
+      "properties": {
+        "metadata_enabled": {
+          "type": "boolean",
+          "const": true
+        },
+        "interval_seconds": {
+          "type": "integer",
+          "minimum": 86400,
+          "maximum": 31536000
+        },
+        "deep_profile": {
+          "type": "string",
+          "const": "off"
+        }
+      },
+      "required": [
+        "metadata_enabled",
+        "interval_seconds",
+        "deep_profile"
+      ],
+      "additionalProperties": false
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "quota_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_free_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "quota_bytes",
+        "min_free_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "ui": {
+      "type": "object",
+      "properties": {
+        "theme": {
+          "type": "string",
+          "enum": [
+            "light",
+            "dark",
+            "system"
+          ]
+        },
+        "global_hotkey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "close_action": {
+          "type": "string",
+          "enum": [
+            "hide_to_tray",
+            "quit"
+          ]
+        }
+      },
+      "required": [
+        "theme",
+        "global_hotkey",
+        "close_action"
+      ],
+      "additionalProperties": false
+    },
+    "updates": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "channel": {
+          "type": "string",
+          "enum": [
+            "stable",
+            "nightly"
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "unc",
+                    "https",
+                    "gitlab",
+                    "github"
+                  ]
+                },
+                "manifest_location": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "allowed_origins": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "credential_ref": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "manifest_location",
+                "allowed_origins",
+                "credential_ref"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "channel",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "onboarding": {
+      "type": "object",
+      "properties": {
+        "greeting": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "show_whats_new": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled",
+            "show_whats_new"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "greeting"
+      ],
+      "additionalProperties": false
+    },
+    "search": {
+      "type": "object",
+      "properties": {
+        "default_mode": {
+          "type": "string",
+          "enum": [
+            "literal",
+            "lexical",
+            "hybrid"
+          ]
+        },
+        "project_aliases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "project_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "source_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "variants": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "minItems": 1,
+                "maxItems": 32
+              },
+              "confirmed": {
+                "type": "boolean"
+              },
+              "basis": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "id",
+              "project_id",
+              "source_ids",
+              "variants",
+              "confirmed",
+              "basis"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "default_mode",
+        "project_aliases"
+      ],
+      "additionalProperties": false
+    },
+    "projects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "canonical_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "bindings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "path_prefix": {
+                  "type": "string"
+                },
+                "confirmed": {
+                  "type": "boolean"
+                },
+                "basis": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "source_id",
+                "path_prefix",
+                "confirmed",
+                "basis"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 128
+          }
+        },
+        "required": [
+          "id",
+          "canonical_name",
+          "source_ids",
+          "bindings"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 1000
+    },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "repair_policy": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "allowed_actions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "retry_source_probe",
+                  "pause_source_job",
+                  "use_lexical_fallback",
+                  "restore_local_model",
+                  "retry_database",
+                  "reselect_owned_port",
+                  "rebuild_derived_index",
+                  "restore_valid_config",
+                  "cancel_stalled_job",
+                  "cleanup_reproducible_cache"
+                ]
+              },
+              "uniqueItems": true
+            },
+            "allow_permission_expansion": {
+              "type": "boolean",
+              "const": false
+            },
+            "max_concurrent_repairs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1
+            },
+            "plan_ttl_seconds": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "enabled",
+            "allowed_actions",
+            "allow_permission_expansion",
+            "max_concurrent_repairs",
+            "plan_ttl_seconds"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "repair_policy"
+      ],
+      "additionalProperties": false
+    },
+    "diagnostics": {
+      "type": "object",
+      "properties": {
+        "remote_directory": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ]
+        },
+        "remote_credential_ref": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ]
+        },
+        "probe_stale_seconds": {
+          "type": "integer",
+          "const": 300
+        },
+        "outbox": {
+          "type": "object",
+          "properties": {
+            "relative_directory": {
+              "type": "string",
+              "const": "diagnostics/outbox"
+            },
+            "max_unsent_reports": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_unsent_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_report_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sent_retention_days": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_sent_reports": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_sent_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_total_bytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "relative_directory",
+            "max_unsent_reports",
+            "max_unsent_bytes",
+            "max_report_bytes",
+            "sent_retention_days",
+            "max_sent_reports",
+            "max_sent_bytes",
+            "max_total_bytes"
+          ],
+          "additionalProperties": false
+        },
+        "retry": {
+          "type": "object",
+          "properties": {
+            "initial_seconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_seconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "jitter": {
+              "type": "boolean"
+            },
+            "max_attempts_per_report_per_day": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "initial_seconds",
+            "max_seconds",
+            "jitter",
+            "max_attempts_per_report_per_day"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "remote_directory",
+        "remote_credential_ref",
+        "probe_stale_seconds",
+        "outbox",
+        "retry"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "revision",
+    "database",
+    "sources",
+    "indexing",
+    "storage",
+    "ui",
+    "updates",
+    "onboarding",
+    "search",
+    "projects",
+    "agent",
+    "diagnostics"
+  ],
+  "additionalProperties": false
+}

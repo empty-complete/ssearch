@@ -1,0 +1,219 @@
+{
+  "version": 2,
+  "label": "Учебные данные",
+  "fictional": true,
+  "source_id": "onboarding-demo",
+  "separate_temporary_index_required": true,
+  "merge_with_working_index": false,
+  "files": [
+    "Учебный архив/Пермские моторы/Зенитные фонари/Спецификация.txt",
+    "Учебный архив/Пермские моторы/Зенитные фонари/Узлы примыкания.txt",
+    "Учебный архив/Пермские моторы/Зенитные фонари/График поставки.txt",
+    "Учебный архив/Пермские моторы/Кровля/Спецификация.txt",
+    "Учебный архив/Чёто до/Зенитные фонари ПМ/Пояснительная записка.txt",
+    "Учебный архив/Полярный музей/Зенитные фонари/Спецификация.txt",
+    "Учебный архив/Полярный музей/Зенитные фонари/Узлы примыкания.txt",
+    "Учебный архив/Полярный музей/Общие документы/График поставки.txt"
+  ],
+  "projects": [
+    {
+      "id": "perm-motors",
+      "label": "Пермские моторы",
+      "fictional": true,
+      "path_prefixes": [
+        "Учебный архив/Пермские моторы",
+        "Учебный архив/Чёто до/Зенитные фонари ПМ"
+      ]
+    },
+    {
+      "id": "polyarnyy-muzey",
+      "label": "Полярный музей",
+      "fictional": true,
+      "path_prefixes": [
+        "Учебный архив/Полярный музей"
+      ]
+    }
+  ],
+  "project_aliases": {
+    "status": "not_implemented",
+    "silent_ambiguous_expansion_allowed": false,
+    "entries": [
+      {
+        "alias": "ПМ",
+        "expansion": "Пермские моторы",
+        "scope": {
+          "source_id": "onboarding-demo",
+          "project_id": "perm-motors"
+        }
+      },
+      {
+        "alias": "ПМ",
+        "expansion": "Полярный музей",
+        "scope": {
+          "source_id": "onboarding-demo",
+          "project_id": "polyarnyy-muzey"
+        }
+      }
+    ]
+  },
+  "lessons": [
+    {
+      "id": "direct_project_query",
+      "query_mode": "literal_path",
+      "query": "Пермские моторы",
+      "expectation": "top_results",
+      "expected_files": [
+        "Учебный архив/Пермские моторы/Зенитные фонари/Спецификация.txt",
+        "Учебный архив/Пермские моторы/Зенитные фонари/Узлы примыкания.txt",
+        "Учебный архив/Пермские моторы/Зенитные фонари/График поставки.txt",
+        "Учебный архив/Пермские моторы/Кровля/Спецификация.txt"
+      ],
+      "actions": [
+        "type_query"
+      ],
+      "disabled_when_capabilities": [
+        "project_aliases"
+      ]
+    },
+    {
+      "id": "direct_project_and_section",
+      "query_mode": "literal_path",
+      "query": "Пермские моторы зенитные фонари",
+      "expectation": "top_results",
+      "expected_files": [
+        "Учебный архив/Пермские моторы/Зенитные фонари/Спецификация.txt",
+        "Учебный архив/Пермские моторы/Зенитные фонари/Узлы примыкания.txt",
+        "Учебный архив/Пермские моторы/Зенитные фонари/График поставки.txt"
+      ],
+      "selected_file": "Учебный архив/Пермские моторы/Зенитные фонари/Узлы примыкания.txt",
+      "actions": [
+        "type_query",
+        "select_result"
+      ],
+      "disabled_when_capabilities": [
+        "project_aliases"
+      ]
+    },
+    {
+      "id": "same_filename_different_path",
+      "query_mode": "literal_path",
+      "query": "Полярный музей спецификация",
+      "expectation": "top_results",
+      "expected_files": [
+        "Учебный архив/Полярный музей/Зенитные фонари/Спецификация.txt"
+      ],
+      "selected_file": "Учебный архив/Полярный музей/Зенитные фонари/Спецификация.txt",
+      "actions": [
+        "type_query",
+        "select_result"
+      ]
+    },
+    {
+      "id": "reveal_project_document",
+      "query_mode": "literal_path",
+      "query": "Пермские моторы график поставки",
+      "expectation": "top_results",
+      "expected_files": [
+        "Учебный архив/Пермские моторы/Зенитные фонари/График поставки.txt"
+      ],
+      "selected_file": "Учебный архив/Пермские моторы/Зенитные фонари/График поставки.txt",
+      "actions": [
+        "type_query",
+        "select_result",
+        "reveal_in_explorer"
+      ]
+    },
+    {
+      "id": "future_full_project_to_short_branch",
+      "query_mode": "project_context",
+      "status": "not_implemented",
+      "required_capabilities": [
+        "project_aliases"
+      ],
+      "scope": {
+        "source_id": "onboarding-demo"
+      },
+      "preselected_project_id": null,
+      "query": "Пермские моторы зенитные фонари",
+      "expectation": "top_results",
+      "expected_files": [
+        "Учебный архив/Пермские моторы/Зенитные фонари/Спецификация.txt",
+        "Учебный архив/Пермские моторы/Зенитные фонари/Узлы примыкания.txt",
+        "Учебный архив/Пермские моторы/Зенитные фонари/График поставки.txt",
+        "Учебный архив/Чёто до/Зенитные фонари ПМ/Пояснительная записка.txt"
+      ],
+      "expected_resolution": {
+        "source_id": "onboarding-demo",
+        "project_id": "perm-motors",
+        "path_prefixes": [
+          "Учебный архив/Пермские моторы",
+          "Учебный архив/Чёто до/Зенитные фонари ПМ"
+        ],
+        "remaining_query": "зенитные фонари",
+        "mode": "project_scope_then_path_query"
+      },
+      "actions": [
+        "type_query",
+        "select_result"
+      ],
+      "selected_file": "Учебный архив/Чёто до/Зенитные фонари ПМ/Пояснительная записка.txt"
+    },
+    {
+      "id": "future_scoped_project_alias",
+      "query_mode": "project_alias",
+      "status": "not_implemented",
+      "required_capabilities": [
+        "project_aliases"
+      ],
+      "scope": {
+        "source_id": "onboarding-demo",
+        "project_id": "perm-motors"
+      },
+      "query": "ПМ зенитные фонари",
+      "expectation": "top_results",
+      "expected_files": [
+        "Учебный архив/Пермские моторы/Зенитные фонари/Спецификация.txt",
+        "Учебный архив/Пермские моторы/Зенитные фонари/Узлы примыкания.txt",
+        "Учебный архив/Пермские моторы/Зенитные фонари/График поставки.txt",
+        "Учебный архив/Чёто до/Зенитные фонари ПМ/Пояснительная записка.txt"
+      ],
+      "actions": [
+        "choose_project",
+        "type_query"
+      ],
+      "expected_resolution": {
+        "source_id": "onboarding-demo",
+        "project_id": "perm-motors",
+        "path_prefixes": [
+          "Учебный архив/Пермские моторы",
+          "Учебный архив/Чёто до/Зенитные фонари ПМ"
+        ],
+        "remaining_query": "зенитные фонари",
+        "mode": "project_scope_then_path_query"
+      }
+    },
+    {
+      "id": "future_ambiguous_pm",
+      "query_mode": "project_alias",
+      "status": "not_implemented",
+      "required_capabilities": [
+        "project_aliases"
+      ],
+      "scope": {
+        "source_id": "onboarding-demo"
+      },
+      "query": "ПМ",
+      "silent_expansion_allowed": false,
+      "expected_action": "choose_project",
+      "candidate_project_ids": [
+        "perm-motors",
+        "polyarnyy-muzey"
+      ],
+      "expected_files": [],
+      "actions": [
+        "type_query",
+        "choose_project"
+      ]
+    }
+  ]
+}

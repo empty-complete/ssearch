@@ -1,0 +1,74 @@
+ssearch 0.2.0 — third-party notices
+
+Application source code is licensed under MIT; see LICENSE.txt.
+Copyright (c) 2026 empty-complete (Филипп Белобородов).
+Contact: filipp.beloborodoff@yandex.ru.
+Third-party components retain their licenses; this notice does not relicense
+them. No third-party code was modified.
+
+CPython 3.12: Python Software Foundation license and included notices.
+PySide6-Essentials / shiboken6 6.8.3: Qt for Python, LGPLv3 / GPL alternatives
+or commercial licensing. This application uses the LGPL option with unmodified,
+separate shared libraries in the onedir package. Users may replace compatible
+Qt/PySide shared libraries. The application's MIT license does not restrict
+reverse engineering required to debug modifications to these LGPL libraries.
+LGPLv3 and GPLv3 texts are included in resources/licenses. Corresponding upstream
+source for these exact releases is available at:
+https://code.qt.io/cgit/pyside/pyside-setup.git/tag/?h=v6.8.3
+https://code.qt.io/cgit/qt/qtbase.git/tag/?h=v6.8.3
+https://code.qt.io/cgit/qt/qtdeclarative.git/tag/?h=v6.8.3
+
+ONNX Runtime 1.22.1: MIT and bundled ThirdPartyNotices.txt.
+numpy 2.2.6: BSD and the included third-party notices, including linked BLAS.
+tokenizers 0.21.4: Apache License 2.0, Hugging Face.
+The exact environment is recorded in requirements.lock.txt. Notices available
+inside installed distributions are copied without changes to
+resources/licenses/dependencies by tools/collect_notices.py. Build-only tools may
+also be listed there; listing does not imply their code executes in the product.
+
+Embedding model: intfloat/multilingual-e5-small, upstream declares MIT.
+ONNX conversion: Xenova/multilingual-e5-small,
+revision 761b726dd34fb83930e26aab4e9ac3899aa1fa78.
+The conversion identifies the intfloat model as its upstream and supplies no
+separate license file. Upstream MIT text and attribution are included in
+resources/licenses/model-MIT.txt; provenance, sizes, and hashes are recorded in
+models/manifest.json. The files are installed locally; the application never
+downloads the model at runtime.
+
+ssearch icon: generated for this project. Packaged PNG and multi-resolution
+ICO are local assets, retained from the original application.
+
+Local help and these notices require no internet connection to read. Upstream
+URLs are source references only and are not contacted automatically.
+
+PostgreSQL 18.6 Windows x64: PostgreSQL License. Official EDB server binaries,
+headers, libraries, share files and documentation are preserved, with all EDB
+top-level license notices. The separate pgAdmin/StackBuilder application trees
+are excluded; no file inside the selected server trees was pruned.
+pgvector 0.8.7: PostgreSQL License, built unmodified from upstream tag v0.8.7,
+commit f37c13f68b57d2c3472b2214fbcff699d6d34876, against these PostgreSQL headers
+and postgres.lib. Exact archives, binary hashes, build flags, selection mapping
+and static import closure are in resources/postgresql/provenance.json and
+manifest.json. Original license texts are in resources/licenses/postgresql and
+resources/postgresql/licenses. Optional PL/Perl, PL/Python and PL/Tcl extensions
+are preserved as supplied, but require separate external language runtimes and
+are not enabled or advertised by ssearch.
+
+Microsoft Visual C++ Runtime 14.50.35710 x64: unmodified app-local release DLLs
+from the installed VS Build Tools VC/Redist tree. Microsoft license terms and
+redistribution list snapshots are included in resources/licenses/postgresql;
+these DLLs retain Microsoft's license, not the PostgreSQL license.
+
+Psycopg and psycopg-binary 3.3.6: LGPLv3. Unmodified, separate Python modules and
+shared libraries; compatible replacements and reverse engineering needed to
+debug modifications remain permitted. Corresponding exact upstream source:
+https://github.com/psycopg/psycopg/tree/3.3.6
+https://pypi.org/project/psycopg-binary/3.3.6/
+The binary wheel includes libpq and OpenSSL DLLs; their PostgreSQL/OpenSSL license
+notices are included in the PostgreSQL third-party license set. Driver notices
+are in resources/licenses/dependencies/psycopg and psycopg-binary.
+tzdata 2026.5: Apache-2.0 (IANA timezone data retains its upstream terms).
+typing_extensions 4.16.0: Python Software Foundation license.
+Their unchanged wheel license texts are in resources/licenses/dependencies.
+The driver is an application dependency; standalone ssearch-core has no
+mandatory PostgreSQL, GUI, or semantic dependencies.

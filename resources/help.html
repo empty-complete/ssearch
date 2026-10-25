@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>ssearch — справка</title>
+  <link rel="icon" type="image/x-icon" href="branding/atom-search.ico">
+  <style>
+    :root{--bg:#0f0f15;--panel:#17171f;--panel2:#20202c;--ink:#f5f5f7;--muted:#a6a6b8;--line:#30303f;--accent:#7c9cff;--soft:#b9caff;--green:#9bd3bb}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:28px}
+    body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 "Segoe UI",sans-serif}
+    a{color:var(--soft);text-underline-offset:4px}a:hover{color:#fff}
+    a:focus-visible{outline:3px solid var(--accent);outline-offset:5px;border-radius:2px}
+    .skip{position:absolute;left:20px;top:-80px;padding:10px 16px;background:var(--panel2);z-index:2}.skip:focus{top:12px}
+    .wrap{width:min(1120px,calc(100% - 64px));margin:auto}
+    header{display:flex;align-items:center;justify-content:space-between;gap:28px;padding:30px 0 24px;border-bottom:1px solid var(--line)}
+    .brand{font-size:20px;font-weight:600;letter-spacing:-.5px}.brand small{display:block;color:var(--muted);font-weight:400;font-size:13px;letter-spacing:0}
+    .brand img{width:44px;height:44px;float:left;margin-right:12px}
+    .logos{display:flex;align-items:center;gap:28px}.logos img:first-child{height:55px;width:auto}.logos img:last-child{height:32px;width:auto}
+    .hero{display:grid;grid-template-columns:.9fr 1.2fr;gap:52px;align-items:center;padding:65px 0 56px}
+    h1{font-size:clamp(34px,4.1vw,50px);line-height:1.12;letter-spacing:-1.6px;font-weight:600;margin:0 0 24px}
+    h2{font-size:29px;line-height:1.25;letter-spacing:-.7px;font-weight:600;margin:0 0 22px}
+    h3{font-size:19px;line-height:1.3;font-weight:600;margin:0 0 10px}p{margin:0 0 16px}p:last-child{margin-bottom:0}
+    .lead{color:#c3c3d2;font-size:18px;max-width:40ch}.minor{font-size:14px;color:var(--muted)}
+    .demo{background:var(--panel);border:1px solid #38384a;border-radius:16px;overflow:hidden;box-shadow:0 18px 60px #0003}
+    .demo-head{display:flex;justify-content:space-between;align-items:center;padding:18px 20px 10px;font-size:14px;font-weight:600}.demo-head small{font-size:11px;font-weight:400;color:var(--muted)}
+    .search{margin:8px 17px 15px;border:1px solid var(--accent);background:var(--bg);border-radius:9px;padding:11px 15px;font-size:17px;color:#f4f4fa;display:flex;align-items:center;gap:12px}
+    .search svg{width:18px;height:18px;stroke:var(--accent);fill:none;stroke-width:1.7;flex-shrink:0}
+    .source{padding:0 20px 12px;color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+    .result{display:flex;align-items:center;gap:13px;margin:4px 9px;padding:13px 12px;border-radius:7px}.result.active{background:#283553}.ext{background:#272738;color:var(--soft);font-size:10px;font-weight:600;padding:8px 5px;width:39px;text-align:center;border-radius:4px;flex-shrink:0}
+    .filename{font-size:14px;font-weight:600;overflow-wrap:anywhere}.filepath{font-size:11px;color:var(--muted);overflow-wrap:anywhere}.filemeta{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap}
+    .demo-foot{border-top:1px solid var(--line);margin-top:10px;padding:12px 20px;display:flex;justify-content:space-between;font-size:11px;color:var(--muted)}
+    nav{display:flex;gap:12px 25px;flex-wrap:wrap;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:17px 0;font-size:14px}nav a{text-decoration:none;color:#c4c4d4}
+    section{padding:46px 0;border-bottom:1px solid var(--line)}
+    .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:32px;counter-reset:step}.step{position:relative;padding-top:42px}.step:before{counter-increment:step;content:counter(step);position:absolute;top:0;left:0;color:var(--soft);font-size:18px;line-height:1;border-bottom:2px solid var(--accent);padding-bottom:6px;width:24px}.step p{color:#b6b6c7;font-size:15px}
+    .split{display:grid;grid-template-columns:1fr 1fr;gap:55px}.split p{max-width:60ch;color:#c1c1d0}
+    .note{border-left:3px solid var(--accent);padding:4px 0 4px 18px;margin-top:24px;color:#b9caff;font-size:15px}
+    .example{display:flex;align-items:baseline;gap:16px;padding:12px 0;border-bottom:1px solid #272733}.example:last-child{border-bottom:0}.example code{min-width:100px;color:#e0e8ff;font-family:inherit;font-weight:600}.example span{color:var(--muted);font-size:14px}
+    .path-box{padding:24px;background:var(--panel);border-radius:10px;margin-top:24px;font-size:14px;color:var(--muted);overflow-wrap:anywhere}.path-box .parent{display:block;border-left:2px solid var(--green);padding:12px 14px;margin:13px 0 0;color:#c9eadc;background:#1e302c}.missing{display:block;margin-top:10px;color:#b9a6a6;text-decoration:line-through}.path-box strong{font-weight:600;color:var(--ink)}
+    table{width:100%;border-collapse:collapse;text-align:left;font-size:15px}caption{text-align:left;font-size:15px;color:var(--muted);padding:0 0 18px}td,th{padding:13px 16px 13px 0;border-bottom:1px solid var(--line)}th{font-weight:600;color:#c4c4d3}td:first-child{width:180px}kbd{display:inline-block;padding:1px 9px;background:var(--panel2);border:1px solid #444457;border-bottom-width:2px;border-radius:5px;font:13px/1.8 "Segoe UI",sans-serif;color:#eeeef5}
+    .status{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:8px}.future{padding-top:18px;color:var(--muted);font-size:14px}
+    footer{padding:36px 0 45px;display:grid;grid-template-columns:1fr auto;gap:25px;font-size:14px;color:var(--muted)}footer strong{color:var(--ink);font-weight:600}footer .signature{text-align:right}footer a{white-space:nowrap}
+    @media(max-width:850px){.hero{grid-template-columns:1fr;gap:30px;padding:40px 0}.hero-copy{max-width:650px}.split{gap:30px}.steps{gap:22px}.filemeta{display:none}}
+    @media(max-width:600px){.wrap{width:calc(100% - 36px)}header{gap:15px}.logos{gap:14px}.logos img:first-child{height:38px}.logos img:last-child{height:23px}.brand{font-size:17px}.brand small{font-size:11px}h1{letter-spacing:-1px}.steps,.split,footer{grid-template-columns:1fr}.step{padding-top:35px}.steps{gap:26px}.split{gap:30px}section{padding:34px 0}h2{font-size:25px}footer .signature{text-align:left}td:first-child{width:130px}.demo-head small{display:none}.demo-foot{gap:15px;font-size:10px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+    @media print{body{background:white;color:#111}.wrap{width:100%}header,.demo,nav{display:none}.hero{display:block;padding:24px 0}section{break-inside:avoid}p,.split p,.lead,.minor,.step p,.future,footer{color:#333}a{color:#222}.path-box{border:1px solid #aaa;background:#eee;color:#333}.path-box strong{color:#111}.path-box .parent{color:#111;background:#ddd}.steps{gap:25px}footer{padding-bottom:0}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#main">Перейти к инструкции</a>
+<div class="wrap">
+  <header>
+    <div class="brand"><img src="branding/atom-search.png" alt="Значок ssearch">ssearch<small>Simple Search · справка</small></div>
+  </header>
+  <main id="main">
+    <div class="hero">
+      <div class="hero-copy">
+        <h1>Рабочие документы — по имени и пути</h1>
+        <p class="lead">Вспомните номер чертежа, часть названия или опишите, что ищете. Выберите файл — приложение покажет его в Проводнике.</p>
+        <p class="minor">Поиск выполняется на вашем компьютере.<br>Первая версия не читает содержимое документов.</p>
+      </div>
+      <div class="demo" role="img" aria-label="Пример поиска: запрос КМ-101, список из трёх файлов. Выбран чертёж КМ-101.pdf; Enter открывает его расположение в Проводнике.">
+        <div class="demo-head">ssearch <small>Пример выдачи</small></div>
+        <div class="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.3"/><path d="m15 15 6 6"/></svg>КМ-101</div>
+        <div class="source">C:\Documents</div>
+        <div class="result active"><div class="ext">PDF</div><div><div class="filename">КМ-101.pdf</div><div class="filepath">Проекты\Корпус А\Чертежи</div></div><div class="filemeta">2.4 МБ</div></div>
+        <div class="result"><div class="ext">XLSX</div><div><div class="filename">КМ-101 — ведомость.xlsx</div><div class="filepath">Проекты\Корпус А\Ведомости</div></div><div class="filemeta">84 КБ</div></div>
+        <div class="result"><div class="ext">DWG</div><div><div class="filename">КМ-101 — узлы.dwg</div><div class="filepath">Проекты\Корпус А\Исходные</div></div><div class="filemeta">5.1 МБ</div></div>
+        <div class="demo-foot"><span>Найдено: 3</span><span>↑ ↓ выбор &nbsp; Enter в Проводнике</span></div>
+      </div>
+    </div>
+    <nav aria-label="Разделы справки"><a href="#start">Начало работы</a><a href="#search">Что вводить</a><a href="#refresh">Обновление</a><a href="#moved">Если файл пропал</a><a href="#offline">Без сети</a><a href="#keyboard">Клавиатура</a></nav>
+
+    <section id="start">
+      <h2>От запроса до файла</h2>
+      <div class="steps">
+        <div class="step"><h3>Укажите рабочую папку</h3><p>В новом профиле папка ещё не выбрана. Откройте «Настройки» и выберите локальную или сетевую папку. До этого приложение не обходит диски или сеть. После сохранения выбранная папка обновляется по расписанию; кнопка «Обновить» запускает обход сразу.</p></div>
+        <div class="step"><h3>Введите запрос</h3><p>Начните с части имени или обозначения. Результаты появляются после короткой паузы во вводе. Под именем показана папка, справа — размер файла.</p></div>
+        <div class="step"><h3>Перейдите к файлу</h3><p>Выберите строку стрелками и нажмите Enter. Можно дважды щёлкнуть по результату. Откроется Проводник с выделенным файлом; дальше работайте с ним как обычно.</p></div>
+      </div>
+    </section>
+
+    <section id="search" class="split">
+      <div><h2>Что вводить в строку</h2><p>Обычный поиск сопоставляет запрос с именами и путями файлов. Укажите характерное слово, номер или название проекта, чтобы сократить список.</p><p>При готовой локальной модели доступен и смысловой поиск: можно описать нужный документ своими словами. Состояние модели видно внизу окна.</p><div class="note">Если точного совпадения нет, сократите запрос до одного обозначения или слова. Совпадение зависит от названия и расположения файла.</div></div>
+      <div><h3>Примеры запросов</h3><div class="example"><code>КМ-101</code><span>номер или обозначение</span></div><div class="example"><code>ведомость</code><span>слово из названия</span></div><div class="example"><code>Корпус А</code><span>часть пути к проекту</span></div><div class="example"><code>узлы крепления</code><span>название или смысл документа</span></div><p class="minor" style="margin-top:20px">Это примеры. Файлы на иллюстрации вымышлены. В выдаче показываются первые 100 результатов; уточните запрос для более точного выбора.</p></div>
+    </section>
+
+    <section id="refresh" class="split">
+      <div><h2>Список обновляется в фоне</h2><p>По умолчанию приложение обновляет список раз в день, пока запущено. В «Настройках» можно изменить интервал. Кнопка «Обновить» запускает обход сразу — например, если коллега только что добавил файл.</p><p>Во время обновления поиск остаётся доступен. «Отмена» останавливает обход при ближайшей возможности; прежние записи сохраняются. Ответ сетевой папки иногда приходится подождать.</p></div>
+      <div><h3>Следите за нижней строкой</h3><p><span class="status" aria-hidden="true"></span>Здесь видны число файлов, состояние модели и доступность источника. Итог обновления появляется над результатами.</p><p>При частичном доступе обновляется доступная часть папок. Файлы из недоступных ветвей сохраняются в списке. Проверьте сеть и права, затем повторите обновление.</p><div class="note">После смены рабочей папки в настройках нажмите «Обновить», чтобы добавить её файлы в локальный список.</div></div>
+    </section>
+
+    <section id="moved" class="split">
+      <div><h2>Файл переместили или удалили</h2><p>Приложение повторно проверяет файл при переходе. Если его уже нет, оно открывает ближайшую доступную родительскую папку в пределах рабочего источника и объясняет, какая папка открыта.</p><p>Если родитель тоже пропал, проверка поднимается выше — до корня источника. Когда недоступен сам источник или нет прав, приложение сообщает об этом. Обновите список после восстановления доступа.</p></div>
+      <div class="path-box" aria-label="Пример: КМ-101.pdf перемещён, открыта сохранившаяся папка Чертежи."><strong>Пример перехода</strong><br>C:\Documents\Проекты\Корпус А<span class="parent">Чертежи — эта папка открыта в Проводнике</span><span class="missing">КМ-101.pdf — файла больше нет по прежнему пути</span></div>
+    </section>
+
+    <section id="offline" class="split">
+      <div><h2>Что работает без сети</h2><p>Поиск по уже сохранённому списку продолжает работать, даже если рабочая папка временно недоступна. Открыть сетевой файл получится после восстановления доступа. В первом запуске без доступа к источнику список будет пустым.</p><p>Если локальная модель отсутствует или повреждена, поиск по именам и путям остаётся доступен. Состояние модели отображается в окне; автоматической загрузки из интернета нет.</p></div>
+      <div><h3>Локальная работа</h3><p>Приложение использует локальные модель, индекс и настройки. Нет облачных запросов, телеметрии и проверки обновлений. Эта справка тоже открывается с компьютера и не требует интернета.</p><p>При обновлении списка читаются только имена, пути и метаданные выбранных рабочих папок. Содержимое документов не открывается, а результаты не заменяют проверку текущих прав доступа.</p><p class="future">Возможное развитие: поиск внутри PDF, Word и Excel. В этой версии такая индексация ещё не выполняется.</p></div>
+    </section>
+
+    <section id="keyboard">
+      <h2>Управление с клавиатуры</h2>
+      <table><caption>Когда фокус в строке поиска или списке результатов</caption><thead><tr><th scope="col">Клавиша</th><th scope="col">Действие</th></tr></thead><tbody><tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Выбрать соседний результат</td></tr><tr><td><kbd>Enter</kbd></td><td>Показать выбранный файл в Проводнике</td></tr><tr><td><kbd>Esc</kbd></td><td>Очистить запрос и вернуться к строке поиска</td></tr><tr><td><kbd>Tab</kbd></td><td>Перейти к следующему элементу окна; Shift + Tab — к предыдущему</td></tr></tbody></table>
+    </section>
+  </main>
+  <footer><div><strong>Филипп Белобородов</strong><br>empty-complete<br><a href="mailto:filipp.beloborodoff@yandex.ru">filipp.beloborodoff@yandex.ru</a></div><div class="signature">ssearch · версия 0.2.0<br><a href="../LICENSE.txt">MIT License</a><br><a href="../THIRD_PARTY_NOTICES.txt">Лицензии сторонних компонентов</a><br>Локальная справка</div></footer>
+</div>
+</body>
+</html>

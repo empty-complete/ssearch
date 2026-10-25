@@ -1,0 +1,105 @@
+{
+  "example": true,
+  "schema_version": 3,
+  "revision": 7,
+  "database": {
+    "mode": "managed_postgresql",
+    "runtime_manifest": "resources/postgresql/manifest.json",
+    "data_subdirectory": "engine/postgresql/18/data"
+  },
+  "sources": [
+    {
+      "id": "88fe3b9e-d0fa-46dc-9c04-29b88f64c1f8",
+      "path": "C:\\Example\\Documents",
+      "label": "Учебные документы",
+      "enabled": true
+    }
+  ],
+  "indexing": {
+    "metadata_enabled": true,
+    "interval_seconds": 86400,
+    "deep_profile": "off"
+  },
+  "storage": {
+    "quota_bytes": 5368709120,
+    "min_free_bytes": 2147483648
+  },
+  "ui": {
+    "theme": "system",
+    "global_hotkey": "Ctrl+Alt+Space",
+    "close_action": "hide_to_tray"
+  },
+  "updates": {
+    "enabled": true,
+    "channel": "stable",
+    "source": null
+  },
+  "onboarding": {
+    "greeting": {
+      "enabled": true,
+      "show_whats_new": true
+    }
+  },
+  "search": {
+    "default_mode": "hybrid",
+    "project_aliases": [
+      {
+        "id": "8ebfb0b6-beb0-45c3-a855-536a2fb37e61",
+        "project_id": "e3649197-0b1b-46f8-bc6a-f52c314e14b3",
+        "source_ids": ["88fe3b9e-d0fa-46dc-9c04-29b88f64c1f8"],
+        "variants": ["ПМ"],
+        "confirmed": true,
+        "basis": "Вымышленное подтверждение владельца учебного проекта"
+      }
+    ]
+  },
+  "projects": [
+    {
+      "id": "e3649197-0b1b-46f8-bc6a-f52c314e14b3",
+      "canonical_name": "Пермские моторы",
+      "source_ids": ["88fe3b9e-d0fa-46dc-9c04-29b88f64c1f8"],
+      "bindings": [
+        {
+          "source_id": "88fe3b9e-d0fa-46dc-9c04-29b88f64c1f8",
+          "path_prefix": "Зенитные фонари ПМ",
+          "confirmed": true,
+          "basis": "Вымышленное сопоставление ветви владельцем учебного проекта"
+        }
+      ]
+    }
+  ],
+  "agent": {
+    "repair_policy": {
+      "enabled": true,
+      "allowed_actions": [
+        "retry_source_probe",
+        "pause_source_job",
+        "use_lexical_fallback"
+      ],
+      "allow_permission_expansion": false,
+      "max_concurrent_repairs": 1,
+      "plan_ttl_seconds": 600
+    }
+  },
+  "diagnostics": {
+    "remote_directory": null,
+    "remote_credential_ref": null,
+    "probe_stale_seconds": 300,
+    "outbox": {
+      "relative_directory": "diagnostics/outbox",
+      "max_unsent_reports": 100,
+      "max_unsent_bytes": 33554432,
+      "max_report_bytes": 262144,
+      "sent_retention_days": 30,
+      "max_sent_reports": 100,
+      "max_sent_bytes": 33554432,
+      "max_total_bytes": 67108864
+    },
+    "retry": {
+      "initial_seconds": 60,
+      "max_seconds": 1800,
+      "jitter": true,
+      "max_attempts_per_report_per_day": 8
+    }
+  }
+}

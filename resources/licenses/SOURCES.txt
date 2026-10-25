@@ -1,0 +1,16 @@
+License texts and attribution sources for ssearch
+
+Qt for Python 6.8.3 (unmodified license texts):
+https://raw.githubusercontent.com/qtproject/pyside-pyside-setup/v6.8.3/LICENSES/LGPL-3.0-only.txt
+https://raw.githubusercontent.com/qtproject/pyside-pyside-setup/v6.8.3/LICENSES/GPL-3.0-only.txt
+
+Hugging Face tokenizers 0.21.4 (unmodified Apache 2.0 text):
+https://raw.githubusercontent.com/huggingface/tokenizers/v0.21.4/LICENSE
+
+Microsoft multilingual-e5-small (upstream model MIT license):
+https://huggingface.co/intfloat/multilingual-e5-small/blob/main/LICENSE
+Pinned distributed ONNX conversion and hashes: models/manifest.json.
+
+dependencies/: notices copied byte-for-byte from the installed distributions
+listed in requirements.lock.txt and from the base CPython installation by
+tools/collect_notices.py. These are local release resources, not runtime URLs.

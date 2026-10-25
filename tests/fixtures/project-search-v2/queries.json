@@ -1,0 +1,448 @@
+{
+  "schema_version": 1,
+  "queries": [
+    {
+      "id": "reverse",
+      "phase": "baseline",
+      "query": "  Пермские моторы зенитные фонари  ",
+      "mode": "lexical",
+      "expected_results": [
+        "pm-spec",
+        "pm-nodes"
+      ],
+      "expected_options": [],
+      "required_fields": [
+        "path",
+        "project"
+      ],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "expected_first": "pm-spec",
+      "expected_project_id": "00000000-0000-4000-8000-000000000001",
+      "expected_aliases": []
+    },
+    {
+      "id": "full-name",
+      "phase": "baseline",
+      "query": "Пермские моторы",
+      "mode": "lexical",
+      "expected_results": [
+        "pm-spec",
+        "pm-nodes",
+        "literal-fallback"
+      ],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "expected_first": "pm-spec",
+      "expected_aliases": []
+    },
+    {
+      "id": "short-scoped",
+      "phase": "baseline",
+      "query": "ПМ",
+      "mode": "lexical",
+      "expected_results": [
+        "direct-spec"
+      ],
+      "expected_options": [],
+      "required_fields": [
+        "alias"
+      ],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000042"
+      ],
+      "expected_first": "direct-spec",
+      "expected_project_id": "00000000-0000-4000-8000-000000000001",
+      "expected_aliases": [
+        {
+          "alias_id": "00000000-0000-4000-8000-000000000011",
+          "project_id": "00000000-0000-4000-8000-000000000001",
+          "source_id": "00000000-0000-4000-8000-000000000042",
+          "matched_text": "ПМ",
+          "canonical_name": "Пермские моторы"
+        }
+      ]
+    },
+    {
+      "id": "ambiguous",
+      "phase": "baseline",
+      "query": "ПМ спецификация",
+      "mode": "lexical",
+      "expected_results": [
+        "pm-spec"
+      ],
+      "expected_results_by_projection": {
+        "pending": ["pm-spec"],
+        "current": ["pm-spec", "supply-spec"]
+      },
+      "expected_options": [
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002"
+      ],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "expected_aliases": []
+    },
+    {
+      "id": "selected",
+      "phase": "baseline",
+      "query": "ПМ спецификация",
+      "mode": "lexical",
+      "expected_results": [
+        "pm-spec"
+      ],
+      "expected_options": [],
+      "required_fields": [
+        "name",
+        "alias"
+      ],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "project_id": "00000000-0000-4000-8000-000000000001",
+      "expected_first": "pm-spec",
+      "expected_project_id": "00000000-0000-4000-8000-000000000001",
+      "expected_aliases": [
+        {
+          "alias_id": "00000000-0000-4000-8000-000000000011",
+          "project_id": "00000000-0000-4000-8000-000000000001",
+          "source_id": "00000000-0000-4000-8000-000000000041",
+          "matched_text": "ПМ",
+          "canonical_name": "Пермские моторы"
+        }
+      ]
+    },
+    {
+      "id": "direct-root",
+      "phase": "baseline",
+      "query": "Пермские моторы спецификация",
+      "mode": "lexical",
+      "expected_results": [
+        "direct-spec"
+      ],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000042"
+      ],
+      "expected_first": "direct-spec",
+      "expected_project_id": "00000000-0000-4000-8000-000000000001",
+      "expected_aliases": []
+    },
+    {
+      "id": "unknown",
+      "phase": "baseline",
+      "query": "ПМ",
+      "mode": "lexical",
+      "expected_results": [
+        "unknown-pm"
+      ],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000044"
+      ],
+      "expected_first": "unknown-pm",
+      "expected_project_id": null,
+      "expected_aliases": []
+    },
+    {
+      "id": "unconfirmed",
+      "phase": "baseline",
+      "query": "РЕЗЕРВ",
+      "mode": "lexical",
+      "expected_results": [],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "expected_aliases": []
+    },
+    {
+      "id": "same-name",
+      "phase": "baseline",
+      "query": "Спецификация",
+      "mode": "lexical",
+      "expected_results": [
+        "supply-spec"
+      ],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "project_id": "00000000-0000-4000-8000-000000000002",
+      "expected_first": "supply-spec",
+      "expected_project_id": "00000000-0000-4000-8000-000000000002",
+      "expected_aliases": []
+    },
+    {
+      "id": "order",
+      "phase": "baseline",
+      "query": "314159",
+      "mode": "lexical",
+      "expected_results": [
+        "order"
+      ],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000044"
+      ],
+      "expected_first": "order",
+      "expected_project_id": null,
+      "expected_aliases": []
+    },
+    {
+      "id": "period",
+      "phase": "baseline",
+      "query": "2026-09",
+      "mode": "lexical",
+      "expected_results": [
+        "period"
+      ],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000044"
+      ],
+      "expected_first": "period",
+      "expected_project_id": null,
+      "expected_aliases": []
+    },
+    {
+      "id": "location",
+      "phase": "baseline",
+      "query": "Екатеринбург инструкция",
+      "mode": "lexical",
+      "expected_results": [
+        "location"
+      ],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000044"
+      ],
+      "expected_first": "location",
+      "expected_project_id": null,
+      "expected_aliases": []
+    },
+    {
+      "id": "instructions",
+      "phase": "baseline",
+      "query": "Порядок согласования",
+      "mode": "lexical",
+      "expected_results": [
+        "instructions"
+      ],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000044"
+      ],
+      "expected_first": "instructions",
+      "expected_project_id": null,
+      "expected_aliases": []
+    },
+    {
+      "id": "empty-scope",
+      "phase": "baseline",
+      "query": "Спецификация",
+      "mode": "lexical",
+      "expected_results": [],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [],
+      "expected_aliases": []
+    },
+    {
+      "id": "forbidden-source",
+      "phase": "baseline",
+      "query": "Спецификация",
+      "mode": "lexical",
+      "expected_results": [],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000043"
+      ],
+      "expected_error": "source_scope_denied",
+      "expected_aliases": []
+    },
+    {
+      "id": "forbidden-project",
+      "phase": "baseline",
+      "query": "Спецификация",
+      "mode": "lexical",
+      "expected_results": [],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "project_id": "00000000-0000-4000-8000-000000000003",
+      "expected_error": "project_scope_denied",
+      "expected_aliases": []
+    },
+    {
+      "id": "pending-short",
+      "phase": "pending",
+      "query": "ПМ",
+      "mode": "lexical",
+      "expected_results": [
+        "direct-spec"
+      ],
+      "expected_options": [],
+      "required_fields": [
+        "alias"
+      ],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000042"
+      ],
+      "expected_first": "direct-spec",
+      "expected_project_id": "00000000-0000-4000-8000-000000000001",
+      "expected_aliases": [
+        {
+          "alias_id": "00000000-0000-4000-8000-000000000011",
+          "project_id": "00000000-0000-4000-8000-000000000001",
+          "source_id": "00000000-0000-4000-8000-000000000042",
+          "matched_text": "ПМ",
+          "canonical_name": "Пермские моторы"
+        }
+      ]
+    },
+    {
+      "id": "pending-reverse",
+      "phase": "pending",
+      "query": "Пермские моторы зенитные фонари",
+      "mode": "lexical",
+      "expected_results": [
+        "pm-spec",
+        "pm-nodes"
+      ],
+      "expected_options": [],
+      "required_fields": [
+        "path",
+        "project"
+      ],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "expected_first": "pm-spec",
+      "expected_project_id": "00000000-0000-4000-8000-000000000001",
+      "expected_aliases": []
+    },
+    {
+      "id": "revoked",
+      "phase": "revoked-pending",
+      "query": "ПМ",
+      "mode": "lexical",
+      "expected_results": [],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "project_id": "00000000-0000-4000-8000-000000000002",
+      "expected_aliases": []
+    },
+    {
+      "id": "canonical-revoked-pending",
+      "phase": "revoked-pending",
+      "query": "Пермские моторы зенитные фонари",
+      "mode": "lexical",
+      "expected_results": [
+        "pm-spec",
+        "pm-nodes"
+      ],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "expected_first": "pm-spec",
+      "expected_project_id": "00000000-0000-4000-8000-000000000001",
+      "expected_aliases": []
+    },
+    {
+      "id": "revoked-current",
+      "phase": "revoked-current",
+      "query": "ПМ",
+      "mode": "lexical",
+      "expected_results": [],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "project_id": "00000000-0000-4000-8000-000000000002",
+      "expected_aliases": []
+    },
+    {
+      "id": "canonical-revoked-current",
+      "phase": "revoked-current",
+      "query": "Пермские моторы зенитные фонари",
+      "mode": "lexical",
+      "expected_results": [
+        "pm-spec",
+        "pm-nodes"
+      ],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": false,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "expected_first": "pm-spec",
+      "expected_project_id": "00000000-0000-4000-8000-000000000001",
+      "expected_aliases": []
+    },
+    {
+      "id": "offline",
+      "phase": "offline",
+      "query": "Пермские моторы зенитные фонари",
+      "mode": "lexical",
+      "expected_results": [
+        "pm-spec",
+        "pm-nodes"
+      ],
+      "expected_options": [],
+      "required_fields": [],
+      "expected_stale": true,
+      "source_ids": [
+        "00000000-0000-4000-8000-000000000041"
+      ],
+      "expected_first": "pm-spec",
+      "expected_project_id": "00000000-0000-4000-8000-000000000001",
+      "expected_aliases": []
+    }
+  ]
+}
