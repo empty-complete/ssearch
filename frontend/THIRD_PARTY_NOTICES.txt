@@ -1,0 +1,23 @@
+ssearch frontend — local dependency notices
+
+First-party code: MIT, Филипп Белобородов. See LICENSE.txt.
+Original application icon is preserved from resources/branding/atom-search.png.
+
+React and React DOM — MIT, Meta Platforms, Inc. and affiliates.
+https://github.com/facebook/react
+HeroUI React and styles — MIT, NextUI Inc. / HeroUI contributors.
+https://github.com/heroui-inc/heroui
+React Aria / React Stately / React Spectrum utilities — Apache-2.0, Adobe.
+https://github.com/adobe/react-spectrum
+Tailwind CSS — MIT, Tailwind Labs, Inc.
+https://github.com/tailwindlabs/tailwindcss
+Tailwind Variants — MIT, NextUI Inc.
+https://github.com/heroui-inc/tailwind-variants
+Catppuccin palette — MIT, Catppuccin contributors.
+https://github.com/catppuccin/palette
+
+The CI artifact licenses/ contains the exact installed production dependency
+license texts and package identity/integrity inventory. Build/test dependencies
+retain their licenses in npm packages and the exact package-lock.json.
+Upstream design/skill snapshots are development references only; their source
+licenses are included alongside snapshots in compatibility/upstream/.

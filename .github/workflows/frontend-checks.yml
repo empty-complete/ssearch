@@ -1,0 +1,62 @@
+name: Frontend candidate
+on:
+  pull_request:
+    paths: ['frontend/**', 'desktop/**', 'tools/build_frontend.ps1', '.github/workflows/frontend-checks.yml', 'src/atom_search/content.py', 'resources/branding/**']
+  push:
+    branches: ['codex/p4-electron-frontend']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  candidate:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+      - name: Pin npm
+        run: npm install --global npm@11.19.1 --ignore-scripts
+      - name: Resolve locked frontend dependencies and warm offline cache
+        working-directory: frontend
+        run: npm ci --ignore-scripts --cache .cache/npm --no-audit --no-fund
+      - name: Frontend types and behavior
+        working-directory: frontend
+        run: |
+          npm run typecheck
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm test
+      - name: Offline frontend rebuild and local bundle proof
+        shell: pwsh
+        run: ./tools/build_frontend.ps1 -CachePath "$PWD/frontend/.cache/npm"
+      - name: Resolve locked desktop build dependencies
+        working-directory: desktop
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm ci --ignore-scripts --cache .cache/npm --no-audit --no-fund
+      - name: Desktop types, safety and compile
+        working-directory: desktop
+        run: |
+          npm run typecheck
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build
+      - name: Headless browser scenarios (GitHub only)
+        working-directory: frontend
+        run: |
+          npx --no-install playwright install chromium
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-candidate-${{ github.sha }}
+          path: |
+            frontend/dist
+            frontend/test-results
+            frontend/playwright-report
+            frontend/compatibility
+            desktop/dist
+          retention-days: 14

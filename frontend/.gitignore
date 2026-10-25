@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.cache/
+playwright-report/
+test-results/
+public/app-icon.png
+public/LICENSE.txt
+public/THIRD_PARTY_NOTICES.txt

@@ -1,0 +1,9 @@
+ssearch desktop candidate — MIT, Филипп Белобородов.
+Electron — MIT, OpenJS Foundation and Electron contributors.
+Electron bundles Chromium, Node.js and other third-party software. Redistribution
+must preserve Electron's LICENSE and LICENSES.chromium.html from its exact binary.
+https://github.com/electron/electron/tree/v45.0.0
+Electron Forge — MIT, Electron contributors. Package-only build tool.
+https://github.com/electron/forge
+Renderer dependencies: ../frontend/THIRD_PARTY_NOTICES.txt and bundled licenses/.
+Task 1 does not produce an installer or establish native platform acceptance.

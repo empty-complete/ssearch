@@ -1,0 +1,2 @@
+# Preserve verbatim upstream source snapshots, including upstream whitespace.
+compatibility/upstream/* -whitespace

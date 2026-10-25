@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "status": "candidate",
+  "electron": {
+    "version": "45.0.0",
+    "embedded_node": "24.22.0",
+    "chromium": "156.0.8078.48",
+    "release": "https://www.electronjs.org/blog/electron-45-0",
+    "platform_source": "https://raw.githubusercontent.com/electron/electron/v45.0.0/README.md",
+    "documented_floor": "Windows 10 or later; exact Windows 10 1809 acceptance remains not_run"
+  },
+  "build": {
+    "node": "24.22.1",
+    "npm": "11.19.1",
+    "source": "https://nodejs.org/en/download/archive/v24.22.1",
+    "platform_source": "https://raw.githubusercontent.com/nodejs/node/v24.22.1/BUILDING.md"
+  },
+  "packages": {
+    "frontend": {
+      "name": "@ssearch/frontend",
+      "version": "0.1.1",
+      "private": true,
+      "type": "module",
+      "license": "MIT",
+      "engines": {
+        "node": "24.22.1",
+        "npm": "11.19.1"
+      },
+      "scripts": {
+        "dev": "vite",
+        "typecheck": "tsc --noEmit",
+        "test": "vitest run",
+        "build": "vite build && node tools/collect-licenses.mjs && node tools/check-bundle.mjs",
+        "test:e2e": "playwright test"
+      },
+      "dependencies": {
+        "@heroui/react": "3.2.6",
+        "@heroui/styles": "3.2.6",
+        "react": "19.3.1",
+        "react-dom": "19.3.1",
+        "tailwind-variants": "3.3.1"
+      },
+      "devDependencies": {
+        "@playwright/test": "1.64.1",
+        "@tailwindcss/vite": "4.3.3",
+        "@testing-library/jest-dom": "7.0.1",
+        "@testing-library/react": "16.3.3",
+        "@testing-library/user-event": "14.6.8",
+        "@types/node": "24.19.2",
+        "@types/react": "19.3.0",
+        "@types/react-dom": "19.3.0",
+        "@vitejs/plugin-react": "6.1.2",
+        "jsdom": "30.1.3",
+        "tailwindcss": "4.3.3",
+        "typescript": "7.0.2",
+        "vite": "8.3.5",
+        "vitest": "5.0.5"
+      }
+    },
+    "desktop": {
+      "name": "ssearch-desktop",
+      "productName": "ssearch",
+      "version": "0.1.1",
+      "private": true,
+      "license": "MIT",
+      "description": "Simple Search local desktop shell",
+      "author": "Филипп Белобородов <filipp.beloborodoff@yandex.ru>",
+      "main": "dist/main.js",
+      "engines": {
+        "node": "24.22.1",
+        "npm": "11.19.1"
+      },
+      "scripts": {
+        "typecheck": "tsc --noEmit",
+        "build": "tsc",
+        "test": "tsx --test tests/*.test.ts",
+        "package": "npm run build && electron-forge package"
+      },
+      "devDependencies": {
+        "@electron-forge/cli": "8.0.1",
+        "@electron-forge/shared-types": "8.0.1",
+        "@types/node": "24.19.2",
+        "electron": "45.0.0",
+        "tsx": "4.23.15",
+        "typescript": "7.0.2"
+      },
+      "config": {
+        "forge": "./forge.config.cjs"
+      }
+    }
+  },
+  "upstream": {
+    "heroui": "31a6261590798d3c46f9cd0adf507653b3bc29ad",
+    "impeccable": "9fa16a06d8957fde5687984629fd028c9f2abf10",
+    "hallmark": "7ec868225c6caa040558c321ee0fefa0e73f83a8",
+    "catppuccin": "07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd"
+  },
+  "locks": [
+    {
+      "path": "frontend/package-lock.json",
+      "sha256": "0ccb477d0f0c02c7f583041bf07a8e0d1163a8f5401df63b50fe90cdfeedef84"
+    },
+    {
+      "path": "desktop/package-lock.json",
+      "sha256": "3729e8d09ee677634717c5b2aab25c700b633f6e1496b779f139e1cf11500771"
+    }
+  ],
+  "snapshots": [
+    {
+      "sha256": "5095d1972c4f84a881e25b5be55868545687f0f39b2ef2489e3d80a8a4bd216f",
+      "file": "button.mdx"
+    },
+    {
+      "sha256": "814096d2c34cc216c624738a49356f32b7237733b4f7edb0685f4e50ef5074ba",
+      "file": "catppuccin-LICENSE"
+    },
+    {
+      "sha256": "808a50e0e6c74617a07b0eaf7fd80f58d8e48a13f48e47c658c7534b1724e5c2",
+      "file": "craft-floor.md"
+    },
+    {
+      "sha256": "45565a78e3c7fdc33791c5074c8640199e2f711e62131cd4ef1cb337010b6e85",
+      "file": "hallmark-flow.md"
+    },
+    {
+      "sha256": "06088a8b94598626f27612dea42300154bf7be967c85d9d3eee4490cb056af7d",
+      "file": "hallmark-LICENSE"
+    },
+    {
+      "sha256": "25a1ff92d925b2389e8409f42fb8ad7e033fceca8b5d1f07ed4ca4c28da53dc3",
+      "file": "hallmark-skill.md"
+    },
+    {
+      "sha256": "bd087c1ebd511adbab74705ec2b31d63d175e8d422f58c1af54754da02b1d329",
+      "file": "heroui-LICENSE"
+    },
+    {
+      "sha256": "4a57a4b2cc35abbcc991f443ae829fc2225135be3c76d9b74839561939cf4fda",
+      "file": "heroui-skill.md"
+    },
+    {
+      "sha256": "02bb8c3b4e70190e3986c0404ad2fd8d639b4f534252d82379cc1b502b6d1812",
+      "file": "impeccable-LICENSE"
+    },
+    {
+      "sha256": "4d0ed950c090526be96dbf541478da2198e52c55ae83ee52612404e090a33707",
+      "file": "input.mdx"
+    },
+    {
+      "sha256": "a9ccb5fda1e9ae66cc39dd58438d1ff08bb2219324877301f0d2d6781b37fc41",
+      "file": "list-box.mdx"
+    },
+    {
+      "sha256": "2ecb8674f239b5386faf955a52f9cc58c7a064a27d7c91bfc871b63d6a9c9c15",
+      "file": "new-work.md"
+    },
+    {
+      "sha256": "a9d2203acd45ca33a13d5c68b02b23ed512425ac15f0e8438318ed124b43729d",
+      "file": "operate.md"
+    },
+    {
+      "sha256": "3dcc4f2a1875ea999a774e3c9ee3fe34092187bb73c7d3a6857547a2904e0543",
+      "file": "select.mdx"
+    },
+    {
+      "sha256": "8e0073e9346bef430459995defd662714433eefbe7376c47353920942f32a561",
+      "file": "text-field.mdx"
+    },
+    {
+      "sha256": "1fc6112b1dfeb0f16953ba1b7ac04b1a7cad690ead4a74282718aa58dd4e7d4c",
+      "file": "tooltip.mdx"
+    }
+  ],
+  "open_gates": [
+    "GitHub targeted tests and production offline build",
+    "Independent combined review and screenshots",
+    "Task2 service bridge and ownership security",
+    "Task3 package frozen service installer offline native runtime",
+    "Win11 native IME Narrator high contrast DPI Snap crash recovery",
+    "Final Win10 1809+ acceptance only at the end",
+    "Full P4 and Stable acceptance"
+  ]
+}
