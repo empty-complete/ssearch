@@ -44,7 +44,12 @@ test('search, duplicate paths, focus, keyboard and theme screenshots', async ({ 
   await expect(page.getByText(/Предпросмотр: Проводник не открывается/)).toBeVisible();
   for (const theme of ['light', 'dark']) {
     await page.getByRole('combobox', { name: 'Тема предпросмотра' }).selectOption(theme);
-    await page.screenshot({ path: testInfo.outputPath(`${theme}-full.png`), fullPage: true });
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    await page.screenshot({
+      path: testInfo.outputPath(`${theme}-full.png`),
+      fullPage: true,
+      animations: 'disabled',
+    });
   }
   await page.setViewportSize({ width: 640, height: 400 });
   await expect(page.locator('body')).toHaveJSProperty('scrollWidth', 640);
