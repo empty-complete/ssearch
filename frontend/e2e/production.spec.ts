@@ -8,7 +8,7 @@ test('production uses local assets, denies networking and preserves reconnect qu
   await expect(input).toBeFocused();
   await input.fill('ведомость'); await input.press('Enter');
   await expect(page.getByRole('alert')).toBeVisible();
-  await expect(page.getByRole('option')).toHaveCount(0);
+  await expect(page.getByRole('listbox', { name: 'Найденные документы' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Повторить соединение' }).click();
   await expect(input).toHaveValue('ведомость');
   await expect(page.getByText(/Учебные данные/)).toHaveCount(0);

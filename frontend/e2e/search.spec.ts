@@ -25,8 +25,9 @@ test('loading skeleton respects reduced motion while results remain usable', asy
   await expect(skeleton).toBeVisible();
   await expect(skeleton).toHaveCSS('animation-name', 'none');
   await page.screenshot({ path: testInfo.outputPath('reduced-loading.png'), fullPage: true });
-  await expect(page.getByRole('option')).toHaveCount(2);
-  await page.getByRole('option').first().focus();
+  const results = page.getByRole('listbox', { name: 'Найденные документы' });
+  await expect(results.getByRole('option')).toHaveCount(2);
+  await results.getByRole('option').first().focus();
   await page.keyboard.press('Enter');
   await expect(page.getByText(/Предпросмотр: Проводник не открывается/)).toBeVisible();
 });
@@ -35,10 +36,11 @@ test('search, duplicate paths, focus, keyboard and theme screenshots', async ({ 
   await page.goto('/');
   const input = page.getByRole('searchbox'); await expect(input).toBeFocused();
   await input.fill('ведомость'); await input.press('Enter');
-  await expect(page.getByRole('option')).toHaveCount(2);
+  const results = page.getByRole('listbox', { name: 'Найденные документы' });
+  await expect(results.getByRole('option')).toHaveCount(2);
   await expect(page.getByText('C:\\Учебные документы\\Северный завод\\АР\\СтадияП\\Ведомость.xlsx')).toBeVisible();
   await expect(page.getByText('C:\\Учебные документы\\Северный завод\\КМ\\СтадияП\\Ведомость.xlsx')).toBeVisible();
-  await page.getByRole('option').first().focus(); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
+  await results.getByRole('option').first().focus(); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
   await expect(page.getByText(/Предпросмотр: Проводник не открывается/)).toBeVisible();
   for (const theme of ['light', 'dark']) {
     await page.getByRole('combobox', { name: 'Тема предпросмотра' }).selectOption(theme);
