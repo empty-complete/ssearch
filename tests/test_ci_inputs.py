@@ -57,6 +57,8 @@ def test_source_pytest_reports_current_test_and_stacks_without_local_values(tmp_
     assert starting in result.stderr
     assert 'PRIVATE_LOCAL_SENTINEL' not in result.stdout + result.stderr
     assert ('CI pytest hard timeout: 5s' in result.stderr) is (scenario == 'timeout')
+    if scenario == 'full':
+        assert 'CI pytest budget: stack=120s timeout=5s\n' in result.stderr
     if scenario == 'suppressed':
         prefix = 'CI pytest failure: '
         reports = [json.loads(line[len(prefix):]) for line in result.stderr.splitlines() if line.startswith(prefix)]

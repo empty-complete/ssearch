@@ -1,7 +1,7 @@
-"""Visible, bounded pytest diagnostics for ssearch source-only Windows CI.
+"""Visible, bounded pytest diagnostics for ssearch Windows CI.
 
-The launcher validates selected targets and source identity before this entry.
-The retained Windows job owns this process and all descendants, including when
+The build harness validates selected scopes before this entry. In hosted CI,
+the retained Windows job owns this process and all descendants, including when
 the hard deadline exits without pytest teardown. No profiles or logs are exported.
 """
 from __future__ import annotations
@@ -110,10 +110,16 @@ class Progress:
 
 def main(argv=None, *, dump_after=120, timeout=900):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('targets', nargs='+')
+    parser.add_argument('--timeout-seconds', type=int, default=timeout)
+    parser.add_argument('targets', nargs='*')
     args = parser.parse_args(argv)
-    progress = Progress(dump_after=dump_after, timeout=timeout)
+    if not 1 <= args.timeout_seconds <= 19800:
+        parser.error('--timeout-seconds must be between 1 and 19800')
+    progress = Progress(dump_after=dump_after, timeout=args.timeout_seconds)
     try:
+        with progress.lock:
+            print(f'CI pytest budget: stack={progress.dump_after}s timeout={progress.timeout}s',
+                  file=progress.output, flush=True)
         # Unbuffered Python plus explicit newline progress survives the parent's
         # line reader. Keep normal pytest capture and avoid dumping local values.
         return int(pytest.main(['-vv', '--tb=short', *args.targets], plugins=[progress]))
