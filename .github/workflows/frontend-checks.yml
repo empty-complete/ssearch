@@ -71,6 +71,8 @@ jobs:
         run: |
           npm run typecheck
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./node_modules/.bin/tsc.cmd --project tsconfig.proof.json --noEmit
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm test
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run build

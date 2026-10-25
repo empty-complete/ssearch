@@ -172,10 +172,10 @@ test('actual source TS to private P2 broker and owner lifecycle', { timeout: 850
 
       current = 'actual_service_crash_claim_recovery';
       await receipt(false);
-      const process = runtime.owners.find(child => child.pid === first.connection.process.pid);
-      assert.ok(process);
-      process.kill(); // Fault injection only: retained child created by this test/runtime.
-      await until(() => !alive(process));
+      const ownedChild = runtime.owners.find(child => child.pid === first.connection.process.pid);
+      assert.ok(ownedChild);
+      ownedChild.kill(); // Fault injection only: retained child created by this test/runtime.
+      await until(() => !alive(ownedChild));
       // Recovery must be driven by the retained owner's exit, without any probe request.
       await until(() => owner.authority !== null && owner.authority.generation !== first.connection.generation);
       assert.equal((await call(owner, 'status')).error, null);
