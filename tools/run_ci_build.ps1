@@ -38,7 +38,10 @@ function Invoke-CiChild {
     }
     $ticket = Get-Content -LiteralPath $admission -Raw | ConvertFrom-Json
     if ($ticket.pid -ne $PID -or $ticket.sid -cne $ExpectedSid) { throw 'CI_CHILD_NOT_ADMITTED' }
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $tokenRights = [Security.Principal.TokenAccessLevels]::Query -bor
+                   [Security.Principal.TokenAccessLevels]::Impersonate -bor
+                   [Security.Principal.TokenAccessLevels]::Duplicate
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent($tokenRights)
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     $groups = & "$env:SystemRoot\System32\whoami.exe" /groups /fo csv /nh
     if ($LASTEXITCODE -ne 0 -or $identity.User.Value -cne $ExpectedSid -or
@@ -48,11 +51,34 @@ function Invoke-CiChild {
         throw 'CI_STANDARD_USER_REQUIRED'
     }
 
-    # -LoadUserProfile loads HKCU, but inherited environment strings can still
-    # name runneradmin. Resolve the logged-on user's actual profile instead.
-    $profile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
-    $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-    $roaming = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+    # Ambient KnownFolder resolution returned Local/Roaming outside this user's
+    # verified profile in CI. Bind the queries to its token and loaded hive;
+    # never infer AppData paths or accept folders outside that profile.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class SsearchCiKnownFolders {
+    [DllImport("shell32.dll", ExactSpelling = true)]
+    static extern int SHGetKnownFolderPath(ref Guid id, uint flags, SafeHandle token, out IntPtr path);
+    public static string Get(Guid id, SafeHandle token) {
+        if (token == null || token.IsInvalid || token.IsClosed)
+            throw new InvalidOperationException("CI_PROFILE_TOKEN_REQUIRED");
+        IntPtr path = IntPtr.Zero;
+        try {
+            int result = SHGetKnownFolderPath(ref id, 0, token, out path);
+            if (result != 0) throw new COMException("CI_KNOWN_FOLDER_FAILED", result);
+            if (path == IntPtr.Zero) throw new InvalidOperationException("CI_KNOWN_FOLDER_EMPTY");
+            return Marshal.PtrToStringUni(path);
+        } finally {
+            if (path != IntPtr.Zero) Marshal.FreeCoTaskMem(path);
+        }
+    }
+}
+'@
+    $token = $identity.AccessToken
+    $profile = [SsearchCiKnownFolders]::Get([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173', $token)
+    $local = [SsearchCiKnownFolders]::Get([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091', $token)
+    $roaming = [SsearchCiKnownFolders]::Get([Guid]'3EB685DB-65F9-4CF6-A03A-E3EF65729F3D', $token)
     $profileKey = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$ExpectedSid"
     $registered = (Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath
     # Diagnose the boundary using only fixed predicate names and booleans:
