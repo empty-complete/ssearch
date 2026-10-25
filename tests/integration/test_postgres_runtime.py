@@ -253,6 +253,10 @@ def test_restored_cluster_keeps_rows_and_vector_search(tmp_path, monkeypatch, pr
             snippets = {
                 "missing_path_or_file": (b"no such file or directory", b"cannot find the path", b"cannot find the file"),
                 "permission_denied": (b"permission denied", b"access is denied"),
+                "invalid_argument": (b"invalid argument", b"parameter is incorrect"),
+                "permission_change_or_set": (b"could not change permissions", b"could not set permissions", b"could not chmod"),
+                "create_or_access_directory": (b"could not create directory", b"could not access directory", b"could not open directory", b"could not create data directory"),
+                "bootstrap_backend_or_child_process": (b"bootstrap", b"child process", b"could not execute command", b"backend process", b"could not start backend"),
                 "path_too_long": (b"file name too long", b"filename too long", b"path too long", b"filename or extension is too long"),
                 "invalid_encoding_or_conversion": (b"invalid byte sequence", b"invalid encoding", b"could not convert", b"encoding conversion", b"no equivalent in target encoding"),
                 "locale": (b"invalid locale", b"could not create locale", b"locale is not supported", b"could not determine locale"),
@@ -285,10 +289,13 @@ def test_restored_cluster_keeps_rows_and_vector_search(tmp_path, monkeypatch, pr
     except (OSError, ValueError):
         pytest.fail("proof_report_unavailable", pytrace=False)
     failure_detail = value.get("failure_detail", {})
-    assert result == 0, {"error_code": value.get("error_code"), "failures": failures,
-                         "initdb_failures": initdb_failures,
-                         "failure_detail": {"type": failure_detail.get("type"),
-                                            "locations": failure_detail.get("locations", [])}}
+    diagnostic = {"error_code": value.get("error_code"), "failures": failures,
+                  "initdb_failures": initdb_failures,
+                  "failure_detail": {"type": failure_detail.get("type"),
+                                     "locations": failure_detail.get("locations", [])}}
+    if result != 0:
+        print(json.dumps(diagnostic, sort_keys=True), file=sys.stderr, flush=True)
+    assert result == 0, diagnostic
     assert value.get("backup", {}).get("method") == "logical-schema"
     assert value["backup"]["bytes"] > 0
     assert value["backup"]["runtime_marker_excluded"] is True
