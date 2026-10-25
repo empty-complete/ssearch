@@ -93,12 +93,12 @@ public static class SsearchCiKnownFolders {
     }
     [DllImport("shell32.dll", ExactSpelling = true)]
     static extern int SHGetKnownFolderPath(ref Guid id, uint flags, SafeHandle token, out IntPtr path);
-    public static string Get(Guid id, SafeHandle token) {
+    public static string Get(Guid id, SafeHandle token, uint flags) {
         if (token == null || token.IsInvalid || token.IsClosed)
             throw new InvalidOperationException("CI_PROFILE_TOKEN_REQUIRED");
         IntPtr path = IntPtr.Zero;
         try {
-            int result = SHGetKnownFolderPath(ref id, 0, token, out path);
+            int result = SHGetKnownFolderPath(ref id, flags, token, out path);
             if (result != 0) throw new COMException("CI_KNOWN_FOLDER_FAILED folder=" + id.ToString("D") + " hresult=" + result.ToString("X8"), result);
             if (path == IntPtr.Zero) throw new InvalidOperationException("CI_KNOWN_FOLDER_EMPTY");
             return Marshal.PtrToStringUni(path);
@@ -127,9 +127,11 @@ public static class SsearchCiKnownFolders {
     foreach ($item in $ciContext.GetEnumerator()) {
         [Environment]::SetEnvironmentVariable($item.Key, $item.Value, 'Process')
     }
-    $profile = [SsearchCiKnownFolders]::Get([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173', $token)
-    $local = [SsearchCiKnownFolders]::Get([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091', $token)
-    $roaming = [SsearchCiKnownFolders]::Get([Guid]'3EB685DB-65F9-4CF6-A03A-E3EF65729F3D', $token)
+    # Lexical lookup exposes only containment booleans before touching a folder.
+    # DONT_VERIFY is not acceptance: flags0 verification is mandatory below.
+    $profile = [SsearchCiKnownFolders]::Get([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173', $token, 0x4000)
+    $local = [SsearchCiKnownFolders]::Get([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091', $token, 0x4000)
+    $roaming = [SsearchCiKnownFolders]::Get([Guid]'3EB685DB-65F9-4CF6-A03A-E3EF65729F3D', $token, 0x4000)
     $profileKey = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$ExpectedSid"
     $registered = (Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath
     # Diagnose the boundary using only fixed predicate names and booleans:
@@ -149,6 +151,11 @@ public static class SsearchCiKnownFolders {
     Write-Host ('CI loaded profile predicates: ' + ($profileChecks | ConvertTo-Json -Compress))
     if ($profileChecks.Values -contains $false) {
         throw 'CI_LOADED_PROFILE_REQUIRED'
+    }
+    if ([SsearchCiKnownFolders]::Get([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173', $token, 0) -ine $profile -or
+        [SsearchCiKnownFolders]::Get([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091', $token, 0) -ine $local -or
+        [SsearchCiKnownFolders]::Get([Guid]'3EB685DB-65F9-4CF6-A03A-E3EF65729F3D', $token, 0) -ine $roaming) {
+        throw 'CI_KNOWN_FOLDER_CHANGED'
     }
     foreach ($item in @(Get-ChildItem Env:)) {
         if ($item.Name.StartsWith('PG', [StringComparison]::OrdinalIgnoreCase) -or
