@@ -208,7 +208,7 @@ void app.whenReady().then(async () => {
       assert.equal(JSON.stringify(failure).includes('synthetic_disconnected'), false);
     }
     assert.equal(dispatchedMutations, 4);
-    const evidenceRoot = resolve(__dirname, '../../frontend/test-results');
+    const evidenceRoot = resolve(__dirname, '../artifacts');
     mkdirSync(evidenceRoot, { recursive: true });
     writeFileSync(join(evidenceRoot, 'electron-security.json'), JSON.stringify({
       schema_version: 1,

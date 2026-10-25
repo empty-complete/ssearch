@@ -81,6 +81,24 @@ jobs:
           npx --no-install playwright install chromium
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run test:e2e
+      - name: Verify retained Electron source security evidence
+        shell: pwsh
+        run: |
+          $receiptPath = Join-Path $PWD 'desktop/artifacts/electron-security.json'
+          if (!(Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+            throw 'Electron source security receipt is missing after browser checks.'
+          }
+          $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+          $sourceSha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE) { throw 'Cannot resolve checked-out source SHA.' }
+          if ($receipt.schema_version -ne 1 -or $receipt.source_sha -cne $sourceSha) {
+            throw 'Electron source security receipt does not match this source SHA.'
+          }
+          if ($receipt.runtime_versions.electron -cne '45.0.0' -or
+              !$receipt.runtime_versions.node -or !$receipt.runtime_versions.chrome -or
+              $receipt.electron_binary_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'Electron source security receipt lacks actual pinned runtime identity.'
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -91,4 +109,5 @@ jobs:
             frontend/playwright-report
             frontend/compatibility
             desktop/dist
+            desktop/artifacts/electron-security.json
           retention-days: 14
