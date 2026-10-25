@@ -35,6 +35,10 @@ fallback in the renderer. Task 2 owns the typed preload and service connection.
 Only explicit development `VITE_DEV_MOCK=1` selects synthetic DTO fixtures; Vite
 eliminates that import in production and bundle inspection rejects fixture IDs.
 The preview reveal action explicitly explains that Explorer is not opened.
+HMR alone receives a development CSP permitting its loopback websocket and React
+refresh preamble. Production keeps a strict self-only script policy and disables
+connections. A separate headless production scenario checks the unavailable
+service path, retained query, local assets and an actual CSP-denied connection.
 
 All tests/builds run on GitHub. The scoped workflow runs locked dependencies,
 types, targeted behavior and desktop asset-boundary tests, an offline reinstall

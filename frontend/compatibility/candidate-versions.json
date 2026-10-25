@@ -31,7 +31,8 @@
         "typecheck": "tsc --noEmit",
         "test": "vitest run",
         "build": "vite build && node tools/collect-licenses.mjs && node tools/check-bundle.mjs",
-        "test:e2e": "playwright test"
+        "test:e2e": "playwright test",
+        "preview": "vite preview"
       },
       "dependencies": {
         "@heroui/react": "3.2.6",

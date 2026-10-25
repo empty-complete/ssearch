@@ -2,8 +2,6 @@ name: Frontend candidate
 on:
   pull_request:
     paths: ['frontend/**', 'desktop/**', 'tools/build_frontend.ps1', '.github/workflows/frontend-checks.yml', 'src/atom_search/content.py', 'resources/branding/**']
-  push:
-    branches: ['codex/p4-electron-frontend']
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,6 +11,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.1'
@@ -52,7 +53,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: frontend-candidate-${{ github.sha }}
+          name: frontend-candidate-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             frontend/dist
             frontend/test-results

@@ -18,7 +18,13 @@ copyFileSync(resolve(import.meta.dirname, '../LICENSE.txt'), resolve(import.meta
 copyFileSync(resolve(import.meta.dirname, 'THIRD_PARTY_NOTICES.txt'), resolve(import.meta.dirname, 'public/THIRD_PARTY_NOTICES.txt'));
 
 export default defineConfig({
-  base: './', plugins: [react(), tailwindcss()],
+  base: './', plugins: [
+    {
+      name: 'explicit-development-csp', apply: 'serve',
+      // React refresh's preamble and Vite's loopback websocket exist only in HMR.
+      transformIndexHtml: html => html.replace("script-src 'self';", "script-src 'self' 'unsafe-inline';").replace("connect-src 'none';", "connect-src 'self' ws://127.0.0.1:5173;"),
+    }, react(), tailwindcss(),
+  ],
   define: { __PRODUCT__: JSON.stringify(product) },
   server: { host: '127.0.0.1', strictPort: true, port: 5173 },
   build: { sourcemap: false, assetsInlineLimit: 0 },
