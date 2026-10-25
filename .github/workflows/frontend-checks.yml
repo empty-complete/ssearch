@@ -69,6 +69,12 @@ jobs:
           npm test
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run build
+      - name: Pinned Electron binary for source security proof (GitHub only)
+        working-directory: desktop
+        run: node node_modules/electron/install.js
+      - name: Actual Electron interception and IPC sender proof (hidden/offscreen)
+        working-directory: desktop
+        run: npm run test:electron
       - name: Headless browser scenarios (GitHub only)
         working-directory: frontend
         run: |

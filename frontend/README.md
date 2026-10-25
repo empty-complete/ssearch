@@ -31,7 +31,8 @@ disables transitions; hidden windows stop loops. Tests exercise these contracts.
 
 Production currently reports service unavailable and keeps the query for retry.
 There is no HTTP client, credential, Node/Electron import, native reveal or mock
-fallback in the renderer. Task 2 owns the typed preload and service connection.
+fallback in the renderer. The typed preload is a source boundary; the actual
+verified broker connection remains a separate integration gate.
 Only explicit development `VITE_DEV_MOCK=1` selects synthetic DTO fixtures; Vite
 eliminates that import in production and bundle inspection rejects fixture IDs.
 The preview reveal action explicitly explains that Explorer is not opened.
@@ -53,15 +54,31 @@ asset inventory with each lock's digest and verified package integrities.
 The workflow may download dependencies and browser tools during its online
 preparation step; application runtime and the offline rebuild do not do so.
 
-Forge is package-only, with no makers, publishers or updater. The shell has no
-preload or service lifecycle in Task 1. Its temporary file loader resolves existing
-assets under the selected root, blocks remote requests, permissions, subframes,
-navigation, windows and downloads. Full atom protocol/IPC proof belongs to Task 2.
-No package/installer/native acceptance is claimed by TypeScript or DOM checks.
+Forge is package-only, with no makers, publishers or updater. The source shell now
+loads only canonical `ssearch://ui/` assets from its isolated session; `atom://` and
+file URLs have no alias. The sandboxed CommonJS preload publishes eight named
+methods, consumed by `createSearchClient(api): SearchClient`. Exact sender/frame,
+origin, session epoch, argument/body bounds and trusted main-side owner capability
+checks precede the injected service port. Production has no verified port and
+fails closed, without starting a service. Browser aborts remain local and send a
+bounded cancellation ID; 64 pending calls, operation budgets and epoch checks
+reject late completions. An uncertain mutation outcome requires an authoritative
+state/revision read before any user retry; the client never retries mutations.
+
+Task 2 source security uses the pinned [Electron 45 protocol](https://raw.githubusercontent.com/electron/electron/v45.0.0/docs/api/protocol.md),
+[contextBridge](https://raw.githubusercontent.com/electron/electron/v45.0.0/docs/api/context-bridge.md)
+and [security guidance](https://raw.githubusercontent.com/electron/electron/v45.0.0/docs/tutorial/security.md).
+GitHub RED for the asset boundary: run 40206580329 (original protocol spelling),
+then the exact `ssearch://` checkpoint c1565de. Targeted unit/browser and actual
+hidden/offscreen Electron tests are authored; their current commit still needs
+GitHub execution and one combined independent review. The Electron receipt records
+actual versions and binary SHA256 in ignored test artifacts. It proves source
+interception/CSP/sender behavior with synthetic ports, not real broker authority,
+service lifecycle, package/installer/native acceptance or final Win10 support.
 
 Open gates: remote RED/GREEN observations (tests were authored first, no local
-execution); candidate CI; independent combined visual/code review; Task 2 bridge
-and ownership/security; Task 3 frozen service, package/installer/offline runtime;
+execution); candidate CI; independent combined visual/code review; real broker
+and ownership/security integration; Task 3 frozen service, package/installer/offline runtime;
 actual Win11 IME, keyboard, Narrator, high contrast, DPI/Snap and crash recovery;
 final Win10 1809+ test only at the end. Generic documented Windows 10 support
 does not establish the exact 1809 native gate. No Stable claim.

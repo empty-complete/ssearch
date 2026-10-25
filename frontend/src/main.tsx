@@ -1,10 +1,10 @@
 import { createRoot } from 'react-dom/client';
 import { SearchApp } from './SearchApp';
-import { unavailableService } from './bridge/client';
+import { createSearchClient, unavailableService } from './bridge/client';
 import './styles.css';
 
 async function start() {
-  let service = unavailableService;
+  let service = window.ssearch ? createSearchClient(window.ssearch) : unavailableService;
   let preview = false;
   // Vite removes this branch and the fixture chunk from every production build.
   if (import.meta.env.DEV && import.meta.env.VITE_DEV_MOCK === '1') {

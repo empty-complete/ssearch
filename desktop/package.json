@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc",
     "test": "tsx --test tests/*.test.ts",
+    "test:electron": "electron tests/electron-security.cjs",
     "package": "npm run build && electron-forge package"
   },
   "devDependencies": {

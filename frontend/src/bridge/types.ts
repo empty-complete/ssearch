@@ -1,64 +1,23 @@
-/** Projection of src/atom_search/service/contracts.py. Wire keys stay snake_case. */
-export interface SearchRequest {
-  query: string;
-  source_ids?: string[] | null;
-  limit?: number;
-  mode?: 'hybrid' | 'lexical' | 'semantic';
-  project_id?: string | null;
-}
-
-export interface ResultMetadata {
-  result_id: string;
-  source_id: string;
-  name: string;
-  relative_path: string;
-  full_path: string;
-  size: number;
-  modified_ns: number;
-  stale: boolean;
-  project_id: string | null;
-  matched_fields: string[];
-  score: number | null;
-  match_kind: string;
-}
-
-export interface ProjectOption {
-  project_id: string;
-  canonical_name: string;
-  source_ids: string[];
-}
-
-export interface SearchResponse {
-  results: ResultMetadata[];
-  query_interpretation: {
-    original_query: string;
-    normalized_query: string;
-    project_id: string | null;
-    expanded_terms: string[];
-  };
-  applied_aliases: Array<{
-    alias_id: string;
-    project_id: string;
-    source_id: string;
-    matched_text: string;
-    canonical_name: string;
-  }>;
-  ambiguities: Array<{ term: string; options: ProjectOption[] }>;
-  catalog_generation: number;
-  warnings: string[];
-}
-
-export interface WireError {
-  code: string;
-  message: string;
-  retryable: boolean;
-  details: Record<string, unknown>;
-}
-
-export type WireEnvelope<T> = { schema_version: number; request_id: string } & (
-  { data: T; error: null } | { data: null; error: WireError }
-);
+/** Shared, host-free P2 projection; type-only exports never enter the renderer bundle. */
+export type {
+  SearchRequest, ResultMetadata, ProjectOption, SearchResponse, WireError, WireEnvelope,
+  JsonObject, JsonValue, SettingsSnapshot, SettingsValidation, JobSnapshot,
+  HealthSnapshot, DesktopApi, CallControl,
+} from '../../../desktop/src/contracts';
+import type {
+  SearchRequest, SearchResponse, MethodArguments, MethodResults,
+} from '../../../desktop/src/contracts';
 
 export interface SearchService {
   search(request: SearchRequest, signal: AbortSignal): Promise<SearchResponse>;
+}
+export interface SearchClient extends SearchService {
+  search(request: SearchRequest, signal?: AbortSignal): Promise<SearchResponse>;
+  fetch(request: MethodArguments['fetch'], signal?: AbortSignal): Promise<MethodResults['fetch']>;
+  status(signal?: AbortSignal): Promise<MethodResults['status']>;
+  settingsGet(signal?: AbortSignal): Promise<MethodResults['settings_get']>;
+  settingsValidate(request: MethodArguments['settings_validate'], signal?: AbortSignal): Promise<MethodResults['settings_validate']>;
+  settingsApply(request: MethodArguments['settings_apply'], signal?: AbortSignal): Promise<MethodResults['settings_apply']>;
+  startCatalog(request: MethodArguments['start_catalog'], signal?: AbortSignal): Promise<MethodResults['start_catalog']>;
+  cancelJob(request: MethodArguments['cancel_job'], signal?: AbortSignal): Promise<MethodResults['cancel_job']>;
 }

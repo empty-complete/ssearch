@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -28,4 +28,21 @@ test('only canonical ssearch UI assets inside the selected local root may load',
     const executable = join(root, 'run.exe'); writeFileSync(executable, 'x');
     assert.equal(permitsAsset('ssearch://ui/run.exe', root), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('directory junctions cannot escape or replace the canonical asset root', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ssearch-junction-'));
+  try {
+    const root = join(dir, 'ui');
+    const outside = join(dir, 'outside');
+    mkdirSync(root);
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'secret.js'), 'private');
+    symlinkSync(outside, join(root, 'linked'), 'junction');
+    symlinkSync(outside, join(dir, 'linked-root'), 'junction');
+    assert.equal(permitsAsset('ssearch://ui/linked/secret.js', root), false);
+    assert.equal(permitsAsset('ssearch://ui/secret.js', join(dir, 'linked-root')), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
