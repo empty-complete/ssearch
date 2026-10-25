@@ -212,7 +212,7 @@ $accountName = 'ssci' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
 try {
     $password = ConvertTo-SecureString ([Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48)) + 'aA1!') -AsPlainText -Force
     $account = New-LocalUser -Name $accountName -Password $password -AccountNeverExpires -PasswordNeverExpires
-    Add-LocalGroupMember -SID ([Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')) -Member $account.SID
+    Add-LocalGroupMember -SID ([Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')) -Member $account
     $credential = [PSCredential]::new("$env:COMPUTERNAME\$accountName", $password)
     $run = Join-Path $repository ('.local/ci-' + [Guid]::NewGuid().ToString('N').Substring(0, 12))
     $null = New-Item -ItemType Directory -Path $run
