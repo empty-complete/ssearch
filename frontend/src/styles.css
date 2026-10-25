@@ -49,6 +49,7 @@ p { margin:0 0 12px; }
 .result-name { font-size:15px; font-weight:600; color:var(--foreground); }
 .result-path { font-size:13px; color:var(--muted); white-space:normal; overflow-wrap:anywhere; user-select:text; }
 .result-warning,.persistent-warning { font-size:13px; color:var(--warning); }
+.result-warning { display:block; margin-top:3px; }
 .persistent-warning { margin:12px 0; }
 .connection-error { padding:16px 0; }
 .connection-error p { color:var(--danger); }

@@ -18,7 +18,7 @@ const row = (result_id: string, folder: string): ResultMetadata => ({
 export const mockService: SearchService = {
   async search(request, signal) {
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, 180);
+      const timer = setTimeout(resolve, request.query === 'медленно' ? 1500 : 180);
       signal.addEventListener('abort', () => {
         clearTimeout(timer);
         reject(new DOMException('Aborted', 'AbortError'));

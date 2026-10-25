@@ -25,10 +25,12 @@ export function ResultList({ results, selectedId, onSelect, onReveal }: ResultLi
       {result => (
         <ListBox.Item id={result.result_id} textValue={`${result.name} ${result.full_path}`} className="result-row">
           <Label className="result-name">{result.name}</Label>
-          <Description className="result-path">{result.full_path}</Description>
-          {result.stale && (
-            <Description className="result-warning">Источник недоступен · путь мог измениться</Description>
-          )}
+          <Description className="result-path">
+            <span>{result.full_path}</span>
+            {result.stale && (
+              <span className="result-warning">Источник недоступен. Путь мог измениться.</span>
+            )}
+          </Description>
         </ListBox.Item>
       )}
     </ListBox>

@@ -1,4 +1,21 @@
 import { test, expect } from '@playwright/test';
+
+test('loading skeleton respects reduced motion while results remain usable', async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/');
+  const input = page.getByRole('searchbox');
+  await input.fill('медленно');
+  await input.press('Enter');
+  const skeleton = page.locator('.skeleton').first();
+  await expect(skeleton).toBeVisible();
+  await expect(skeleton).toHaveCSS('animation-name', 'none');
+  await page.screenshot({ path: testInfo.outputPath('reduced-loading.png'), fullPage: true });
+  await expect(page.getByRole('option')).toHaveCount(2);
+  await page.getByRole('option').first().focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByText(/Предпросмотр: Проводник не открывается/)).toBeVisible();
+});
+
 test('search, duplicate paths, focus, keyboard and theme screenshots', async ({ page }, testInfo) => {
   await page.goto('/');
   const input = page.getByRole('searchbox'); await expect(input).toBeFocused();

@@ -22,12 +22,13 @@ export function SearchApp({ service, preview = false, mode = 'application' }: Se
   const [notice, setNotice] = useState('');
   const [about, setAbout] = useState(false);
   const response = state.response;
+  const devPreview = import.meta.env.DEV && preview;
   useEffect(() => () => controller.dispose(), [controller]);
 
   const submit = () => { void controller.submit(); };
   const reveal = (id: string) => {
     if (!controller.revealCandidate(id)) return;
-    setNotice(preview
+    setNotice(devPreview
       ? 'Предпросмотр: Проводник не открывается. Полный путь указан в выдаче.'
       : 'Показ в Проводнике будет доступен после подключения приложения.');
   };
@@ -64,7 +65,7 @@ export function SearchApp({ service, preview = false, mode = 'application' }: Se
           </Button>
         </div>
       </section>
-      {preview && <p className="preview-label">Учебные данные. Предпросмотр интерфейса.</p>}
+      {devPreview && <p className="preview-label">Учебные данные. Предпросмотр интерфейса.</p>}
       <section className="result-area" aria-label="Результаты поиска" aria-busy={state.state === 'loading'}>
         <div role="status" aria-live="polite" className="search-status">
           {state.state === 'idle' && (
@@ -129,7 +130,7 @@ export function SearchApp({ service, preview = false, mode = 'application' }: Se
         </section>
       )}
       <footer className="app-footer">
-        <span>{preview ? 'Предпросмотр' : 'Подключение к локальному поиску ожидается'}</span>
+        <span>{devPreview ? 'Предпросмотр' : 'Подключение к локальному поиску ожидается'}</span>
         <label className="theme-control">
           Тема
           <select aria-label="Тема предпросмотра" value={theme}
