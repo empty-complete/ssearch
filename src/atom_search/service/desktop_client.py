@@ -170,4 +170,3 @@ def run_desktop_client(input, output, *, profile: Path) -> int:
     finally:
         if client is not None:
             client.close()  # P2 clients cannot stop the owner.
-

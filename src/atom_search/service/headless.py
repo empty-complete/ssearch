@@ -10,6 +10,7 @@ import queue
 import signal
 import sys
 import threading
+import time
 
 
 def serve(profile: Path, *, model_dir: Path | None = None, stop: threading.Event | None = None,
@@ -52,13 +53,20 @@ def serve(profile: Path, *, model_dir: Path | None = None, stop: threading.Event
             done.set()
 
     threading.Thread(target=lifecycle, name='atom-headless-owner', daemon=True).start()
-    if not ready.wait(startup_timeout):
-        stop.set()
-        return 1
+    deadline = time.monotonic() + startup_timeout
+    startup_failed = False
+    while not ready.is_set() and not stop.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            startup_failed = True
+            stop.set()
+            break
+        ready.wait(min(.05, remaining))
     stop.wait()
     if not done.wait(shutdown_timeout):
         return 1
-    return outcome.get_nowait()
+    result = outcome.get_nowait()
+    return 1 if startup_failed else result
 
 
 def main(argv=None) -> int:
@@ -69,6 +77,7 @@ def main(argv=None) -> int:
                         help='stop when the private inherited control pipe reaches EOF')
     args = parser.parse_args(argv)
     stop = threading.Event()
+    control_failed = threading.Event()
     previous = {}
     for name in ('SIGINT', 'SIGTERM', 'SIGBREAK'):
         signum = getattr(signal, name, None)
@@ -79,11 +88,14 @@ def main(argv=None) -> int:
             try:
                 while sys.stdin.buffer.read(1):
                     pass  # No token, arbitrary command or second settings writer.
+            except Exception:
+                control_failed.set()  # Suppress threading.excepthook/private traceback.
             finally:
                 stop.set()
         threading.Thread(target=control, name='atom-headless-control', daemon=True).start()
     try:
-        return serve(args.data_dir, model_dir=args.model_dir, stop=stop)
+        result = serve(args.data_dir, model_dir=args.model_dir, stop=stop)
+        return 1 if control_failed.is_set() else result
     except Exception:
         return 1  # No traceback/private paths on stdout or stderr.
     finally:

@@ -5,6 +5,64 @@ import subprocess
 import sys
 import time
 
+import pytest
+
+
+def test_stop_during_blocked_start_uses_shutdown_budget(tmp_path, monkeypatch):
+    import threading
+    from atom_search.service.headless import serve
+    from atom_search.service.owner import ServiceOwner
+    entered, release, cleaned, stop = (threading.Event() for _ in range(4))
+    observed = []
+    original_close = ServiceOwner.close
+
+    def blocked_start(self):
+        entered.set()
+        release.wait(10)
+        raise RuntimeError('controlled startup failure')
+
+    def close(self):
+        try:
+            return original_close(self)
+        finally:
+            cleaned.set()
+
+    monkeypatch.setattr(ServiceOwner, 'start', blocked_start)
+    monkeypatch.setattr(ServiceOwner, 'close', close)
+
+    def request_stop():
+        if entered.wait(10):
+            observed.append(time.monotonic())
+            stop.set()
+
+    stopper = threading.Thread(target=request_stop, daemon=True)
+    stopper.start()
+    try:
+        result = serve(tmp_path / 'profile', model_dir=tmp_path / 'missing', stop=stop,
+                       startup_timeout=10, shutdown_timeout=.1)
+        assert entered.is_set() and observed
+        assert result == 1 and time.monotonic() - observed[0] < 2
+        assert not cleaned.is_set()  # No false clean-stop receipt while startup is uncertain.
+    finally:
+        release.set()
+        stopper.join(10)
+        assert cleaned.wait(10)
+
+
+def test_control_reader_failure_is_redacted_and_stops_cleanly(tmp_path, monkeypatch, capsys):
+    from atom_search.service.headless import main
+
+    class BrokenInput:
+        @property
+        def buffer(self):
+            raise OSError('private control pipe secret/path')
+
+    monkeypatch.setattr(sys, 'stdin', BrokenInput())
+    assert main(['--data-dir', str(tmp_path / 'profile'), '--model-dir', str(tmp_path / 'missing'),
+                 '--control-stdin']) == 1
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ''
+
 
 def source_environment():
     return dict(os.environ, PYTHONPATH=os.pathsep.join((str(Path('src').absolute()),
@@ -31,7 +89,6 @@ import atom_search.service.desktop_client
 def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path):
     from atom_search.service.client import ServiceClient
     from atom_search.service.contracts import SearchRequest, ServiceError
-    import pytest
     profile = tmp_path / 'headless profile Кириллица'
     endpoint = profile / 'engine' / 'runtime' / 'endpoint.json'
     environment = source_environment()
@@ -102,4 +159,3 @@ def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path):
                 except subprocess.TimeoutExpired:
                     child.kill()  # Only this test's own child; never discovered processes.
                     child.wait(10)
-

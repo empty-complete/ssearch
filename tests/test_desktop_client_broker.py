@@ -155,4 +155,3 @@ def test_idle_session_is_not_a_partial_frame_timeout(owner_profile, monkeypatch)
     sent = request(owner_profile, 'status')
     assert desktop_client.run_desktop_client(Idle(frame(sent)), output, profile=owner_profile.profile_dir) == 0
     assert replies(output)[0]['envelope']['data']['api_version'] == '1'
-
