@@ -128,4 +128,6 @@ def main(argv=None, *, dump_after=120, timeout=900):
 
 
 if __name__ == '__main__':
+    # Match python -m pytest: package discovery starts at the caller's cwd.
+    sys.path[0] = os.getcwd()
     raise SystemExit(main())
