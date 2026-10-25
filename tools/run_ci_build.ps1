@@ -108,7 +108,9 @@ public static class SsearchCiKnownFolders {
     foreach ($item in @(Get-ChildItem Env:)) {
         if ($item.Name.StartsWith('PG', [StringComparison]::OrdinalIgnoreCase) -or
             $item.Name -match '^GIT_CONFIG_(KEY|VALUE)_\d+$') {
-            [Environment]::SetEnvironmentVariable($item.Name, $null, 'Process')
+            # Remove the entry. PowerShell's string conversion of $null can
+            # preserve an empty variable on current .NET runtimes.
+            Remove-Item -LiteralPath ('Env:\' + $item.Name)
         }
     }
     $remainingPg = @(Get-ChildItem Env: | Where-Object { $_.Name.StartsWith('PG', [StringComparison]::OrdinalIgnoreCase) })
