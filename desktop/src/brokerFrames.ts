@@ -1,13 +1,50 @@
 export const MAX_REQUEST_FRAME = 65_536 + 4096;
 export const MAX_RESPONSE_FRAME = 2_097_152 + 4096;
 
-/** Fail-closed transport checkpoint; no frame is admitted until decoding is implemented. */
+/** Incremental, allocation-bounded four-byte BE/UTF-8 JSON framing. */
 export class BrokerFrameDecoder {
-  get partial(): boolean { return false; }
-  push(_chunk: Uint8Array): unknown[] { return []; }
-  end(): void {}
+  private header = Buffer.alloc(4);
+  private headerBytes = 0;
+  private body: Buffer | null = null;
+  private bodyBytes = 0;
+  constructor(private maximum = MAX_RESPONSE_FRAME) {}
+  get partial(): boolean { return this.headerBytes > 0 || this.body !== null; }
+  push(chunk: Uint8Array): unknown[] {
+    const results: unknown[] = [];
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (this.body === null) {
+        const count = Math.min(4 - this.headerBytes, chunk.length - offset);
+        this.header.set(chunk.subarray(offset, offset + count), this.headerBytes);
+        offset += count;
+        this.headerBytes += count;
+        if (this.headerBytes !== 4) continue;
+        const length = this.header.readUInt32BE(0);
+        if (length < 1 || length > this.maximum) throw new Error('invalid_broker_frame');
+        this.body = Buffer.alloc(length);
+        this.bodyBytes = 0;
+      }
+      const count = Math.min(this.body.length - this.bodyBytes, chunk.length - offset);
+      this.body.set(chunk.subarray(offset, offset + count), this.bodyBytes);
+      this.bodyBytes += count;
+      offset += count;
+      if (this.bodyBytes === this.body.length) {
+        const text = new TextDecoder('utf-8', { fatal: true }).decode(this.body);
+        results.push(JSON.parse(text) as unknown);
+        this.body = null;
+        this.headerBytes = 0;
+        this.bodyBytes = 0;
+      }
+    }
+    return results;
+  }
+  end(): void { if (this.partial) throw new Error('truncated_broker_frame'); }
 }
 
-export function encodeBrokerFrame(_value: unknown, _maximum = MAX_REQUEST_FRAME): Buffer {
-  throw new Error('broker_unavailable');
+export function encodeBrokerFrame(value: unknown, maximum = MAX_REQUEST_FRAME): Buffer {
+  const body = Buffer.from(JSON.stringify(value), 'utf8');
+  if (body.length < 1 || body.length > maximum) throw new Error('invalid_broker_frame');
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(body.length);
+  return Buffer.concat([header, body]);
 }

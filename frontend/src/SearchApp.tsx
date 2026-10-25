@@ -9,6 +9,7 @@ import type { SearchService } from './bridge/types';
 import license from '../../LICENSE.txt?raw';
 import notices from '../THIRD_PARTY_NOTICES.txt?raw';
 import { builtinExtensions } from '../../desktop/src/extensions/registry';
+import { readTransientQuery, writeTransientQuery } from './bridge/transientQuery';
 
 interface SearchAppProps {
   service: SearchService;
@@ -17,7 +18,11 @@ interface SearchAppProps {
 }
 
 export function SearchApp({ service, preview = false, mode = 'application' }: SearchAppProps) {
-  const controller = useMemo(() => new SearchController(service), [service]);
+  const controller = useMemo(() => {
+    const value = new SearchController(service);
+    value.edit(readTransientQuery());
+    return value;
+  }, [service]);
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const [theme, setTheme] = useState<Theme>('system');
   const [notice, setNotice] = useState('');
@@ -56,7 +61,7 @@ export function SearchApp({ service, preview = false, mode = 'application' }: Se
       <section className="search-area" aria-label="Поиск документов">
         <SearchBox
           value={state.query}
-          onChange={value => { controller.edit(value); setNotice(''); }}
+          onChange={value => { controller.edit(value); writeTransientQuery(value); setNotice(''); }}
           onSubmit={submit}
         />
         <div className="search-context">

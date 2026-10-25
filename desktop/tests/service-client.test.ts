@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BrokerFrameDecoder, encodeBrokerFrame, MAX_RESPONSE_FRAME } from '../src/brokerFrames.js';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { ServiceBridgeClient } from '../src/serviceClient.js';
 
 function wire(json: string): Buffer {
   const bytes = Buffer.from(json, 'utf8');
@@ -44,4 +48,28 @@ test('requests use exact big-endian byte lengths and keep the 64 KiB plus overhe
   const response = encodeBrokerFrame({ value: 'x'.repeat(100_000) }, MAX_RESPONSE_FRAME);
   assert.equal(response.readUInt32BE(0), response.length - 4);
   assert.deepEqual(new BrokerFrameDecoder().push(response), [{ value: 'x'.repeat(100_000) }]);
+});
+
+test('correlated transport failures retain uncertainty without retrying a mutation or changing P2 codes', async () => {
+  for (const code of ['service_unavailable', 'request_timeout', 'service_identity_mismatch',
+    'authentication_required', 'access_denied', 'revision_conflict', 'invalid_request']) {
+    const profile = { profile: __dirname, key: 'b'.repeat(64), serviceVersion: '0.2.0',
+      pythonBase: process.execPath, pythonVenv: process.execPath };
+    const client = new ServiceBridgeClient({ spawnBroker: () => spawn(process.execPath,
+      [join(__dirname, 'fixtures/correlated-error-broker.cjs'), profile.profile, profile.key, code],
+      { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }) });
+    try {
+      await client.connect(profile);
+      const reply = await client.request('settings_apply', { candidate: {}, expected_revision: 1 },
+        randomUUID(), new AbortController().signal);
+      assert.equal(reply.error?.code, code);
+      assert.equal(reply.error?.details.transport, 'fixture');
+      assert.equal(reply.error?.details.outcome,
+        ['access_denied', 'revision_conflict', 'invalid_request'].includes(code) ? undefined : 'unknown');
+      if (client.authority) {
+        const count = await client.request('status', {}, randomUUID(), new AbortController().signal);
+        assert.deepEqual(count.data, { calls: 2 });
+      }
+    } finally { await client.close(); }
+  }
 });

@@ -3,12 +3,17 @@ on:
   pull_request:
     paths: ['frontend/**', 'desktop/**', 'tools/build_frontend.ps1', '.github/workflows/frontend-checks.yml', 'LICENSE.txt', 'src/atom_search/content.py', 'src/atom_search/service/contracts.py', 'resources/branding/**']
   workflow_dispatch:
+    inputs:
+      live_source:
+        description: Run admitted standard-user source TS/P2/Electron ownership proof
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   candidate:
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: ${{ inputs.live_source && 45 || 20 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -99,6 +104,40 @@ jobs:
               $receipt.electron_binary_sha256 -cnotmatch '^[0-9a-f]{64}$') {
             throw 'Electron source security receipt lacks actual pinned runtime identity.'
           }
+      - name: Pinned Python for explicit live source proof
+        if: inputs.live_source == true
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+      - name: Prepare verified public live-source inputs
+        if: inputs.live_source == true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $null = New-Item -ItemType Directory -Path '.tools/ci-node' -Force
+          Copy-Item -LiteralPath (Get-Command node).Source -Destination '.tools/ci-node/node.exe'
+          python tools/prepare_ci.py --source
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Admitted standard-user TS to P2 and hidden Electron source lifecycle proof
+        if: inputs.live_source == true
+        shell: pwsh
+        env:
+          BUILD_MODE: source
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TEST_TARGETS_JSON: '["tests/test_desktop_source_bridge.py"]'
+          PYTHONUTF8: '1'
+        run: |
+          ./tools/run_ci_build.ps1 -TimeoutSeconds 1500
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($name in @('source-lifecycle', 'electron-source')) {
+            $path = Join-Path $PWD "desktop/artifacts/$name.json"
+            if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Missing live source receipt.' }
+            $receipt = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            if ($receipt.ok -ne $true -or $receipt.source_commit -cne $env:SOURCE_SHA) {
+              throw 'Live source receipt is incomplete or from another commit.'
+            }
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -110,4 +149,7 @@ jobs:
             frontend/compatibility
             desktop/dist
             desktop/artifacts/electron-security.json
+            desktop/artifacts/source-lifecycle.json
+            desktop/artifacts/electron-source.json
+            artifacts/ci-source/test-receipt.json
           retention-days: 14

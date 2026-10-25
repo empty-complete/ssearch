@@ -12,6 +12,14 @@ PYTHONPATH uses src and packages/atom-search-core/src, with a missing-model fixt
 Required cases cover scopes/revisions/errors, 64 pending/frame bounds, owner proof,
 simultaneous views/launches, crash/reconnect/stale replies, attached-safe release
 and source-parent orphan EOF. Packaging/frozen/native/Win10 remain separate gates.
+Unpackaged MAIN now resolves the existing P2 user/profile through the fixed source
+adapter before the Electron singleton lock. Its inherited-pipe ready reply uses
+P2 nonce/version/process checks and owner-only read IPC; it contains no credentials.
+Windows share one verified broker lane, and correlated transport errors preserve
+unknown mutation outcomes without retry. A retained source-child EOF lease covers
+quit and parent death; attached owners have no stop channel. Query recovery uses
+only sessionStorage in the nonpersistent window partition. Frozen CLI/package
+launch remains unwired; a packaged candidate still fails closed without a port.
 
 P4 Task 1 palette-input slice: one canonical set of the existing 16 semantic
 color roles generates static default CSS in the current stylesheet; noncolor
