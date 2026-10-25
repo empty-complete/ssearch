@@ -1,11 +1,65 @@
 """Source serve proof: real PostgreSQL/IPC; no Qt or fake runtime."""
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
 import time
 
 import pytest
+
+
+_SOURCE_FAILURE_OBSERVER = r'''
+import json, pathlib, runpy, sys, threading
+destination = pathlib.Path(sys.argv.pop(1))
+records = []
+record_lock = threading.Lock()
+codes = frozenset(('initdb_failed', 'runtime_start_failed', 'runtime_validation_failed',
+    'process_timeout', 'startup_unresolved', 'startup_not_ready', 'incomplete_pgdata',
+    'process_identity_unavailable', 'service_unavailable', 'service_identity_mismatch',
+    'service_stopping', 'profile_owner_mismatch', 'credential_decryption_failed'))
+
+def observe(frame, event, argument):
+    if (event != 'exception' or len(records) >= 3 or
+            pathlib.Path(frame.f_code.co_filename).name != 'headless.py' or
+            frame.f_code.co_name not in ('lifecycle', 'control', 'main')):
+        return observe
+    try:
+        error, trace = argument[1], argument[2]
+        chain, seen = [], set()
+        while error is not None and id(error) not in seen and len(chain) < 4:
+            seen.add(id(error))
+            locations = []
+            while trace is not None:
+                locations.append(dict(file=pathlib.Path(trace.tb_frame.f_code.co_filename).name[:64],
+                                      line=trace.tb_lineno))
+                locations = locations[-3:]
+                trace = trace.tb_next
+            code = getattr(error, 'code', None)
+            chain.append(dict(type=type(error).__name__[:64], code=code if code in codes else None,
+                              locations=locations))
+            cause = error.__cause__
+            error = cause if cause is not None else error.__context__
+            trace = error.__traceback__ if error is not None else None
+        with record_lock:
+            if len(records) < 3:
+                records.append(dict(site=frame.f_code.co_name, exceptions=chain))
+                temporary = destination.with_suffix('.tmp')
+                temporary.write_text(json.dumps(records, ensure_ascii=True, separators=(',', ':')),
+                                     encoding='utf-8')
+                temporary.replace(destination)
+    except BaseException:
+        pass  # Observing an exception must not replace it or change service cleanup.
+    return observe
+
+sys.settrace(observe)
+threading.settrace(observe)
+try:
+    runpy.run_module('atom_search.service.headless', run_name='__main__', alter_sys=True)
+finally:
+    threading.settrace(None)
+    sys.settrace(None)
+'''
 
 
 def test_startup_dependency_import_is_inside_the_deadline(monkeypatch, tmp_path):
@@ -129,7 +183,12 @@ def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path, profile
         executable = base_executable
     args = [executable, '-m', 'atom_search.service.headless', '--data-dir', str(profile),
             '--model-dir', str(tmp_path / 'missing-model'), '--control-stdin']
-    process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    diagnostic_file = tmp_path / 'source-failure.json'
+    # Temporary observer for the unresolved Unicode exit. It neither replaces
+    # composition nor changes return values; this route is not normal -m proof.
+    observed_args = ([executable, '-c', _SOURCE_FAILURE_OBSERVER, str(diagnostic_file), *args[3:]]
+                     if profile_name == 'headless profile Кириллица' else args)
+    process = subprocess.Popen(observed_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=environment, creationflags=subprocess.CREATE_NO_WINDOW)
     attached = None
     try:
@@ -149,11 +208,19 @@ def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path, profile
         if first is None or process.poll() is not None:
             # Preserve the client exception context for CI's safe type/file/line
             # chain, without exporting the private profile or subprocess output.
+            diagnostic = []
+            if diagnostic_file.is_file():
+                with diagnostic_file.open('rb') as stream:
+                    content = stream.read(8193)
+                if len(content) <= 8192:
+                    diagnostic = json.loads(content)
             raise AssertionError('source serve did not become ready; '
-                f'endpoint_exists={endpoint.exists()} child_exited={process.poll() is not None}') from last_failure
+                f'endpoint_exists={endpoint.exists()} child_exit_code={process.poll()} '
+                f'cause={diagnostic}') from last_failure
         second = ServiceClient(endpoint, None)
         assert first.descriptor == second.descriptor
-        assert first.descriptor['pid'] == process.pid
+        spawned_pid = process.pid
+        assert first.descriptor['pid'] == spawned_pid
         import http.client
         from urllib.parse import urlsplit
         address = urlsplit(first.descriptor['base_url'])
@@ -183,7 +250,7 @@ def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path, profile
         attached.stdin.close()
         assert attached.wait(50) == 0
         assert second.status() is not None
-        assert second.descriptor['pid'] == process.pid
+        assert second.descriptor['pid'] == spawned_pid
         process.stdin.close()
         assert process.wait(50) == 0
         assert not endpoint.exists()
