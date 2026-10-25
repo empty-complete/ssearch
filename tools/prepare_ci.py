@@ -1,6 +1,7 @@
 """Acquire pinned public inputs before the existing offline Windows build."""
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -133,6 +134,9 @@ def run(*arguments: str | Path) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--source', action='store_true', help='Prepare source tests without Inno Setup')
+    args = parser.parse_args()
     config = json.loads((ROOT / 'resources/ci/build-inputs.json').read_text(encoding='utf-8'))
     if (config['schema_version'] != 1 or os.name != 'nt'
             or '.'.join(map(str, sys.version_info[:3])) != config['python_version']
@@ -142,15 +146,16 @@ def main() -> None:
     runtime = config['postgresql_runtime']
     restore_runtime(download(runtime, cache / 'postgresql-runtime.zip'),
                     ROOT / 'resources/postgresql', runtime['manifest_sha256'])
-    inno = config['inno_setup']
-    installer = download(inno, cache / 'innosetup.exe')
-    compiler_dir = ROOT / '.tools/InnoSetup7'
-    no_links(compiler_dir)
-    subprocess.run([str(installer), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
-                    '/CURRENTUSER', f'/DIR={compiler_dir}'], check=True,
-                   creationflags=subprocess.CREATE_NO_WINDOW)
-    if sha256(compiler_dir / 'ISCC.exe') != inno['compiler_sha256']:
-        raise ValueError('Installed Inno compiler checksum mismatch')
+    if not args.source:
+        inno = config['inno_setup']
+        installer = download(inno, cache / 'innosetup.exe')
+        compiler_dir = ROOT / '.tools/InnoSetup7'
+        no_links(compiler_dir)
+        subprocess.run([str(installer), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+                        '/CURRENTUSER', f'/DIR={compiler_dir}'], check=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+        if sha256(compiler_dir / 'ISCC.exe') != inno['compiler_sha256']:
+            raise ValueError('Installed Inno compiler checksum mismatch')
     run(sys.executable, '-m', 'venv', ROOT / '.venv')
     python = ROOT / '.venv/Scripts/python.exe'
     wheelhouse = ROOT / '.tools/wheelhouse'
@@ -162,8 +167,15 @@ def main() -> None:
     run(python, '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install',
         '--no-index', '--no-deps', '--force-reinstall', '--require-hashes',
         '--find-links', wheelhouse, '-r', ROOT / 'resources/postgresql/wheels.lock.txt')
+    if args.source:
+        # Proof identity reads installed core metadata even with source imports.
+        # PEP 660 uses the already pinned backend; no distributable is exported.
+        run(python, '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install',
+            '--no-index', '--no-deps', '--no-build-isolation', '--editable',
+            ROOT / 'packages/atom-search-core')
     run(python, ROOT / 'tools/fetch_model.py')
-    print('Public inputs prepared; the offline build can start.')
+    print('Public inputs prepared; source tests can start.' if args.source else
+          'Public inputs prepared; the offline build can start.')
 
 
 if __name__ == '__main__':

@@ -18,7 +18,7 @@ from atom_search_core.models import DirectorySnapshot, SearchScope
 from atom_search_core.search import compact, lexical_score
 from .test_pg_catalog import KEY, metadata, rows, write
 
-EVIDENCE = Path(__file__).resolve().parents[2] / '.superpowers/sdd/2026-10-20-postgres-search-backend'
+EVIDENCE = Path(__file__).resolve().parents[2] / 'artifacts/ci-benchmarks/postgres-search-backend'
 
 
 def retrieval(connections):

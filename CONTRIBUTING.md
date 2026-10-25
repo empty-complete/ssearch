@@ -27,8 +27,11 @@ Use existing test coverage first. Add a focused regression test for a real bug, 
 The maintainer selects verification scope according to the change:
 
 - **Documentation only:** check text and links; a new installer is unnecessary when application inputs are unchanged.
+- **Source:** a manually selected, nonempty list of existing Python test files or node IDs, run under the same verified standard-user/profile/DPAPI/mutex preflight. It requires the exact clean source SHA and produces only a source test receipt; no distributable/release wheel, frozen proof, installer or publication. Preparation installs the local core offline through PEP 660 editable installation with the pinned backend and without fetching dependencies. Each test (setup through teardown) prints its node ID immediately, dumps stacks without locals after 120 seconds and exits nonzero after 900 seconds. The owned process job also caps the whole source run at 3600 seconds and cleans descendants. Source success does not satisfy Quick, Full or native acceptance.
 - **Quick:** a targeted development build with an explicit, nonempty list of affected test files or node IDs. Include any relevant database, migration, permissions, deletion, cancellation or ownership checks.
 - **Full:** the complete suite at a stage/release boundary or for an identified broad risk. Run it once as part of the build, not again before and after it.
+
+Full and Quick also print each test node immediately and dump stacks without locals after 120 seconds. Their per-test limit is 3600 seconds; Source keeps its 900-second limit. The existing overall build deadlines and packaging gates still apply.
 
 Quick does not replace full release acceptance. A green hosted Windows runner does not establish Windows 10/11 native, visual, installation or offline acceptance. Record any missing scenario as unverified; do not turn a missing environment into a passing result.
 
@@ -36,7 +39,7 @@ An independent reviewer checks the change and relevant evidence. Merge only afte
 
 ## Architecture and UI
 
-The current desktop uses Qt; the planned desktop uses Electron with a React/HeroUI/TypeScript frontend. The Python/PostgreSQL search service owns the index, model and jobs. Keep UI changes behind its public API instead of duplicating search or database ownership in a window. Existing internal `atom_search` names may remain for compatibility even though the product is ssearch.
+The current desktop uses Qt; the planned desktop uses Electron with a React/HeroUI/TypeScript frontend. The Python/PostgreSQL search service owns the index, model and jobs. Keep UI changes behind its public API instead of duplicating search or database ownership in a window. Legacy `atom_search` imports and related identities are temporary compatibility names pending a controlled migration to ssearch. That separate gated migration must preserve user profiles, indexed data, IPC owner discovery and upgrades of existing installations.
 
 For UI changes, preserve the product's existing tokens and behavior. Use the [official HeroUI React skill and documentation](https://github.com/heroui-inc/heroui/blob/v3/skills/heroui-react/SKILL.md) for component APIs. [Impeccable's Operate guidance](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/reference/operate.md) and [Hallmark's app-screen guidance](https://github.com/Nutlope/hallmark/blob/main/skills/hallmark/references/flow.md#app-screens) can help with clarity and restraint; they are optional guidance, not required installations or automatic hooks.
 

@@ -2,10 +2,84 @@
   "schema_version": 1,
   "python_version": "3.12.10",
   "postgresql_runtime": {
-    "url": "https://github.com/empty-complete/ssearch/releases/download/build-inputs-v1/postgresql-18.6-pgvector-0.8.7-windows-x64.zip",
-    "size": 64507448,
-    "sha256": "b0e233c612f1bc439ac6fbef31754287c4bc7b74358bac7b9f48c4c112d496d0",
-    "manifest_sha256": "251124be4489be559175cd1165c08d255bf42805d5e1f7f6dc112652cb5d4903"
+    "url": "https://github.com/empty-complete/ssearch/releases/download/build-inputs-v2/postgresql-18.6-pgvector-0.8.7-windows-x64-utf8.zip",
+    "size": 64509250,
+    "sha256": "034a9a0cd933af96fe6069e2ca6dab8d22d032d88c21d5e0b9bd0ce9608e32ce",
+    "manifest_sha256": "ad79911b4ac8c0448fdd2b0855687bb3cf7b0cb4ab96fc8097da9a1230b5d32d",
+    "transformation": {
+      "kind": "win32-active-code-page-utf8",
+      "original_input": {
+        "url": "https://github.com/empty-complete/ssearch/releases/download/build-inputs-v1/postgresql-18.6-pgvector-0.8.7-windows-x64.zip",
+        "size": 64507448,
+        "sha256": "b0e233c612f1bc439ac6fbef31754287c4bc7b74358bac7b9f48c4c112d496d0",
+        "manifest_sha256": "251124be4489be559175cd1165c08d255bf42805d5e1f7f6dc112652cb5d4903"
+      },
+      "source_commit": "3c62750e23d0b2fa0f3f14c92b4205cab854b63a",
+      "tool_url": "https://github.com/empty-complete/ssearch/blob/3c62750e23d0b2fa0f3f14c92b4205cab854b63a/tools/pg_utf8_candidate.py",
+      "proof_run_url": "https://github.com/empty-complete/ssearch/actions/runs/40218661396",
+      "proof_scope": "Source-only real PostgreSQL Unicode/SQL/auth/restore/cleanup with absolute initdb paths; not installer or Full acceptance",
+      "receipt": {
+        "url": "https://github.com/empty-complete/ssearch/releases/download/build-inputs-v2/candidate-receipt.json",
+        "size": 200727,
+        "sha256": "8f6984148ee760398189a647fbe92e3ae67c24a9a142a167f2a983d86bcf1d4f",
+        "status": "Exact experimental receipt retained unchanged; this selects a build input, not a release acceptance"
+      },
+      "resource_type": 24,
+      "resource_id": 1,
+      "resource_language": 0,
+      "active_code_page": "UTF-8",
+      "assembly_identity": {
+        "created_new": true,
+        "version": "1.0.0.0",
+        "type": "win32",
+        "processor_architecture": "amd64"
+      },
+      "changed_executables": {
+        "bin/initdb.exe": {
+          "original_sha256": "d59423ea6106821670ea7289b6d5476feb8741d5fdc8537de25f22dda1f13532",
+          "new_sha256": "2079e5e5e0111f9bd1781ba8df0851917df6a8342135bff323ebb3e86b8312b8",
+          "original_manifest_present": false,
+          "new_assembly_identity": "ssearch.pg-utf8.initdb",
+          "xml_sha256": "99f108fa883df0462659cf681331b801058133574035d23ddc3f356fcea4ae16"
+        },
+        "bin/pg_ctl.exe": {
+          "original_sha256": "329daca106cab8f02abe15b3a2ea9d833c60f94995d57a54161c218a940f9193",
+          "new_sha256": "b3718a616aa45b92120c51d2f5cdb3b2d1aea9726f8cb7a531b367d425f89d27",
+          "original_manifest_present": false,
+          "new_assembly_identity": "ssearch.pg-utf8.pg_ctl",
+          "xml_sha256": "6e37c3db37ecc33743ab0533db9aa709300a942abc9692cffb04bd40f77bc58d"
+        },
+        "bin/postgres.exe": {
+          "original_sha256": "8b8bf5d400487159e3e117053d3f5a89fad0c740b310a3ac69e5720ce4f818e1",
+          "new_sha256": "3a3967c4c75176b4b211ac7cbd99988f5d1f0e46cb97555207a5e0184ea25c32",
+          "original_manifest_present": false,
+          "new_assembly_identity": "ssearch.pg-utf8.postgres",
+          "xml_sha256": "42deea4aeb57ecc2f947444df82f25ee0210dcd9fd64a4a4f061803718957b26"
+        },
+        "bin/pg_dump.exe": {
+          "original_sha256": "9414dac0554065aa6edf739d7126b6e6e6d6fc3b56b9706b72cee47cee45b22c",
+          "new_sha256": "73af1ffc2983da71b401d3498d75b4e054e3ffec9051e7447ff07636e7618f98",
+          "original_manifest_present": false,
+          "new_assembly_identity": "ssearch.pg-utf8.pg_dump",
+          "xml_sha256": "fe26f8e54b7d8c3e0bd58b2cecbf274d565b8f286b18db027255f863d60ad370"
+        },
+        "bin/pg_restore.exe": {
+          "original_sha256": "94c2b545fb870c08414dcf03cd93723f78662e1d489a0272150b40a0267f0d55",
+          "new_sha256": "247d615fe1e56225241b7a02e822a4ccdbad9d9d44477a152868f3175213daeb",
+          "original_manifest_present": false,
+          "new_assembly_identity": "ssearch.pg-utf8.pg_restore",
+          "xml_sha256": "4f57943128d55045c1b0448c382d49a9daf62930352513508428b7b456072625"
+        }
+      },
+      "code_sections_unchanged": true,
+      "other_sections_unchanged": true,
+      "other_runtime_files_unchanged": true,
+      "upstream_provenance": "resources/postgresql/provenance.json retains original upstream input records; transformed executable bytes are described here",
+      "feature_minimum": "Windows 10 1903",
+      "feature_minimum_build": 18362,
+      "windows_validation": [],
+      "win10_1809_legacy_fallback": "OPEN"
+    }
   },
   "inno_setup": {
     "version": "7.1.0",

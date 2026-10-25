@@ -231,13 +231,49 @@ runpy.run_path(sys.argv[0], run_name="__main__")
             assert evidence["profile_retained"] is True
 
 
-def test_restored_cluster_keeps_rows_and_vector_search(tmp_path, monkeypatch):
+@pytest.mark.parametrize("profile_name", ["AsciiName x Filenames", "Кириллица с пробелами"],
+                         ids=["ascii", "unicode"])
+def test_restored_cluster_keeps_rows_and_vector_search(tmp_path, monkeypatch, profile_name):
     from atom_search.diagnostics import run_postgres_self_test
+    from atom_search.runtime import _windows, postgres as postgres_module
     report = tmp_path / "restore.json"
-    profile = tmp_path / "Кириллица с пробелами"
+    profile = tmp_path / profile_name
     # Preserve only type/location of an unexpected native boundary failure.
     # Never include locals, SQL, driver text or credentials in test output.
     failures = []
+    initdb_failures = []
+    original_run_logged = postgres_module._run_logged
+    def observe_initdb(program, arguments, directory, environment, *, timeout):
+        result, log_path = original_run_logged(program, arguments, directory, environment, timeout=timeout)
+        if result and Path(program).name.lower() == "initdb.exe":
+            if log_path.parent != Path(directory) or log_path.suffix != ".out":
+                pytest.fail("initdb_log_not_owned", pytrace=False)
+            _windows.assert_private(log_path)
+            content = log_path.read_bytes().lower()
+            snippets = {
+                "missing_path_or_file": (b"no such file or directory", b"cannot find the path", b"cannot find the file"),
+                "permission_denied": (b"permission denied", b"access is denied"),
+                "invalid_argument": (b"invalid argument", b"parameter is incorrect"),
+                "permission_change_or_set": (b"could not change permissions", b"could not set permissions", b"could not chmod"),
+                "create_or_access_directory": (b"could not create directory", b"could not access directory", b"could not open directory", b"could not create data directory"),
+                "bootstrap_backend_or_child_process": (b"bootstrap", b"child process", b"could not execute command", b"backend process", b"could not start backend"),
+                "path_too_long": (b"file name too long", b"filename too long", b"path too long", b"filename or extension is too long"),
+                "invalid_encoding_or_conversion": (b"invalid byte sequence", b"invalid encoding", b"could not convert", b"encoding conversion", b"no equivalent in target encoding"),
+                "locale": (b"invalid locale", b"could not create locale", b"locale is not supported", b"could not determine locale"),
+                "bootstrap_password_file": (b"password file", b"--pwfile", b"bootstrap-"),
+            }
+            data_path = Path(arguments[arguments.index("-D") + 1])
+            data_path = str((data_path if data_path.is_absolute() else Path(directory) / data_path).absolute())
+            import ctypes
+            get_acp = ctypes.WinDLL("kernel32").GetACP
+            get_acp.argtypes = []
+            get_acp.restype = ctypes.c_uint
+            initdb_failures.append({"exit_code": result, "data_path_length": len(data_path),
+                                    "data_path_ascii": data_path.isascii(), "windows_acp": get_acp(),
+                                    "categories": {name: any(token in content for token in tokens)
+                                                   for name, tokens in snippets.items()}})
+        return result, log_path
+    monkeypatch.setattr(postgres_module, "_run_logged", observe_initdb)
     original_fail = PostgresRuntime._fail
     def observe_failure(instance, code, *args, **kwargs):
         error = sys.exception()
@@ -248,8 +284,19 @@ def test_restored_cluster_keeps_rows_and_vector_search(tmp_path, monkeypatch):
                                            for frame in traceback.extract_tb(error.__traceback__)]})
         return original_fail(instance, code, *args, **kwargs)
     monkeypatch.setattr(PostgresRuntime, "_fail", observe_failure)
-    assert run_postgres_self_test(report, data_dir=profile, runtime_dir=RUNTIME) == 0, failures
-    value = json.loads(report.read_text(encoding="utf-8"))
+    result = run_postgres_self_test(report, data_dir=profile, runtime_dir=RUNTIME)
+    try:
+        value = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pytest.fail("proof_report_unavailable", pytrace=False)
+    failure_detail = value.get("failure_detail", {})
+    diagnostic = {"error_code": value.get("error_code"), "failures": failures,
+                  "initdb_failures": initdb_failures,
+                  "failure_detail": {"type": failure_detail.get("type"),
+                                     "locations": failure_detail.get("locations", [])}}
+    if result != 0:
+        print(json.dumps(diagnostic, sort_keys=True), file=sys.stderr, flush=True)
+    assert result == 0, diagnostic
     assert value.get("backup", {}).get("method") == "logical-schema"
     assert value["backup"]["bytes"] > 0
     assert value["backup"]["runtime_marker_excluded"] is True

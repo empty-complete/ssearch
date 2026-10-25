@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -19,6 +20,87 @@ def load_tool(name):
 
 prepare = load_tool('prepare_ci')
 exporter = load_tool('export_ci_artifacts')
+
+
+def test_ci_pytest_preserves_module_invocation_cross_test_imports(tmp_path):
+    """Match the real namespace tests/ tree, without a root test module."""
+    (tmp_path / 'pytest.ini').write_text('[pytest]\ntestpaths = tests\n', encoding='utf-8')
+    integration = tmp_path / 'tests/integration'
+    integration.mkdir(parents=True)
+    (integration / '__init__.py').write_text('', encoding='utf-8')
+    (integration / 'helper.py').write_text('shared_value = 42\n', encoding='utf-8')
+    (integration / 'test_sibling_import.py').write_text(
+        'from tests.integration.helper import shared_value\n'
+        'def test_sibling_import():\n'
+        '    assert shared_value == 42\n', encoding='utf-8')
+    environment = os.environ.copy()
+    environment.pop('PYTHONPATH', None)
+    environment.pop('PYTEST_PLUGINS', None)
+    environment['PYTEST_ADDOPTS'] = ''
+    environment['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+    baseline = subprocess.run([sys.executable, '-u', '-m', 'pytest', '-q'], cwd=tmp_path,
+                              env=environment, capture_output=True, text=True, timeout=30)
+    assert baseline.returncode == 0, {'module_baseline_exit_code': baseline.returncode}
+    wrapper = Path(__file__).parents[1] / 'tools/ci_pytest.py'
+    result = subprocess.run([sys.executable, '-u', str(wrapper), '--timeout-seconds', '15'],
+                            cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, {
+        'wrapper_exit_code': result.returncode,
+        'missing_tests_namespace': "No module named 'tests" in result.stdout + result.stderr}
+    assert 'CI pytest starting: tests/integration/test_sibling_import.py::test_sibling_import\n' in result.stderr
+
+
+@pytest.mark.parametrize('scenario, expected_exit', [('normal', 0), ('timeout', 124), ('suppressed', 1), ('full', 0)])
+def test_source_pytest_reports_current_test_and_stacks_without_local_values(tmp_path, scenario, expected_exit):
+    """Exercise actual threads/pytest in a subprocess, including the hard exit."""
+    # Confine nested discovery even when CI's tmp_path lives under the checkout.
+    (tmp_path / 'pytest.ini').write_text('[pytest]\n', encoding='utf-8')
+    target = tmp_path / 'test_slow_source.py'
+    body = ('    try:\n'
+            '        raise OSError("PRIVATE_LOCAL_SENTINEL")\n'
+            '    except OSError:\n'
+            '        raise RuntimeError("safe_public_failure") from None\n'
+            if scenario == 'suppressed' else f'    time.sleep({10 if scenario == "timeout" else 0.5})\n')
+    target.write_text(
+        'import time\n'
+        'def test_slow_source(capfd):\n'
+        '    private_value = "PRIVATE_LOCAL_SENTINEL"\n' + body, encoding='utf-8')
+    wrapper = Path(__file__).parents[1] / 'tools/ci_pytest.py'
+    script = (
+        'import importlib.util, sys\n'
+        'spec = importlib.util.spec_from_file_location("ci_pytest", sys.argv[1])\n'
+        'module = importlib.util.module_from_spec(spec)\n'
+        'spec.loader.exec_module(module)\n'
+        f'raise SystemExit(module.main([sys.argv[2]], dump_after={30 if scenario == "suppressed" else 0.1}, timeout=5))\n')
+    environment = os.environ.copy()
+    environment['PYTEST_ADDOPTS'] = ''
+    environment.pop('PYTEST_PLUGINS', None)
+    environment['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+    command = ([sys.executable, '-u', str(wrapper), '--timeout-seconds', '5'] if scenario == 'full' else
+               [sys.executable, '-u', '-c', script, str(wrapper), str(target)])
+    result = subprocess.run(command,
+                            cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=15)
+    assert result.returncode == expected_exit
+    starting = 'CI pytest starting: test_slow_source.py::test_slow_source\n'
+    assert starting in result.stderr
+    assert 'PRIVATE_LOCAL_SENTINEL' not in result.stdout + result.stderr
+    assert ('CI pytest hard timeout: 5s' in result.stderr) is (scenario == 'timeout')
+    if scenario == 'full':
+        assert 'CI pytest budget: stack=120s timeout=5s\n' in result.stderr
+    if scenario == 'suppressed':
+        prefix = 'CI pytest failure: '
+        reports = [json.loads(line[len(prefix):]) for line in result.stderr.splitlines() if line.startswith(prefix)]
+        assert len(reports) == 1 and reports[0]['phase'] == 'call'
+        chain = reports[0]['exceptions']
+        assert [error['type'] for error in chain] == ['RuntimeError', 'OSError']
+        locations = [location for error in chain for location in error['locations']]
+        assert len(locations) <= 12
+        assert any(location['file'] == target.name and location['line'] > 0 for location in locations)
+        assert all('/' not in location['file'] and '\\' not in location['file'] for location in locations)
+        assert str(tmp_path) not in result.stderr and str(wrapper) not in result.stderr
+    elif scenario != 'full':
+        assert 'CI pytest stack after: 0.1s' in result.stderr[result.stderr.index(starting):]
+        assert 'in test_slow_source' in result.stderr
 
 
 @pytest.mark.parametrize('child', [False, True])

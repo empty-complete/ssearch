@@ -137,7 +137,8 @@ try {
     Invoke-Checked $Python @('-m', 'pip', '--disable-pip-version-check', 'install',
                             '--no-deps', '--no-index', '--force-reinstall', $coreWheel)
     Invoke-Checked $Python @($helper, 'preflight', '--root', $repository, '--check-dependencies')
-    Invoke-Checked $Python (@('-m', 'pytest', '-q') + @($selection.test_targets))
+    Invoke-Checked $Python (@('-u', (Join-Path $repository 'tools/ci_pytest.py'),
+                             '--timeout-seconds', '3600') + @($selection.test_targets))
     if ($Development) {
         # Invoke-Checked throws on every nonzero pytest exit (including no tests).
         Invoke-Checked $Python (@($helper, 'test-receipt', '--root', $repository,

@@ -8,12 +8,12 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Build scope; Full runs the entire suite once
+        description: Scope; source runs selected tests without packaging
         type: choice
-        options: [full, quick]
+        options: [full, quick, source]
         default: full
       test_targets:
-        description: 'Quick only: JSON array of existing test files/nodeids'
+        description: 'Quick/source: nonempty JSON array of existing test files/nodeids'
         type: string
         default: '[]'
       publish:
@@ -136,18 +136,24 @@ jobs:
             throw 'test_targets must be a JSON array of strings.'
           }
           if ($env:BUILD_MODE -eq 'full' -and $targets.Count -ne 0) { throw 'Full does not accept test targets.' }
-          if ($env:BUILD_MODE -eq 'quick' -and $targets.Count -eq 0) { throw 'Quick requires explicit targets.' }
-          if ($env:BUILD_MODE -notin @('full', 'quick')) { throw 'Unknown build mode.' }
+          if ($env:BUILD_MODE -in @('quick', 'source') -and $targets.Count -eq 0) { throw 'Quick/source requires explicit targets.' }
+          if ($env:BUILD_MODE -notin @('full', 'quick', 'source')) { throw 'Unknown build mode.' }
+          if ($env:BUILD_MODE -eq 'source' -and '${{ inputs.publish }}' -eq 'true') { throw 'Source tests cannot publish a build.' }
       - name: Prepare verified public inputs
         shell: pwsh
-        run: python tools/prepare_ci.py
-      - name: Offline tests, frozen proofs and installer
+        run: |
+          $arguments = @('tools/prepare_ci.py')
+          if ($env:BUILD_MODE -eq 'source') { $arguments += '--source' }
+          & python @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run selected scope under the verified standard user
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           & ./tools/run_ci_build.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain reviewed build outputs
+        if: env.BUILD_MODE != 'source'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-${{ env.SOURCE_SHA }}-${{ inputs.mode || 'full' }}
@@ -159,6 +165,27 @@ jobs:
             artifacts/ci-export/SHA256SUMS.txt
           if-no-files-found: error
           compression-level: 0
+          retention-days: 7
+      - name: Retain source test receipt only
+        if: always() && env.BUILD_MODE == 'source'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: source-tests-${{ env.SOURCE_SHA }}
+          path: artifacts/ci-source/test-receipt.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Retain isolated native UTF-8 experiment only
+        if: >-
+          success() && env.BUILD_MODE == 'source' &&
+          hashFiles(format('artifacts/ci-native-utf8/{0}/ssearch-pg-utf8-candidate.zip', env.SOURCE_SHA)) != '' &&
+          hashFiles(format('artifacts/ci-native-utf8/{0}/candidate-receipt.json', env.SOURCE_SHA)) != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-utf8-experiment-${{ env.SOURCE_SHA }}
+          path: |
+            artifacts/ci-native-utf8/${{ env.SOURCE_SHA }}/ssearch-pg-utf8-candidate.zip
+            artifacts/ci-native-utf8/${{ env.SOURCE_SHA }}/candidate-receipt.json
+          if-no-files-found: error
           retention-days: 7
 
   publish:
