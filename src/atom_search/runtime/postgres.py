@@ -417,9 +417,11 @@ class PostgresRuntime:
                 output.flush()
                 os.fsync(output.fileno())
             _windows.assert_private(password_file)
+            # Relative ASCII filename in the verified private cwd avoids
+            # initdb's native Unicode password-filename conversion.
             result = self._run("initdb.exe", ["-D", self.data_dir, "--encoding=UTF8", "--locale=C",
                                              "--username=atom_bootstrap", "--auth=scram-sha-256",
-                                             "--pwfile", password_file], timeout=120)
+                                             "--pwfile", password_file.name], timeout=120)
             if result:
                 self._fail("initdb_failed")
         finally:
