@@ -25,11 +25,23 @@ const temporary = parameter < 0 ? mkdtempSync(join(tmpdir(), 'ssearch-electron-l
 const profilePath = parameter < 0 ? join(temporary, 'profile Кириллица') : process.argv[parameter + 1];
 const completed = [];
 let current = 'admission';
+let subphase = 'not_started';
+let exceptionKind = null;
+const predicates = {};
+const classify = error => error instanceof assert.AssertionError ? 'assertion_error'
+  : error instanceof SyntaxError ? 'json_syntax_error'
+  : error?.code === 'ENOENT' ? 'missing_file'
+  : error?.code === 'EACCES' || error?.code === 'EPERM' ? 'file_access_denied'
+  : error instanceof Error && error.message === 'source_case_deadline' ? 'case_deadline'
+  : error instanceof Error && error.message === 'owned_test_child_deadline' ? 'child_deadline'
+  : error instanceof Error && error.message === 'owned_test_child_failed' ? 'child_failed'
+  : error instanceof Error ? 'error' : 'non_error_exception';
 const receipt = (ok, reason = 'pending') => {
   if (secondary || orphan) return;
   writeFileSync(join(artifacts, 'electron-source.json'), JSON.stringify({
     source_commit: sourceCommit, ok, completed_cases: completed,
     failed_case: ok ? null : current, reason_code: reason,
+    subphase, safe_predicates: predicates, exception_kind: exceptionKind,
     runtime_versions: process.versions, proof_scope: 'real_source_hidden_offscreen',
   }, null, 2));
 };
@@ -40,6 +52,8 @@ assert.equal(sourceCommit, process.env.SOURCE_SHA);
 assert.equal(process.versions.electron, '45.0.0');
 app.enableSandbox();
 registerAssetScheme();
+// A hidden runner must finish its awaited cleanup and choose its own exit code.
+app.on('window-all-closed', () => {});
 class TrackingRuntime extends SourceRuntime {
   brokers = [];
   owners = [];
@@ -79,8 +93,17 @@ if (!primary) {
       cwd: root, env: process.env, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'],
     });
     const timer = setTimeout(() => { child.kill(); reject(new Error('owned_test_child_deadline')); }, 160_000);
-    child.on('error', () => { clearTimeout(timer); reject(new Error('owned_test_child_failed')); });
-    child.on('close', code => { clearTimeout(timer); code === 0 ? accept() : reject(new Error('owned_test_child_failed')); });
+    child.on('error', () => {
+      clearTimeout(timer);
+      predicates.owned_test_child_spawned = false;
+      reject(new Error('owned_test_child_failed'));
+    });
+    child.on('spawn', () => { predicates.owned_test_child_spawned = true; });
+    child.on('close', code => {
+      clearTimeout(timer);
+      predicates.owned_test_child_exit_zero = code === 0;
+      code === 0 ? accept() : reject(new Error('owned_test_child_failed'));
+    });
   });
   const edit = (window, text, submit) => window.webContents.executeJavaScript(`{
     const input=document.querySelector('input[type="search"]');
@@ -243,36 +266,84 @@ if (!primary) {
 
       current = 'actual_parent_orphan_eof_and_next_start'; receipt(false);
       const orphanProfile = join(temporary, 'orphan profile');
+      subphase = 'orphan_child_ensure_and_abrupt_exit'; receipt(false);
       await runChild(['--profile', orphanProfile, '--orphan']);
+      subphase = 'orphan_ready_receipt'; receipt(false);
+      const orphanReady = JSON.parse(readFileSync(join(artifacts, 'orphan-source.json')));
+      predicates.orphan_ready_current = orphanReady.ok === true && orphanReady.source_commit === sourceCommit;
+      assert.equal(predicates.orphan_ready_current, true);
+      assert.match(orphanReady.generation, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+      const oldGeneration = orphanReady.generation;
       const endpoint = join(orphanProfile, 'engine/runtime/endpoint.json');
-      await until(() => !existsSync(endpoint), 60_000);
-      const state = JSON.parse(readFileSync(join(orphanProfile, 'engine/runtime/service-state.json')));
-      assert.equal(state.state, 'stopped');
-      const oldGeneration = JSON.parse(readFileSync(join(artifacts, 'orphan-source.json'))).generation;
+      const stateFile = join(orphanProfile, 'engine/runtime/service-state.json');
+      subphase = 'orphan_eof_endpoint_removed'; receipt(false);
+      await until(() => {
+        predicates.orphan_endpoint_absent = !existsSync(endpoint);
+        predicates.orphan_state_present = existsSync(stateFile);
+        try {
+          const observed = JSON.parse(readFileSync(stateFile));
+          predicates.orphan_state_readable = true;
+          predicates.orphan_state_stopped = observed.state === 'stopped';
+          predicates.orphan_state_same_generation = observed.generation === oldGeneration;
+        } catch { predicates.orphan_state_readable = false; }
+        return predicates.orphan_endpoint_absent;
+      }, 60_000);
+      subphase = 'orphan_durable_stopped_state'; receipt(false);
+      predicates.orphan_state_present = existsSync(stateFile);
+      const state = JSON.parse(readFileSync(stateFile));
+      predicates.orphan_state_stopped = state.state === 'stopped';
+      predicates.orphan_state_same_generation = state.generation === oldGeneration;
+      assert.equal(predicates.orphan_state_stopped, true);
+      assert.equal(predicates.orphan_state_same_generation, true);
+      subphase = 'restart_profile_identity'; receipt(false);
       const restartIdentity = runtime.profileIdentitySync(orphanProfile);
       const restarted = new ServiceLifecycle(runtime, restartIdentity);
+      let restartFailed = false;
       try {
+        subphase = 'restart_verified_ensure'; receipt(false);
         const next = await restarted.ensureService();
-        assert.notEqual(next.connection.generation, oldGeneration);
-        assert.equal(next.connection.owner, true);
-      } finally { await restarted.releaseService(); }
+        predicates.restart_generation_changed = next.connection.generation !== oldGeneration;
+        predicates.restart_owner_verified = next.connection.owner === true;
+        assert.equal(predicates.restart_generation_changed, true);
+        assert.equal(predicates.restart_owner_verified, true);
+      } catch (error) {
+        restartFailed = true;
+        throw error;
+      } finally {
+        if (!restartFailed) { subphase = 'restart_graceful_release'; receipt(false); }
+        try {
+          await restarted.releaseService();
+          predicates.restart_release_clean = true;
+        } catch (error) {
+          predicates.restart_release_clean = false;
+          if (!restartFailed) throw error;
+        }
+      }
       completed.push(current);
 
       current = 'explicit_source_quit'; receipt(false);
       quitting = true;
       window.destroy();
+      subphase = 'primary_graceful_release'; receipt(false);
       await service.releaseService();
-      assert.equal(runtime.owners.filter(alive).length, 0);
+      predicates.all_retained_owners_exited = runtime.owners.filter(alive).length === 0;
+      assert.equal(predicates.all_retained_owners_exited, true);
       completed.push(current);
-      receipt(true, 'passed');
       clearTimeout(deadline);
+      subphase = 'temporary_fixture_cleanup'; receipt(false);
       if (temporary) rmSync(temporary, { recursive: true, force: true });
+      subphase = 'complete'; receipt(true, 'passed');
       app.exit(0);
-    } catch {
+    } catch (error) {
+      exceptionKind = classify(error);
       receipt(false, 'source_case_failed');
       quitting = true;
       for (const view of BrowserWindow.getAllWindows()) view.destroy();
-      try { await service.releaseService(); } catch { /* Leave P2 recovery authoritative. */ }
+      try {
+        await service.releaseService();
+        predicates.failure_cleanup_clean = true;
+      } catch { predicates.failure_cleanup_clean = false; }
+      receipt(false, 'source_case_failed');
       clearTimeout(deadline);
       app.exit(1);
     }
