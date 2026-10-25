@@ -1,7 +1,7 @@
 ssearch frontend — local dependency notices
 
 First-party code: MIT, Филипп Белобородов. See LICENSE.txt.
-Original application icon is preserved from resources/branding/atom-search.png.
+Original application icon is preserved byte-for-byte in assets/ssearch.png.
 
 React and React DOM — MIT, Meta Platforms, Inc. and affiliates.
 https://github.com/facebook/react

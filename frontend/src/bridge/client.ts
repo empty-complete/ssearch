@@ -43,12 +43,12 @@ function call<A, T>(
       if (!reply || reply.schema_version !== 1 || reply.request_id !== id
         || Object.keys(reply).sort().join(',') !== 'data,error,request_id,schema_version'
         || (reply.data === null) === (reply.error === null)) {
-        finish(() => reject(new SearchClientError('invalid_service_response')));
+        finish(() => reject(new SearchClientError('invalid_service_response', mutation ? { outcome: 'unknown' } : {})));
       } else if (reply.error) {
         const error = reply.error;
         if (typeof error.code !== 'string' || !/^[a-z][a-z0-9_]{0,95}$/.test(error.code)
           || typeof error.retryable !== 'boolean' || !error.details || typeof error.details !== 'object') {
-          finish(() => reject(new SearchClientError('invalid_service_response')));
+          finish(() => reject(new SearchClientError('invalid_service_response', mutation ? { outcome: 'unknown' } : {})));
         } else {
           finish(() => reject(new SearchClientError(error.code, error.details, error.retryable)));
         }

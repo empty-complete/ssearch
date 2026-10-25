@@ -9,9 +9,12 @@ const context = ipcRenderer.invoke('ssearch:handshake').catch(() => null) as Pro
 
 async function invoke(method: UiMethod, args: unknown, control: CallControl): Promise<WireEnvelope<never>> {
   const id = typeof control?.request_id === 'string' ? control.request_id : '00000000-0000-0000-0000-000000000000';
-  const failed = (code: string): WireEnvelope<never> => ({
+  const failed = (code: string, uncertain = false): WireEnvelope<never> => ({
     schema_version: 1, request_id: id, data: null,
-    error: { code, message: code, retryable: code === 'service_unavailable', details: {} },
+    error: {
+      code, message: code, retryable: code === 'service_unavailable',
+      details: uncertain ? { outcome: 'unknown' } : {},
+    },
   });
   if (!control || typeof control !== 'object'
     || Object.keys(control).some(key => key !== 'request_id' && key !== 'cancel')
@@ -25,7 +28,9 @@ async function invoke(method: UiMethod, args: unknown, control: CallControl): Pr
       request_id: id, method, arguments: args, ...(control.cancel === true ? { cancel: true } : {}),
     }) as WireEnvelope<never>;
   } catch {
-    return failed('service_unavailable');
+    return failed('service_unavailable', [
+      'settings_validate', 'settings_apply', 'start_catalog', 'cancel_job',
+    ].includes(method));
   }
 }
 
