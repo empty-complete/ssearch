@@ -86,10 +86,12 @@ import atom_search.service.desktop_client
     assert result.returncode == 0, result.stderr.decode(errors='replace')
 
 
-def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path):
+@pytest.mark.parametrize('profile_name', ['headless profile ASCII', 'headless profile Кириллица'],
+                         ids=['ascii', 'unicode'])
+def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path, profile_name):
     from atom_search.service.client import ServiceClient
     from atom_search.service.contracts import SearchRequest, ServiceError
-    profile = tmp_path / 'headless profile Кириллица'
+    profile = tmp_path / profile_name
     endpoint = profile / 'engine' / 'runtime' / 'endpoint.json'
     environment = source_environment()
     args = [sys.executable, '-m', 'atom_search.service.headless', '--data-dir', str(profile),
@@ -100,16 +102,22 @@ def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path):
     try:
         deadline = time.monotonic() + 120
         first = None
+        last_failure = None
         while time.monotonic() < deadline and process.poll() is None:
             if endpoint.exists():
                 try:
-                    first = ServiceClient(endpoint, None)
-                    first.status()
+                    candidate_client = ServiceClient(endpoint, None)
+                    candidate_client.status()
+                    first = candidate_client
                     break
-                except ServiceError:
-                    pass
+                except ServiceError as failure:
+                    last_failure = failure
             time.sleep(.05)
-        assert first is not None and process.poll() is None, 'source serve did not become ready'
+        if first is None or process.poll() is not None:
+            # Preserve the client exception context for CI's safe type/file/line
+            # chain, without exporting the private profile or subprocess output.
+            raise AssertionError('source serve did not become ready; '
+                f'endpoint_exists={endpoint.exists()} child_exited={process.poll() is not None}') from last_failure
         second = ServiceClient(endpoint, None)
         assert first.descriptor == second.descriptor
         assert first.descriptor['pid'] == process.pid
