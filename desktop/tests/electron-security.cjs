@@ -187,6 +187,27 @@ void app.whenReady().then(async () => {
     const origin = await waitFor(() => results.find(item => item.contents === authorized.webContents));
     assert.equal(origin.result.valid.error.code, 'access_denied');
     assert.equal(calls, 1);
+    // Fault injection AFTER real IPC dispatch exercises the actual sandboxed preload catch.
+    // A lost acknowledgement cannot prove a synthetic mutation was rolled back.
+    let dispatchedMutations = 0;
+    for (const [method, apiName, args] of [
+      ['settings_validate', 'settingsValidate', { candidate: {}, expected_revision: 1 }],
+      ['settings_apply', 'settingsApply', { candidate: {}, expected_revision: 1 }],
+      ['start_catalog', 'startCatalog', { source_ids: [] }],
+      ['cancel_job', 'cancelJob', { job_id: randomUUID() }],
+    ]) {
+      ipcMain.removeHandler(`ssearch:${method}`);
+      ipcMain.handle(`ssearch:${method}`, () => {
+        dispatchedMutations++;
+        throw new Error('synthetic_disconnected_after_dispatch');
+      });
+      const failure = await product.webContents.executeJavaScript(`window.ssearch[${JSON.stringify(apiName)}](
+        ${JSON.stringify(args)}, {request_id: crypto.randomUUID()})`);
+      assert.equal(failure.error.code, 'service_unavailable');
+      assert.deepEqual(failure.error.details, { outcome: 'unknown' });
+      assert.equal(JSON.stringify(failure).includes('synthetic_disconnected'), false);
+    }
+    assert.equal(dispatchedMutations, 4);
     const evidenceRoot = resolve(__dirname, '../../frontend/test-results');
     mkdirSync(evidenceRoot, { recursive: true });
     writeFileSync(join(evidenceRoot, 'electron-security.json'), JSON.stringify({
@@ -205,6 +226,7 @@ void app.whenReady().then(async () => {
         'permission_and_download_denied', 'actual_main_frame_allowed',
         'forged_session_oversized_unknown_method_denied',
         'actual_subframe_foreign_window_wrong_origin_denied',
+        'actual_preload_post_dispatch_rejection_preserves_unknown_mutation_outcome',
       ],
       open_gates: ['real_broker_source_security', 'owner_authority', 'packaged_frozen', 'native', 'win10'],
     }, null, 2));

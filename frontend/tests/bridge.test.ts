@@ -96,4 +96,26 @@ describe('typed browser bridge', () => {
     await expect(client.status()).rejects.toBeInstanceOf(SearchClientError);
     await expect(client.status()).rejects.toMatchObject({ code: 'invalid_service_response' });
   });
+
+  it('keeps mutation outcome unknown for malformed reply correlation and error codes', async () => {
+    for (const fault of ['correlation', 'error_code']) {
+      let calls = 0;
+      const client = createSearchClient(closedApi({
+        async settingsApply(_args, control) {
+          calls++;
+          return {
+            schema_version: 1, request_id: fault === 'correlation' ? 'forged' : control.request_id,
+            data: null, error: {
+              code: fault === 'error_code' ? 'BAD_ERROR' : 'access_denied',
+              message: 'synthetic malformed response', retryable: false, details: {},
+            },
+          };
+        },
+      }));
+      await expect(client.settingsApply({ candidate: {}, expected_revision: 1 })).rejects.toMatchObject({
+        code: 'invalid_service_response', details: { outcome: 'unknown' },
+      });
+      expect(calls).toBe(1);
+    }
+  });
 });
