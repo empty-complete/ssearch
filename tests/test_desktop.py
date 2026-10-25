@@ -96,6 +96,7 @@ def make_window(tmp_path, service=None, **kwargs):
 
 
 def test_folder_change_waits_for_registry_without_mutating_settings(tmp_path):
+    (tmp_path / 'settings.json').write_text(json.dumps({'root': 'C:/chosen'}), encoding='utf-8')
     release = threading.Event()
     service = Service()
     def blocked_factory():

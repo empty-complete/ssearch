@@ -88,7 +88,11 @@ os.environ['LOCALAPPDATA'] = sys.argv[2]
 sys.argv = ['AtomSearch', '--smoke-test']
 sys.stderr = io.StringIO()
 result = entry.launch()
-print(json.dumps({'code': result, 'message': sys.stderr.getvalue()}, ensure_ascii=False))
+try:
+    print(json.dumps({'code': result, 'message': sys.stderr.getvalue()}, ensure_ascii=False))
+except UnicodeEncodeError:
+    print('content_result_serialization_unicode_encode_error', file=sys.__stderr__, flush=True)
+    raise
 '''
     result = subprocess.run([sys.executable, "-I", "-c", script, str(source), str(tmp_path),
                              str(ROOT / "packaging/launcher.py"), str(archived)],
@@ -210,7 +214,7 @@ def test_window_labels_and_validation_message_follow_catalog_edits(tmp_path, mon
     monkeypatch.setitem(content.MESSAGES, "settings.root_required", "Выберите источник для {product_name}.")
     window = SearchWindow(data_dir=tmp_path, service_factory=lambda: None, auto_scan=False)
     try:
-        assert window.windowTitle() == "Editable Product — Атом поиск"
+        assert window.windowTitle() == "Editable Product — Simple Search"
         assert window.search_box.placeholderText() == "Введите запрос"
         assert not window.save_settings(" ", 1)
         assert window.message.text() == "Выберите источник для Editable Product."
