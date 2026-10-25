@@ -6,6 +6,11 @@ import sys
 import time
 
 
+def source_environment():
+    return dict(os.environ, PYTHONPATH=os.pathsep.join((str(Path('src').absolute()),
+                str(Path('packages/atom-search-core/src').absolute()))))
+
+
 def test_cold_entries_import_without_gui_or_composition():
     script = '''
 import importlib.abc, sys
@@ -18,7 +23,8 @@ sys.meta_path.insert(0, Guard())
 import atom_search.service.headless
 import atom_search.service.desktop_client
 '''
-    result = subprocess.run([sys.executable, '-c', script], capture_output=True, timeout=10)
+    result = subprocess.run([sys.executable, '-c', script], capture_output=True, timeout=10,
+                            env=source_environment())
     assert result.returncode == 0, result.stderr.decode(errors='replace')
 
 
@@ -28,8 +34,7 @@ def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path):
     import pytest
     profile = tmp_path / 'headless profile Кириллица'
     endpoint = profile / 'engine' / 'runtime' / 'endpoint.json'
-    environment = dict(os.environ, PYTHONPATH=os.pathsep.join((str(Path('src').absolute()),
-                        str(Path('packages/atom-search-core/src').absolute()))))
+    environment = source_environment()
     args = [sys.executable, '-m', 'atom_search.service.headless', '--data-dir', str(profile),
             '--model-dir', str(tmp_path / 'missing-model'), '--control-stdin']
     process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -51,6 +56,15 @@ def test_source_serve_two_clients_private_apply_and_clean_stop(tmp_path):
         second = ServiceClient(endpoint, None)
         assert first.descriptor == second.descriptor
         assert first.descriptor['pid'] == process.pid
+        import http.client
+        from urllib.parse import urlsplit
+        address = urlsplit(first.descriptor['base_url'])
+        unauthenticated = http.client.HTTPConnection(address.hostname, address.port, timeout=5)
+        try:
+            unauthenticated.request('GET', '/v1/status')
+            assert unauthenticated.getresponse().status == 401
+        finally:
+            unauthenticated.close()
         assert first.search(SearchRequest('drawing', source_ids=(), mode='literal')).results == ()
         snapshot = second.settings_get()
         assert snapshot.settings['sources'] == []

@@ -100,5 +100,39 @@ def test_empty_eof_does_not_stop_owner(owner_profile):
     code, result = run(owner_profile, [])
     assert (code, result) == (0, [])
     from atom_search.service.client import ServiceClient
-    assert ServiceClient(owner_profile.endpoint_file, None).status().schema_version == 1
+    assert ServiceClient(owner_profile.endpoint_file, None).status().api_version == '1'
+
+
+def test_two_brokers_share_one_generation_and_leave_owner_running(owner_profile):
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run, owner_profile, [request(owner_profile, 'settings_get')]) for _ in range(2)]
+        results = [future.result(timeout=15) for future in futures]
+    assert all(code == 0 for code, _ in results)
+    assert {reply[0]['generation'] for _, reply in results} == {owner_profile.generation}
+    assert len({reply[0]['envelope']['data']['revision'] for _, reply in results}) == 1
+
+
+def test_partial_frame_has_deadline_without_leaking_reader_errors(owner_profile, monkeypatch):
+    import threading
+    from atom_search.service import desktop_client
+    release = threading.Event()
+
+    class Stalled:
+        first = True
+
+        def read(self, length):
+            if self.first:
+                self.first = False
+                return b'\x00'
+            release.wait(5)
+            raise OSError('private input must never be echoed')
+
+    monkeypatch.setattr(desktop_client, 'FRAME_TIMEOUT', .05)
+    output = BytesIO()
+    try:
+        assert desktop_client.run_desktop_client(Stalled(), output, profile=owner_profile.profile_dir) == 1
+        assert output.getvalue() == b''
+    finally:
+        release.set()
 
