@@ -248,8 +248,12 @@ def test_restored_cluster_keeps_rows_and_vector_search(tmp_path, monkeypatch):
                                            for frame in traceback.extract_tb(error.__traceback__)]})
         return original_fail(instance, code, *args, **kwargs)
     monkeypatch.setattr(PostgresRuntime, "_fail", observe_failure)
-    assert run_postgres_self_test(report, data_dir=profile, runtime_dir=RUNTIME) == 0, failures
-    value = json.loads(report.read_text(encoding="utf-8"))
+    result = run_postgres_self_test(report, data_dir=profile, runtime_dir=RUNTIME)
+    try:
+        value = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pytest.fail("proof_report_unavailable", pytrace=False)
+    assert result == 0, {"error_code": value.get("error_code"), "failures": failures}
     assert value.get("backup", {}).get("method") == "logical-schema"
     assert value["backup"]["bytes"] > 0
     assert value["backup"]["runtime_marker_excluded"] is True

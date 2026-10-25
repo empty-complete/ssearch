@@ -108,9 +108,16 @@ public static class SsearchCiKnownFolders {
     foreach ($item in @(Get-ChildItem Env:)) {
         if ($item.Name.StartsWith('PG', [StringComparison]::OrdinalIgnoreCase) -or
             $item.Name -match '^GIT_CONFIG_(KEY|VALUE)_\d+$') {
-            [Environment]::SetEnvironmentVariable($item.Name, $null, 'Process')
+            # Remove the entry. PowerShell's string conversion of $null can
+            # preserve an empty variable on current .NET runtimes.
+            Remove-Item -LiteralPath ('Env:\' + $item.Name)
         }
     }
+    $remainingPg = @(Get-ChildItem Env: | Where-Object { $_.Name.StartsWith('PG', [StringComparison]::OrdinalIgnoreCase) })
+    Write-Host ('CI PG cleanup predicates: ' + (@{
+        remaining = $remainingPg.Count
+        empty = @($remainingPg | Where-Object { $_.Value -eq '' }).Count
+    } | ConvertTo-Json -Compress))
     $env:USERPROFILE = $profile
     $env:LOCALAPPDATA = $local
     $env:APPDATA = $roaming
@@ -141,7 +148,9 @@ from pathlib import Path
 import sys
 from atom_search.runtime import _windows
 from atom_search.runtime.credentials import CredentialStore
-assert not any(name.upper().startswith('PG') for name in os.environ)
+pg_values = [value for name, value in os.environ.items() if name.upper().startswith('PG')]
+print(f'CI Python PG predicates: remaining={len(pg_values)} empty={sum(value == "" for value in pg_values)}', flush=True)
+assert not pg_values
 profile = Path(sys.argv[1])
 store = CredentialStore(profile, 'ci-preflight')
 reference = store.create('ci-preflight')
@@ -155,9 +164,39 @@ print('CI preflight: standard_user=true loaded_profile=true clean_pg_environment
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $targets = ConvertFrom-Json -InputObject $env:TEST_TARGETS_JSON -NoEnumerate
     if ($targets -isnot [array] -or @($targets | Where-Object { $_ -isnot [string] }).Count -or
-        $env:BUILD_MODE -notin @('full', 'quick') -or
+        $env:BUILD_MODE -notin @('full', 'quick', 'source') -or
         ($env:BUILD_MODE -eq 'full' -and $targets.Count -ne 0) -or
-        ($env:BUILD_MODE -eq 'quick' -and $targets.Count -eq 0)) { throw 'CI_BUILD_SCOPE_INVALID' }
+        ($env:BUILD_MODE -in @('quick', 'source') -and $targets.Count -eq 0)) { throw 'CI_BUILD_SCOPE_INVALID' }
+    if ($env:BUILD_MODE -eq 'source') {
+        if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'CI_SOURCE_SHA_REQUIRED' }
+        $helper = Join-Path $repository 'packaging/build_support.py'
+        $selectionArguments = @($helper, 'test-selection', '--root', $repository, '--quick', '--development')
+        foreach ($target in $targets) { $selectionArguments += "--test-target=$target" }
+        $selectionOutput = & $python @selectionArguments
+        if ($LASTEXITCODE -ne 0) { throw 'CI_SOURCE_TARGETS_INVALID' }
+        $selection = ([string]$selectionOutput) | ConvertFrom-Json
+        & $python $helper verify-source --root $repository --commit $env:SOURCE_SHA
+        if ($LASTEXITCODE -ne 0) { throw 'CI_SOURCE_CHECKOUT_INVALID' }
+        # Public, explicit receipt only: never export the owned profile or logs.
+        $receiptDirectory = Join-Path $repository 'artifacts/ci-source'
+        $null = New-Item -ItemType Directory -Path $receiptDirectory
+        $receiptPath = Join-Path $receiptDirectory 'test-receipt.json'
+        $receipt = [ordered]@{
+            mode = 'source'; source_commit = $env:SOURCE_SHA
+            test_targets = @($selection.test_targets); full_suite_passed = $false
+            test_exit_code = $null; exit_code = $null; source_verified_after_tests = $false
+        }
+        Set-Content -LiteralPath $receiptPath -Value ($receipt | ConvertTo-Json -Depth 3) -Encoding utf8
+        & $python -u (Join-Path $repository 'tools/ci_pytest.py') @($selection.test_targets)
+        $testExitCode = $LASTEXITCODE
+        $receipt.test_exit_code = $testExitCode
+        Set-Content -LiteralPath $receiptPath -Value ($receipt | ConvertTo-Json -Depth 3) -Encoding utf8
+        & $python $helper verify-source --root $repository --commit $env:SOURCE_SHA
+        if ($LASTEXITCODE -ne 0) { throw 'CI_SOURCE_CHANGED_DURING_TESTS' }
+        $receipt.source_verified_after_tests = $true
+        Set-Content -LiteralPath $receiptPath -Value ($receipt | ConvertTo-Json -Depth 3) -Encoding utf8
+        exit $testExitCode
+    }
     $parameters = @{ Development = $true; Python = $python; ISCC = (Join-Path $repository '.tools/InnoSetup7/ISCC.exe') }
     if ($env:BUILD_MODE -eq 'quick') { $parameters.Quick = $true; $parameters.TestTargets = [string[]]$targets }
     & (Join-Path $repository 'tools/build.ps1') @parameters
@@ -252,6 +291,7 @@ $credential = $null
 $readers = @()
 $exitCode = 1
 $accountName = 'ssci' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+if ($env:BUILD_MODE -eq 'source') { $TimeoutSeconds = [Math]::Min($TimeoutSeconds, 3600) }
 try {
     $password = ConvertTo-SecureString ([Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48)) + 'aA1!') -AsPlainText -Force
     $account = New-LocalUser -Name $accountName -Password $password -AccountNeverExpires -PasswordNeverExpires
@@ -405,5 +445,19 @@ exit $LASTEXITCODE
     }
     if ($password) { $password.Dispose() }
     $credential = $null
+}
+if ($env:BUILD_MODE -eq 'source') {
+    $receiptPath = Join-Path $repository 'artifacts/ci-source/test-receipt.json'
+    if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+        try {
+            $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+            # Include retained-job timeout and cleanup failures in the result.
+            $receipt.exit_code = $exitCode
+            Set-Content -LiteralPath $receiptPath -Value ($receipt | ConvertTo-Json -Depth 3) -Encoding utf8
+        } catch {
+            Write-Warning 'CI source test receipt could not be finalized.'
+            if ($exitCode -eq 0) { $exitCode = 1 }
+        }
+    }
 }
 exit $exitCode
