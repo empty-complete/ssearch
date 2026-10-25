@@ -22,6 +22,34 @@ prepare = load_tool('prepare_ci')
 exporter = load_tool('export_ci_artifacts')
 
 
+def test_ci_pytest_preserves_module_invocation_cross_test_imports(tmp_path):
+    """Match the real namespace tests/ tree, without a root test module."""
+    (tmp_path / 'pytest.ini').write_text('[pytest]\ntestpaths = tests\n', encoding='utf-8')
+    integration = tmp_path / 'tests/integration'
+    integration.mkdir(parents=True)
+    (integration / '__init__.py').write_text('', encoding='utf-8')
+    (integration / 'helper.py').write_text('shared_value = 42\n', encoding='utf-8')
+    (integration / 'test_sibling_import.py').write_text(
+        'from tests.integration.helper import shared_value\n'
+        'def test_sibling_import():\n'
+        '    assert shared_value == 42\n', encoding='utf-8')
+    environment = os.environ.copy()
+    environment.pop('PYTHONPATH', None)
+    environment.pop('PYTEST_PLUGINS', None)
+    environment['PYTEST_ADDOPTS'] = ''
+    environment['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+    baseline = subprocess.run([sys.executable, '-u', '-m', 'pytest', '-q'], cwd=tmp_path,
+                              env=environment, capture_output=True, text=True, timeout=30)
+    assert baseline.returncode == 0, {'module_baseline_exit_code': baseline.returncode}
+    wrapper = Path(__file__).parents[1] / 'tools/ci_pytest.py'
+    result = subprocess.run([sys.executable, '-u', str(wrapper), '--timeout-seconds', '15'],
+                            cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, {
+        'wrapper_exit_code': result.returncode,
+        'missing_tests_namespace': "No module named 'tests" in result.stdout + result.stderr}
+    assert 'CI pytest starting: tests/integration/test_sibling_import.py::test_sibling_import\n' in result.stderr
+
+
 @pytest.mark.parametrize('scenario, expected_exit', [('normal', 0), ('timeout', 124), ('suppressed', 1), ('full', 0)])
 def test_source_pytest_reports_current_test_and_stacks_without_local_values(tmp_path, scenario, expected_exit):
     """Exercise actual threads/pytest in a subprocess, including the hard exit."""
