@@ -208,7 +208,8 @@ runpy.run_path(entry, run_name='__main__')
 
 
 @pytest.mark.parametrize('case', [
-    'known', 'delegate-error', 'category', 'category-subclass', 'module', 'message', 'message-newline',
+    'known', 'delegate-error', 'category', 'category-subclass', 'module', 'module-prefix', 'module-suffix',
+    'message', 'message-case', 'message-newline',
     'metadata-version', 'metadata-missing', 'client', 'older-server', 'future-server',
     'missing-os-fields', 'not-windows', 'not-frozen', 'library',
 ])
@@ -254,6 +255,8 @@ def test_entry_scopes_only_proven_ort_server_advisory_and_restores_warning_polic
                'ONNX Runtime supports Windows 10 and above, only.')
     if case == 'message':
         message += ' PRIVATE_SENTINEL'
+    elif case == 'message-case':
+        message = message.lower()
     elif case == 'message-newline':
         message += '\n'
 
@@ -263,9 +266,15 @@ def test_entry_scopes_only_proven_ort_server_advisory_and_restores_warning_polic
             pass
         category = (RuntimeWarning if case == 'category' else OtherUserWarning
                     if case == 'category-subclass' else UserWarning)
+        module = 'onnxruntime.capi.onnxruntime_validation'
+        if case == 'module':
+            module = 'private_module'
+        elif case == 'module-prefix':
+            module = 'private.' + module
+        elif case == 'module-suffix':
+            module += '.private'
         warnings.warn_explicit(message, category,
-            'onnxruntime/capi/onnxruntime_validation.py', 27,
-            module='private_module' if case == 'module' else 'onnxruntime.capi.onnxruntime_validation')
+            'onnxruntime/capi/onnxruntime_validation.py', 27, module=module)
         if case == 'delegate-error':
             raise RuntimeError('PRIVATE_SENTINEL')
         return 0
