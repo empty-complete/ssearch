@@ -74,7 +74,7 @@ def ui_checks(report, role):
 
 
 def ui_failure_diagnostics(value):
-    """Four field-specific domains from their authoritative TS declarations."""
+    """Six field-specific domains from their authoritative TS declarations."""
     if type(value) is not dict:
         return {}
     outcome = (ROOT / 'desktop/src/diagnosticsOutcome.ts').read_text(encoding='utf-8')
@@ -94,6 +94,14 @@ def ui_failure_diagnostics(value):
                'primary_category': domains['ProofFailureCategory'],
                'wire_audit_category': frozenset(audit),
                'cleanup_category': domains['ProofFailureCategory']}
+    helpers = (ROOT / 'desktop/src/diagnosticsHelpers.ts').read_text(encoding='utf-8')
+    for field, declaration in (('helper_stage', 'helperStages'), ('helper_category', 'helperCategories')):
+        block, = re.findall(r'export const ' + declaration + r'\s*=\s*(\[[^\]]*\])\s*as const;', helpers, re.S)
+        values = ast.literal_eval(block)
+        if (type(values) is not list or not values
+                or any(type(item) is not str or not re.fullmatch('[a-z][a-z0-9_]{0,79}', item) for item in values)):
+            raise ValueError('invalid_ui_failure_domain')
+        allowed[field] = frozenset(values)
     result = {}
     for name, domain in allowed.items():
         item = value.get(name)
