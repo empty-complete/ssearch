@@ -4,6 +4,10 @@ import type { UiMethod } from './contracts.js';
 import { exactKeys, methods, mutations, plainObject, publicUuid } from './validation.js';
 
 export type BrokerFrameCounts = Readonly<Record<UiMethod, number>>;
+export const auditFailureCategories = ['unclassified', 'duplicate_stream', 'stream_limit', 'end_payload_empty',
+  'end_payload_nonempty', 'unsupported_chunk', 'frame_decode', 'frame_shape', 'request_limit',
+  'truncated_frame', 'partial_snapshot'] as const;
+export type AuditFailureCategory = typeof auditFailureCategories[number];
 
 /** Self-test observer only: unchanged bytes/callbacks/backpressure reach the real
  * stdin writer. Counts mean submitted frames, never proof the owner committed.
@@ -14,6 +18,10 @@ export class BrokerStdinAudit {
   private decoders: BrokerFrameDecoder[] = [];
   private observed = new WeakSet<Writable>();
   private incomplete = false;
+
+  get failureCategory(): AuditFailureCategory | null {
+    return this.incomplete || this.decoders.some(decoder => decoder.partial) ? 'unclassified' : null;
+  }
 
   observe(stdin: Writable): void {
     if (this.observed.has(stdin) || this.decoders.length >= 64) {

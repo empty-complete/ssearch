@@ -6,6 +6,7 @@ import { exactKeys, plainObject } from './validation.js';
 import { admitUiProofPaths, canonicalDirectory, requiredUiChecks, type UiProofRequest } from './diagnosticsPolicy.js';
 import { PackagedRuntime } from './packagedRuntime.js';
 import type { BrokerFrameCounts } from './diagnosticsWire.js';
+import type { FailureDiagnostics } from './diagnosticsOutcome.js';
 
 export interface InstalledProofInputs {
   packaged: boolean;
@@ -22,6 +23,7 @@ export interface ProofReport {
   proof_scope: 'packaged_hidden_offscreen' | 'internal_packaged_helper';
   ok: boolean;
   reason_code: string;
+  failure_diagnostics?: FailureDiagnostics;
   hashes: { desktop_sha256: string; service_sha256: string; app_asar_sha256: string; product_metadata_sha256: string };
   versions: { app: string; core_expected: string; service: string | null; electron: string; node: string; chrome: string };
   owner: { pid: number; created: string; generation: string; installation_id: string } | null;

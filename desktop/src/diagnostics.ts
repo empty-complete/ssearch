@@ -16,6 +16,7 @@ import { inspectUiProof, reserveUiProof } from './diagnosticsReport.js';
 import { canonicalDirectory, uiProofBudgets, proofChecksPassed, type UiProofRequest } from './diagnosticsPolicy.js';
 import { authenticateUiHelper, startUiHelper, writeHelperReply } from './diagnosticsHelpers.js';
 import { BrokerStdinAudit, type BrokerFrameCounts } from './diagnosticsWire.js';
+import { recordProofFailure } from './diagnosticsOutcome.js';
 import type { ProfileIdentity } from './runtime.js';
 import type { JsonObject, UiMethod } from './contracts.js';
 import { plainObject, publicUuid, validResponse } from './validation.js';
@@ -85,8 +86,7 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
     try { report.measured_counts.broker_stdin_frame_counts = runtime.wire.snapshot(); }
     catch {
       fatal = true;
-      report.ok = false;
-      report.reason_code = 'ui_proof_wire_audit_incomplete';
+      recordProofFailure(report, 'ui_proof_wire_audit_incomplete');
       controller.abort();
     }
     writer.write();
@@ -242,8 +242,7 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
       caseCompleted = true;
     }
   } catch {
-    report.ok = false;
-    report.reason_code = failure === 'pending' ? 'ui_proof_runtime_failed' : failure;
+    recordProofFailure(report, failure === 'pending' ? 'ui_proof_runtime_failed' : failure);
   }
   finally {
     if (deadline) clearTimeout(deadline);
@@ -286,7 +285,7 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
       } catch {
         cleanupFailed = true;
         if (cleanup) cleanup.status = 'fail';
-        report.reason_code = 'ui_proof_cleanup_failed';
+        recordProofFailure(report, 'ui_proof_cleanup_failed');
       }
     }
     if (!helper) {
