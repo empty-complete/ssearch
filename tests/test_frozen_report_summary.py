@@ -100,3 +100,51 @@ def test_early_service_delegate_import_failure_writes_quiet_failed_report(monkey
     assert PRIVATE not in report.read_text(encoding='utf-8')
     captured = capsys.readouterr()
     assert captured.out == captured.err == ''
+
+
+def test_service_model_counter_preserves_keyword_only_preparer(monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+    from atom_search import diagnostics, search_runtime
+    from atom_search.service import owner as owner_module
+
+    class ProbeStopped(RuntimeError):
+        pass
+
+    model = tmp_path / 'unused-model'
+    preparer = object()
+    delegated, factories = [], []
+    original = search_runtime._load_model
+
+    def observed_load(model_dir, manifest, *, preparer=None):
+        delegated.append((model_dir, manifest, preparer))
+        # The real delegate's manifest=None branch constructs no model or PG.
+        return original(model_dir, manifest, preparer=preparer)
+
+    monkeypatch.setattr(search_runtime, '_load_model', observed_load)
+
+    def start():
+        assert search_runtime._load_model(model, None, preparer=preparer) == (None, None)
+        raise ProbeStopped()
+
+    fake_owner = SimpleNamespace(
+        repository=SimpleNamespace(snapshot=lambda: SimpleNamespace(settings={'sources': []}, revision=1)),
+        coordinator=SimpleNamespace(owner_apply=lambda settings, revision: None),
+        start=start, close=lambda: None,
+        runtime=SimpleNamespace(status=lambda: SimpleNamespace(state='stopped')))
+
+    def factory(profile, model_dir, *, automatic_catalog):
+        factories.append((profile, model_dir, automatic_catalog))
+        return fake_owner
+
+    monkeypatch.setattr(owner_module, 'open_service_owner', factory)
+    report = tmp_path / 'probe.json'
+    data = tmp_path / 'owned-probe'
+    assert diagnostics.run_service_self_test(report, data_dir=data, model_dir=model) == 1
+    proof = json.loads(report.read_text(encoding='utf-8'))
+    assert factories == [(data / 'profile', model, False)]
+    assert delegated == [(model, None, preparer)]
+    assert proof['model_constructions'] == 1 and proof['runtime_starts'] == 0
+    assert proof['ok'] is False and proof['error_type'] == 'ProbeStopped'
+    assert proof['phase'] == 'owner_start'
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ''
