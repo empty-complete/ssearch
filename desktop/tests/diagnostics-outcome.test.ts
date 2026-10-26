@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recordProofFailure, type ProofOutcome } from '../src/diagnosticsOutcome.js';
+import { classifyProofError, recordProofFailure, type ProofOutcome } from '../src/diagnosticsOutcome.js';
 
 test('actual runner failure arbiter preserves the primary action failure through audit and cleanup failures', () => {
   const report: ProofOutcome = { ok: false, reason_code: 'pending' };
@@ -38,4 +38,18 @@ test('audit refusal before the action is primary even when abort and cleanup sub
 test('successful output acquires no optional failure-only fields', () => {
   const report: ProofOutcome = { ok: true, reason_code: 'passed' };
   assert.deepEqual(Object.keys(report), ['ok', 'reason_code']);
+});
+
+test('opaque exceptions and unknown reason codes cannot disclose error text or private paths', () => {
+  const sentinel = 'PRIVATE_SENTINEL_CREDENTIAL_C:\\private-profile';
+  const opaque = new Error(sentinel);
+  assert.equal(classifyProofError(opaque), 'runtime_failure');
+  const report: ProofOutcome = { ok: true, reason_code: 'pending' };
+  recordProofFailure(report, sentinel, { phase: 'action', category: classifyProofError(opaque) });
+  assert.equal(report.reason_code, 'ui_proof_runtime_failed');
+  assert.equal(JSON.stringify(report).includes(sentinel), false);
+  assert.equal(classifyProofError({ message: sentinel, stack: sentinel }), 'runtime_failure');
+  assert.equal(classifyProofError(new Error('ui_proof_cancelled')), 'cancelled');
+  assert.equal(classifyProofError(new Error('ui_proof_cleanup_deadline')), 'deadline');
+  assert.equal(classifyProofError(new Error('service_unavailable')), 'service_unavailable');
 });

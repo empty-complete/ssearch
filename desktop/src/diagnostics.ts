@@ -16,7 +16,7 @@ import { inspectUiProof, reserveUiProof } from './diagnosticsReport.js';
 import { canonicalDirectory, uiProofBudgets, proofChecksPassed, type UiProofRequest } from './diagnosticsPolicy.js';
 import { authenticateUiHelper, startUiHelper, writeHelperReply } from './diagnosticsHelpers.js';
 import { BrokerStdinAudit, type BrokerFrameCounts } from './diagnosticsWire.js';
-import { recordProofFailure } from './diagnosticsOutcome.js';
+import { classifyProofError, recordProofFailure, type ProofFailureCategory, type ProofFailurePhase } from './diagnosticsOutcome.js';
 import type { ProfileIdentity } from './runtime.js';
 import type { JsonObject, UiMethod } from './contracts.js';
 import { plainObject, publicUuid, validResponse } from './validation.js';
@@ -76,7 +76,7 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
   let bridge: ReturnType<typeof registerDesktopIpc>;
   const pause = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
   const guard = () => { if (controller.signal.aborted) throw new Error('ui_proof_cancelled'); };
-  const update = () => {
+  const update = (phase: ProofFailurePhase = 'bootstrap') => {
     report.measured_counts.owner_starts = runtime.owners.length;
     report.measured_counts.broker_starts = runtime.brokers.length;
     report.measured_counts.live_retained_owner_children = runtime.owners.filter(alive).length;
@@ -86,10 +86,11 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
     try { report.measured_counts.broker_stdin_frame_counts = runtime.wire.snapshot(); }
     catch {
       fatal = true;
-      recordProofFailure(report, 'ui_proof_wire_audit_incomplete');
+      recordProofFailure(report, 'ui_proof_wire_audit_incomplete', { phase, category: 'wire_audit',
+        wireCategory: runtime.wire.failureCategory ?? 'unclassified' });
       controller.abort();
     }
-    writer.write();
+    writer.write(phase);
   };
   let helperProfileInvocations = 0;
   const until = async (predicate: () => boolean | Promise<boolean>, budget = 60_000) => {
@@ -102,10 +103,19 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
     const check = report.checks.find(item => item.name === name);
     if (!check) throw new Error('ui_proof_check_unknown');
     failure = name;
-    report.reason_code = name;
-    update();
-    try { await action(); guard(); check.status = 'pass'; update(); }
-    catch { check.status = 'fail'; update(); throw new Error('ui_proof_check_failed'); }
+    update('audit_before_action');
+    try {
+      guard(); // An audit refusal must abort before the action (including window creation).
+      await action();
+      guard();
+      check.status = 'pass';
+      update('audit_after_action');
+    } catch (error) {
+      check.status = 'fail';
+      recordProofFailure(report, name, { phase: 'action', category: classifyProofError(error) });
+      update('audit_after_action');
+      throw new Error('ui_proof_check_failed');
+    }
   };
   const connection = async (service: ServiceLifecycle) => {
     guard();
@@ -169,15 +179,17 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
   // A helper can finish without app.whenReady; still observe its bounded failure path.
   void interrupted.catch(() => {});
   const bounded = <T>(operation: Promise<T>) => Promise.race([operation, interrupted]);
-  const emergency = () => {
+  const emergency = (error: unknown) => {
     fatal = true;
     failure = 'unhandled_runtime_failure';
+    recordProofFailure(report, 'unhandled_runtime_failure', { phase: 'unhandled', category: classifyProofError(error) });
     controller.abort();
     interrupt(new Error('ui_proof_runtime_failed'));
   };
   process.on('uncaughtException', emergency);
   process.on('unhandledRejection', emergency);
   deadline = setTimeout(() => {
+    recordProofFailure(report, 'ui_proof_deadline', { phase: 'deadline', category: 'deadline' });
     controller.abort();
     interrupt(new Error('ui_proof_deadline'));
   }, helper ? 180_000 : uiProofBudgets[request.scenario]);
@@ -241,8 +253,9 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
       await bounded(execute());
       caseCompleted = true;
     }
-  } catch {
-    recordProofFailure(report, failure === 'pending' ? 'ui_proof_runtime_failed' : failure);
+  } catch (error) {
+    recordProofFailure(report, failure === 'pending' ? 'ui_proof_runtime_failed' : failure,
+      { phase: failure === 'pending' ? 'bootstrap' : 'action', category: classifyProofError(error) });
   }
   finally {
     if (deadline) clearTimeout(deadline);
@@ -251,6 +264,7 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
       controller.abort(); quitting = true;
       for (const view of BrowserWindow.getAllWindows()) view.destroy();
       const cleanup = report.checks.find(item => item.name === 'clean_shutdown');
+      let cleanupStage: ProofFailureCategory = 'runtime_failure';
       try {
         let cleanupDeadline: ReturnType<typeof setTimeout> | undefined;
         try {
@@ -267,14 +281,18 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
               cleanupDeadline = setTimeout(() => reject(new Error('ui_proof_cleanup_deadline')), 55_000);
             })]);
         } finally { if (cleanupDeadline) clearTimeout(cleanupDeadline); }
+        cleanupStage = 'retained_child';
         assert.equal(runtime.owners.filter(alive).length, 0);
         assert.equal(runtime.brokers.filter(alive).length, 0);
+        cleanupStage = 'wire_audit';
         runtime.wire.snapshot();
         if (mutationProof.value) runtime.wire.requireSingleMutation('settings_apply', mutationProof.value.id, mutationProof.value.before);
         if (request.scenario === 'empty-profile') {
+          cleanupStage = 'assertion';
           assert.equal(report.measured_counts.service_method_calls.start_catalog, 0);
           assert.equal(runtime.wire.snapshot().start_catalog, 0);
         }
+        cleanupStage = 'owner_state';
         for (const [ownedProfile, generation] of ownedProfiles) {
           assert.equal(existsSync(join(ownedProfile, 'engine/runtime/endpoint.json')), false);
           const state = JSON.parse(readFileSync(join(ownedProfile, 'engine/runtime/service-state.json'), 'utf8'));
@@ -282,17 +300,21 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
           assert.equal(state.generation, generation);
         }
         if (cleanup) cleanup.status = 'pass';
-      } catch {
+      } catch (error) {
         cleanupFailed = true;
         if (cleanup) cleanup.status = 'fail';
-        recordProofFailure(report, 'ui_proof_cleanup_failed');
+        const classified = classifyProofError(error);
+        const category = classified === 'deadline' ? classified : cleanupStage;
+        const wireCategory = runtime.wire.failureCategory;
+        recordProofFailure(report, 'ui_proof_cleanup_failed', { phase: 'cleanup', category,
+          cleanupCategory: category, ...(wireCategory ? { wireCategory } : {}) });
       }
     }
     if (!helper) {
-      report.ok = proofChecksPassed(request.scenario, report.checks, caseCompleted && !fatal);
+      report.ok = !report.failure_diagnostics && proofChecksPassed(request.scenario, report.checks, caseCompleted && !fatal);
       if (report.ok) report.reason_code = 'passed';
     } else {
-      report.ok = helperCompleted && !fatal && !cleanupFailed && report.checks.every(check => check.status === 'pass');
+      report.ok = !report.failure_diagnostics && helperCompleted && !fatal && !cleanupFailed && report.checks.every(check => check.status === 'pass');
       if (report.ok) report.reason_code = 'passed';
     }
     const probeServer = network.server;
@@ -302,7 +324,8 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
     }
     ipcMain.removeHandler('ssearch-proof:context'); ipcMain.removeHandler('ssearch-proof:result');
     process.removeListener('uncaughtException', emergency); process.removeListener('unhandledRejection', emergency);
-    update(); writer.close();
+    try { update('final_report'); }
+    finally { writer.close(); }
   }
   return report.ok ? 0 : 1;
 
