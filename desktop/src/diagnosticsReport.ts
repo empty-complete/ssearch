@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { exactKeys, plainObject } from './validation.js';
 import { admitUiProofPaths, canonicalDirectory, requiredUiChecks, type UiProofRequest } from './diagnosticsPolicy.js';
 import { PackagedRuntime } from './packagedRuntime.js';
+import type { BrokerFrameCounts } from './diagnosticsWire.js';
 
 export interface InstalledProofInputs {
   packaged: boolean;
@@ -27,7 +28,7 @@ export interface ProofReport {
   measured_counts: { scope: 'authenticated_descriptors_and_retained_children'; verified_authority_pids: number[];
     live_retained_owner_children: number; owner_starts: number; broker_starts: number; global_os_owners: null;
     global_models: null; global_pg_processes: null; read_only_profile_invocations: number;
-    service_method_calls: Record<string, number> };
+    service_method_calls: Record<string, number>; broker_stdin_frame_counts: BrokerFrameCounts };
   checks: Array<{ name: string; status: 'pass' | 'fail' | 'not_run' }>;
   open_gates: string[];
 }
@@ -99,6 +100,8 @@ export function inspectUiProof(request: UiProofRequest, inputs: InstalledProofIn
       live_retained_owner_children: 0, owner_starts: 0, broker_starts: 0,
       global_os_owners: null, global_models: null, global_pg_processes: null, read_only_profile_invocations: 0,
       service_method_calls: { search: 0, fetch: 0, status: 0, settings_get: 0, settings_validate: 0,
+        settings_apply: 0, start_catalog: 0, cancel_job: 0 },
+      broker_stdin_frame_counts: { search: 0, fetch: 0, status: 0, settings_get: 0, settings_validate: 0,
         settings_apply: 0, start_catalog: 0, cancel_job: 0 } },
     checks: (request.helper
       ? ['native_parent_epoch_verified', request.helperRole === 'second-instance'

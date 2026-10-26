@@ -15,9 +15,10 @@ import { registerDesktopIpc, type ServicePort } from './ipc.js';
 import { inspectUiProof, reserveUiProof } from './diagnosticsReport.js';
 import { canonicalDirectory, uiProofBudgets, proofChecksPassed, type UiProofRequest } from './diagnosticsPolicy.js';
 import { authenticateUiHelper, startUiHelper, writeHelperReply } from './diagnosticsHelpers.js';
+import { BrokerStdinAudit, type BrokerFrameCounts } from './diagnosticsWire.js';
 import type { ProfileIdentity } from './runtime.js';
 import type { JsonObject, UiMethod } from './contracts.js';
-import { plainObject, publicUuid } from './validation.js';
+import { plainObject, publicUuid, validResponse } from './validation.js';
 
 export { requiredUiChecks, uiProofBudgets } from './diagnosticsPolicy.js';
 const alive = (child: ChildProcess) => child.exitCode === null && child.signalCode === null;
@@ -26,9 +27,15 @@ class MeasuredRuntime extends PackagedRuntime {
   owners: ChildProcess[] = [];
   brokers: ReturnType<PackagedRuntime['spawnBroker']>[] = [];
   profiles = 0;
+  readonly wire = new BrokerStdinAudit();
   override profileIdentitySync(profile?: string) { this.profiles++; return super.profileIdentitySync(profile); }
   override spawnOwner(profile: ProfileIdentity) { const child = super.spawnOwner(profile); this.owners.push(child); return child; }
-  override spawnBroker(profile: ProfileIdentity) { const child = super.spawnBroker(profile); this.brokers.push(child); return child; }
+  override spawnBroker(profile: ProfileIdentity) {
+    const child = super.spawnBroker(profile);
+    this.brokers.push(child);
+    this.wire.observe(child.stdin);
+    return child;
+  }
 }
 
 /** Packaged-only hidden proof entry. Never routes through normal bootstrap/tray/default profile. */
@@ -63,6 +70,7 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
   let helperCompleted = false;
   let cleanupFailed = false;
   let fatal = false;
+  const mutationProof: { value?: { id: string; before: BrokerFrameCounts } } = {};
   let profile: ProfileIdentity | null = null;
   let bridge: ReturnType<typeof registerDesktopIpc>;
   const pause = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -74,6 +82,13 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
     report.measured_counts.read_only_profile_invocations = runtime.profiles + (helper ? 1 : 0)
       + helperProfileInvocations;
     report.measured_counts.verified_authority_pids = [...seen].sort((a, b) => a - b);
+    try { report.measured_counts.broker_stdin_frame_counts = runtime.wire.snapshot(); }
+    catch {
+      fatal = true;
+      report.ok = false;
+      report.reason_code = 'ui_proof_wire_audit_incomplete';
+      controller.abort();
+    }
     writer.write();
   };
   let helperProfileInvocations = 0;
@@ -109,9 +124,9 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
     return value;
   };
   const start = () => { guard(); const value = new ServiceLifecycle(runtime, profile!); services.push(value); return value; };
-  const call = async (service: ServiceLifecycle, method: UiMethod, args: JsonObject = {}) => {
+  const call = async (service: ServiceLifecycle, method: UiMethod, args: JsonObject = {}, id: string = randomUUID()) => {
     guard(); report.measured_counts.service_method_calls[method]++;
-    return service.request(method, args, randomUUID(), controller.signal);
+    return service.request(method, args, id, controller.signal);
   };
   const data = async (service: ServiceLifecycle, method: UiMethod, args: JsonObject = {}) => {
     const reply = await call(service, method, args);
@@ -255,6 +270,12 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
         } finally { if (cleanupDeadline) clearTimeout(cleanupDeadline); }
         assert.equal(runtime.owners.filter(alive).length, 0);
         assert.equal(runtime.brokers.filter(alive).length, 0);
+        runtime.wire.snapshot();
+        if (mutationProof.value) runtime.wire.requireSingleMutation('settings_apply', mutationProof.value.id, mutationProof.value.before);
+        if (request.scenario === 'empty-profile') {
+          assert.equal(report.measured_counts.service_method_calls.start_catalog, 0);
+          assert.equal(runtime.wire.snapshot().start_catalog, 0);
+        }
         for (const [ownedProfile, generation] of ownedProfiles) {
           assert.equal(existsSync(join(ownedProfile, 'engine/runtime/endpoint.json')), false);
           const state = JSON.parse(readFileSync(join(ownedProfile, 'engine/runtime/service-state.json'), 'utf8'));
@@ -288,37 +309,63 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
 
   async function emptyProfile() {
     let service = start();
+    let view!: BrowserWindow;
     let revision = 0;
     let generation = '';
+    const rendererData = async (method: 'status' | 'settingsGet' | 'settingsValidate' | 'settingsApply', args: JsonObject = {}) => {
+      guard();
+      const id = randomUUID();
+      const reply: unknown = await view.webContents.executeJavaScript(`window.ssearch[${JSON.stringify(method)}](
+        ${JSON.stringify(args)}, {request_id:${JSON.stringify(id)}})`);
+      guard();
+      assert.ok(validResponse(reply, id));
+      assert.equal(reply.error, null);
+      assert.ok(plainObject(reply.data));
+      return reply.data as JsonObject;
+    };
     const empty = async () => {
-      const settings = await data(service, 'settings_get');
+      const settings = await rendererData('settingsGet');
       assert.ok(plainObject(settings.settings));
       assert.deepEqual(settings.settings.sources, []);
-      const health = await data(service, 'status');
+      const health = await rendererData('status');
       assert.equal(health.app_version, app.getVersion()); assert.equal(health.service_version, app.getVersion());
       assert.ok(plainObject(health.components)); assert.deepEqual(health.components.jobs, []);
       assert.deepEqual(health.components.sources, []);
       assert.equal(report.measured_counts.service_method_calls.start_catalog, 0);
+      assert.equal(runtime.wire.snapshot().start_catalog, 0);
       return settings;
     };
-    await measured('fresh_sources_empty_and_jobs_zero', async () => {
+    await measured('installed_renderer_and_named_ipc', async () => {
       const ready = await connection(service); generation = ready.connection.generation;
-      assert.equal(ready.connection.owner, true); await empty();
+      assert.equal(ready.connection.owner, true);
+      view = await windowFor('application', service);
+      await expose(view);
+      const health = await rendererData('status');
+      assert.equal(health.service_version, app.getVersion());
     });
+    await measured('fresh_sources_empty_and_jobs_zero', async () => { await empty(); });
     await measured('real_settings_revision_apply', async () => {
       const before = await empty();
       assert.ok(Number.isInteger(before.revision) && (before.revision as number) >= 1);
       const candidate = structuredClone(before.settings) as JsonObject;
       assert.ok(plainObject(candidate.ui)); candidate.ui.theme = 'dark';
-      assert.equal((await data(service, 'settings_validate', { candidate, expected_revision: before.revision! })).valid, true);
-      const applied = await data(service, 'settings_apply', { candidate, expected_revision: before.revision! });
+      assert.equal((await rendererData('settingsValidate', { candidate, expected_revision: before.revision! })).valid, true);
+      const applied = await rendererData('settingsApply', { candidate, expected_revision: before.revision! });
       revision = (before.revision as number) + 1;
       assert.equal(applied.revision, revision); assert.equal((await empty()).revision, revision);
     });
     await measured('restart_preserves_empty_sources_and_revision', async () => {
+      const previousId = view.webContents.id;
+      const previousSession = view.webContents.session;
+      view.destroy();
       await service.releaseService(); assert.equal(runtime.owners.filter(alive).length, 0);
       service = start(); const next = await connection(service);
-      assert.notEqual(next.connection.generation, generation); assert.equal((await empty()).revision, revision);
+      assert.notEqual(next.connection.generation, generation);
+      view = await windowFor('application', service);
+      assert.notEqual(view.webContents.id, previousId);
+      assert.notEqual(view.webContents.session, previousSession);
+      await expose(view);
+      assert.equal((await empty()).revision, revision);
     });
   }
   async function security() {
@@ -473,12 +520,15 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
       const candidate = structuredClone(before.settings) as JsonObject;
       assert.ok(plainObject(candidate.ui)); candidate.ui.theme = 'dark';
       const broker = runtime.brokers.find(alive); assert.ok(broker); broker.stdout.pause();
-      const pending = call(service, 'settings_apply', { candidate, expected_revision: before.revision! });
+      const operation = { id: randomUUID(), before: runtime.wire.snapshot() };
+      mutationProof.value = operation;
+      const pending = call(service, 'settings_apply', { candidate, expected_revision: before.revision! }, operation.id);
       broker.stdout.destroy(); broker.kill();
       assert.equal((await pending).error?.details.outcome, 'unknown');
       await until(() => service.authority !== null); await connection(service);
       const after = await data(service, 'settings_get');
       assert.ok(after.revision === before.revision || after.revision === (before.revision as number) + 1);
+      runtime.wire.requireSingleMutation('settings_apply', operation.id, operation.before);
       assert.equal(runtime.owners.filter(alive).length, 1);
     });
     await measured('idle_owner_crash_recovery', async () => {

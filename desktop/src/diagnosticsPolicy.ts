@@ -19,7 +19,7 @@ export const requiredUiChecks = {
   lifecycle: ['two_views_one_verified_owner', 'second_instance_without_service_start', 'attached_release_safe',
     'renderer_crash_query_and_stale_response', 'lost_mutation_reply_no_retry', 'idle_owner_crash_recovery',
     'close_is_not_quit', 'parent_orphan_graceful_stop_and_restart', 'clean_shutdown'],
-  'empty-profile': ['fresh_sources_empty_and_jobs_zero', 'real_settings_revision_apply',
+  'empty-profile': ['installed_renderer_and_named_ipc', 'fresh_sources_empty_and_jobs_zero', 'real_settings_revision_apply',
     'restart_preserves_empty_sources_and_revision', 'clean_shutdown'],
 } as const;
 export const uiProofBudgets = { load: 30_000, security: 120_000, lifecycle: 600_000, 'empty-profile': 240_000 } as const;

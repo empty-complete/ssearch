@@ -82,7 +82,9 @@ function syntheticReservation(f: ReturnType<typeof fixture>): ReturnType<typeof 
     versions: { app: '0.2.0', core_expected: '0.2.0', service: null, electron: 'synthetic', node: 'synthetic', chrome: 'synthetic' },
     owner: null, measured_counts: { scope: 'authenticated_descriptors_and_retained_children', verified_authority_pids: [],
       live_retained_owner_children: 0, owner_starts: 0, broker_starts: 0, global_os_owners: null, global_models: null,
-      global_pg_processes: null, read_only_profile_invocations: 0, service_method_calls: {} },
+      global_pg_processes: null, read_only_profile_invocations: 0, service_method_calls: {},
+      broker_stdin_frame_counts: { search: 0, fetch: 0, status: 0, settings_get: 0, settings_validate: 0,
+        settings_apply: 0, start_catalog: 0, cancel_job: 0 } },
     checks: requiredUiChecks.load.map(name => ({ name, status: 'not_run' })), open_gates: ['synthetic_policy_test'],
   };
   return { paths: { profile: f.request.profilePath, report: f.request.reportPath }, report, root: f.installation,
@@ -143,6 +145,9 @@ test('proof success requires every selected real check and cleanup; unknown scop
     ? { ...check, status: 'not_run' } : check), true), false);
   assert.equal(proofChecksPassed('load', [...complete, { name: 'input_failure', status: 'fail' }], true), false);
   assert.equal(proofChecksPassed('load', [...complete, complete[0]], true), false);
+  const emptyProfile = requiredUiChecks['empty-profile'].map(name => ({ name, status: 'pass' }));
+  assert.equal(proofChecksPassed('empty-profile', emptyProfile, true), true);
+  assert.equal(proofChecksPassed('empty-profile', emptyProfile.filter(check => check.name !== 'installed_renderer_and_named_ipc'), true), false);
 });
 
 test('existing, reparse, installation-owned and implicit output paths fail before writes', () => {

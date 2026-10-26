@@ -9,6 +9,7 @@
     "tests/service-source.live.ts",
     "tests/packaged-runtime.test.ts",
     "tests/package-metadata.test.ts",
-    "tests/diagnostics-policy.test.ts"
+    "tests/diagnostics-policy.test.ts",
+    "tests/diagnostics-wire.test.ts"
   ]
 }
