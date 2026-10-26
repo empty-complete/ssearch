@@ -125,6 +125,21 @@ test('a report appearing after admission is preserved and only our empty reserva
   } finally { f.cleanup(); }
 });
 
+test('a final report write failure cannot retain successful in-memory outcome', () => {
+  const f = fixture();
+  try {
+    const reserved = reserveUiProof(syntheticReservation(f));
+    reserved.writer.close(); // Deterministic I/O refusal, no simulated service or packaged acceptance.
+    reserved.report.ok = true;
+    reserved.report.reason_code = 'passed';
+    assert.throws(() => reserved.writer.write(), { message: 'ui_proof_report_write_failed' });
+    assert.equal(reserved.report.ok, false);
+    assert.equal(reserved.report.reason_code, 'ui_proof_report_write_failed');
+    assert.equal(reserved.report.failure_diagnostics?.primary_category, 'report_write');
+    assert.equal(reserved.report.failure_diagnostics?.primary_phase, 'final_report');
+  } finally { f.cleanup(); }
+});
+
 test('unpackaged execution cannot create a QA profile or report', () => {
   const f = fixture();
   try {

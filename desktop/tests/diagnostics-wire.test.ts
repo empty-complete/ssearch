@@ -59,3 +59,28 @@ test('incomplete or unsupported stdin telemetry cannot establish single-dispatch
     broker.destroy();
   }
 });
+
+test('audit refusal exposes fixed categories without raw frames or child output', () => {
+  const cases = ['duplicate_stream', 'end_payload_empty', 'end_payload_nonempty', 'unsupported_chunk',
+    'frame_decode', 'frame_shape', 'truncated_frame', 'partial_snapshot'] as const;
+  for (const category of cases) {
+    const audit = new BrokerStdinAudit();
+    const broker = new PassThrough();
+    broker.resume();
+    audit.observe(broker);
+    assert.equal(audit.failureCategory, null);
+    if (category === 'duplicate_stream') audit.observe(broker);
+    else if (category === 'end_payload_empty') broker.end('');
+    else if (category === 'end_payload_nonempty') broker.end(mutation());
+    else if (category === 'unsupported_chunk') broker.write('unsupported synthetic input');
+    else if (category === 'frame_decode') broker.write(Buffer.alloc(4));
+    else if (category === 'frame_shape') broker.write(encodeBrokerFrame({ unexpected: true }));
+    else {
+      broker.write(mutation().subarray(0, 8));
+      if (category === 'truncated_frame') broker.emit('close');
+    }
+    assert.equal(audit.failureCategory, category);
+    assert.throws(() => audit.snapshot(), { message: 'ui_proof_wire_audit_incomplete' });
+    broker.destroy();
+  }
+});

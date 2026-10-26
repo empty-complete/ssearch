@@ -8,10 +8,15 @@ on:
         description: Run admitted standard-user source TS/P2/Electron ownership proof
         type: boolean
         default: false
+      diagnostics_only:
+        description: Run only desktop diagnostics types and policy regressions (no Electron/Python/build)
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   candidate:
+    if: inputs.diagnostics_only != true
     runs-on: windows-2025
     timeout-minutes: ${{ inputs.live_source && 45 || 20 }}
     steps:
@@ -155,3 +160,32 @@ jobs:
             desktop/artifacts/electron-source.json
             artifacts/ci-source/test-receipt.json
           retention-days: 14
+  diagnostics:
+    if: inputs.diagnostics_only == true
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+      - name: Pin npm
+        run: npm install --global npm@11.19.1 --ignore-scripts
+      - name: Resolve locked desktop types and test dependencies without binaries
+        working-directory: desktop
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm ci --ignore-scripts --cache .cache/npm --no-audit --no-fund
+      - name: Desktop diagnostics types and focused policy regressions
+        working-directory: desktop
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: |
+          ./node_modules/.bin/tsc.cmd --noEmit
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./node_modules/.bin/tsc.cmd --project tsconfig.proof.json --noEmit
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node node_modules/tsx/dist/cli.mjs --test tests/diagnostics*.test.ts

@@ -6,6 +6,7 @@ import { exactKeys, plainObject } from './validation.js';
 import { admitUiProofPaths, canonicalDirectory, requiredUiChecks, type UiProofRequest } from './diagnosticsPolicy.js';
 import { PackagedRuntime } from './packagedRuntime.js';
 import type { BrokerFrameCounts } from './diagnosticsWire.js';
+import { recordProofFailure, type FailureDiagnostics, type ProofFailurePhase } from './diagnosticsOutcome.js';
 
 export interface InstalledProofInputs {
   packaged: boolean;
@@ -22,6 +23,7 @@ export interface ProofReport {
   proof_scope: 'packaged_hidden_offscreen' | 'internal_packaged_helper';
   ok: boolean;
   reason_code: string;
+  failure_diagnostics?: FailureDiagnostics;
   hashes: { desktop_sha256: string; service_sha256: string; app_asar_sha256: string; product_metadata_sha256: string };
   versions: { app: string; core_expected: string; service: string | null; electron: string; node: string; chrome: string };
   owner: { pid: number; created: string; generation: string; installation_id: string } | null;
@@ -47,7 +49,17 @@ function physicalSha256(path: string, files: typeof import('node:fs')): string {
 /** Exclusive declared output; progress writes retain the original open file object. */
 export class ProofReportFile {
   constructor(private file: number, readonly report: ProofReport) {}
-  write(): void {
+  write(phase: ProofFailurePhase = 'final_report'): void {
+    try { this.writeBytes(); }
+    catch {
+      recordProofFailure(this.report, 'ui_proof_report_write_failed', { phase, category: 'report_write' });
+      // A transient failure after writing ok:true must not leave that as our
+      // intended receipt. Retry only this failure receipt, never a service action.
+      try { this.writeBytes(); } catch { /* The fixed nonzero exit remains mandatory. */ }
+      throw new Error('ui_proof_report_write_failed');
+    }
+  }
+  private writeBytes(): void {
     const bytes = Buffer.from(JSON.stringify(this.report, null, 2) + '\n');
     if (bytes.length > 60 * 1024) throw new Error('ui_proof_report_limit');
     ftruncateSync(this.file, 0);
@@ -129,7 +141,7 @@ export function reserveUiProof(prepared: ReturnType<typeof inspectUiProof>) {
     if (!declared.isFile() || declared.isSymbolicLink() || declared.ino !== opened.ino || declared.dev !== opened.dev
       || realpathSync(paths.report).toLowerCase() !== paths.report.toLowerCase()) throw new Error('ui_proof_paths_invalid');
     const writer = new ProofReportFile(descriptor, report);
-    writer.write();
+    writer.write('bootstrap');
     return { ...prepared, writer };
   } catch (error) {
     if (descriptor !== undefined) {

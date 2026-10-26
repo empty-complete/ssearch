@@ -4,6 +4,10 @@ import type { UiMethod } from './contracts.js';
 import { exactKeys, methods, mutations, plainObject, publicUuid } from './validation.js';
 
 export type BrokerFrameCounts = Readonly<Record<UiMethod, number>>;
+export const auditFailureCategories = ['unclassified', 'duplicate_stream', 'stream_limit', 'end_payload_empty',
+  'end_payload_nonempty', 'unsupported_chunk', 'frame_decode', 'frame_shape', 'request_limit',
+  'truncated_frame', 'partial_snapshot'] as const;
+export type AuditFailureCategory = typeof auditFailureCategories[number];
 
 /** Self-test observer only: unchanged bytes/callbacks/backpressure reach the real
  * stdin writer. Counts mean submitted frames, never proof the owner committed.
@@ -13,13 +17,17 @@ export class BrokerStdinAudit {
   private requests = new Map<string, number>();
   private decoders: BrokerFrameDecoder[] = [];
   private observed = new WeakSet<Writable>();
-  private incomplete = false;
+  private incomplete: AuditFailureCategory | null = null;
+
+  get failureCategory(): AuditFailureCategory | null {
+    return this.incomplete ?? (this.decoders.some(decoder => decoder.partial) ? 'partial_snapshot' : null);
+  }
+
+  private refuse(category: AuditFailureCategory): void { this.incomplete ??= category; }
 
   observe(stdin: Writable): void {
-    if (this.observed.has(stdin) || this.decoders.length >= 64) {
-      this.incomplete = true;
-      return;
-    }
+    if (this.observed.has(stdin)) { this.refuse('duplicate_stream'); return; }
+    if (this.decoders.length >= 64) { this.refuse('stream_limit'); return; }
     this.observed.add(stdin);
     const decoder = new BrokerFrameDecoder(MAX_REQUEST_FRAME);
     this.decoders.push(decoder);
@@ -35,18 +43,24 @@ export class BrokerStdinAudit {
       const chunk = arguments_[0];
       // Production closes without a payload. A future alternate writer must not
       // silently bypass observation or be double-counted by an end implementation.
-      if (chunk !== undefined && chunk !== null && typeof chunk !== 'function') audit.incomplete = true;
+      if (chunk !== undefined && chunk !== null && typeof chunk !== 'function') {
+        audit.refuse(chunk === '' || (chunk instanceof Uint8Array && chunk.byteLength === 0)
+          ? 'end_payload_empty' : 'end_payload_nonempty');
+      }
       return Reflect.apply(originalEnd, this, arguments_);
     } as typeof stdin.end;
-    const finished = () => { try { decoder.end(); } catch { audit.incomplete = true; } };
+    const finished = () => { try { decoder.end(); } catch { audit.refuse('truncated_frame'); } };
     stdin.once('finish', finished);
     stdin.once('close', finished);
   }
 
   private submitted(decoder: BrokerFrameDecoder, chunk: unknown): void {
+    if (!(chunk instanceof Uint8Array)) { this.refuse('unsupported_chunk'); return; }
+    let frames: unknown[];
+    try { frames = decoder.push(chunk); }
+    catch { this.refuse('frame_decode'); return; }
     try {
-      if (!(chunk instanceof Uint8Array)) throw new Error();
-      for (const frame of decoder.push(chunk)) {
+      for (const frame of frames) {
         if (!plainObject(frame)) throw new Error();
         if (exactKeys(frame, ['schema_version', 'session_id', 'challenge'])) continue; // Private bootstrap, no operation.
         if (!plainObject(frame.envelope) || !plainObject(frame.envelope.data)
@@ -54,11 +68,11 @@ export class BrokerStdinAudit {
           || !methods.includes(frame.envelope.data.method as UiMethod)) throw new Error();
         const method = frame.envelope.data.method as UiMethod;
         const key = `${method}/${frame.envelope.request_id}`;
-        if (this.requests.size >= 1024 && !this.requests.has(key)) throw new Error();
+        if (this.requests.size >= 1024 && !this.requests.has(key)) { this.refuse('request_limit'); return; }
         this.requests.set(key, (this.requests.get(key) ?? 0) + 1);
         this.counts[method]++;
       }
-    } catch { this.incomplete = true; }
+    } catch { this.refuse('frame_shape'); }
   }
 
   snapshot(): BrokerFrameCounts {
