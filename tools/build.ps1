@@ -393,6 +393,11 @@ try {
         Invoke-Checked $Python @($helper, 'verify-desktop-bundle', '--root', $repository,
             '--commit', $sourceCommit, '--directory', $qaRuntime, '--inventory', $payloadInventory)
         Invoke-Checked $Python @($helper, 'verify-service-bundle', '--directory', (Join-Path $qaRuntime 'service'))
+        Invoke-Checked $Python @((Join-Path $repository 'tools/check_frozen_service.py'),
+            '--service-executable', $serviceExecutable,
+            '--qa-directory', (Join-Path $qaFolder 'Serve profiles Кириллица with spaces'),
+            '--source-commit', $sourceCommit, '--app-version', $version,
+            '--report', (Join-Path $qaFolder 'frozen-service-proof.json'))
         Invoke-FrozenChecked $serviceExecutable @(
             '--service-test', (Join-Path $qaFolder 'service-owner-proof.json'),
             '--data-dir', (Join-Path $qaFolder 'Service owner profile Кириллица with spaces'))
@@ -402,11 +407,6 @@ try {
         Invoke-FrozenChecked $serviceExecutable @(
             '--self-test', (Join-Path $qaFolder 'frozen-self-test.json'),
             '--data-dir', (Join-Path $qaFolder 'Application profile Кириллица with spaces'))
-        Invoke-Checked $Python @((Join-Path $repository 'tools/check_frozen_service.py'),
-            '--service-executable', $serviceExecutable,
-            '--qa-directory', (Join-Path $qaFolder 'Serve profiles Кириллица with spaces'),
-            '--source-commit', $sourceCommit, '--app-version', $version,
-            '--report', (Join-Path $qaFolder 'frozen-service-proof.json'))
         foreach ($scenario in @('load', 'security', 'lifecycle', 'empty-profile')) {
             $proofSeconds = [int][Math]::Ceiling($uiPolicy.budgets_ms.$scenario / 1000.0) + 120
             Invoke-FrozenChecked $desktopExecutable @('--ui-self-test', (Join-Path $qaFolder "ui-$scenario.json"),

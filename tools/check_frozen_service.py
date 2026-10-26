@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -28,6 +29,10 @@ from atom_search.service.contracts import SearchRequest, ServiceError
 
 STARTUP_SECONDS = 120
 SHUTDOWN_SECONDS = 50
+OUTPUT_LIMIT = 65536
+OUTPUT_STREAMS = ('stdout', 'stderr')
+OUTPUT_LABELS = frozenset(scenario + '-' + role for scenario in ('ascii', 'unicode')
+                          for role in ('primary', 'attached', 'restart'))
 FLAGS = frozenset(('two_clients', 'private_validate_apply', 'cas_conflict', 'unauthenticated_401',
                    'empty_sources', 'no_jobs_or_scan', 'metadata_search_empty', 'child_identity_verified',
                    'second_serve_same_owner', 'primary_eof_clean_stop', 'restart_preserved',
@@ -89,17 +94,83 @@ def _child_environment():
     return environment
 
 
+def _capture_identity(info):
+    return (info.st_dev, info.st_ino)
+
+
+def _capture_count(info):
+    return dict(bytes=min(info.st_size, OUTPUT_LIMIT + 1), oversize=info.st_size > OUTPUT_LIMIT)
+
+
+def _capture_categories(content):
+    lower = content.lower()
+    categories = dict(
+        traceback=b'traceback (most recent call last):' in lower,
+        thread=b'exception in thread ' in lower,
+        unraisable=b'exception ignored in:' in lower,
+        warning=re.search(rb'\b[a-z]*warning:', lower) is not None,
+        onnxruntime=b'onnxruntime:' in lower,
+        pyinstaller=re.search(rb'\[pyi-[0-9]+:', lower) is not None)
+    categories['unknown'] = bool(content) and not any(categories.values())
+    return categories
+
+
+def _read_capture(child, index):
+    """Inspect only the created private regular file after retained cleanup."""
+    try:
+        _require(child.closed and child.cleanup_confirmed, 'capture_unavailable')
+        path = child.logs[index]
+        _windows.assert_private(path.parent)
+        _windows.reject_reparse(path)
+        _windows.assert_private(path)
+        expected = child.log_identities[index]
+        before = path.lstat()
+        _require(expected[1] != 0 and stat.S_ISREG(before.st_mode)
+                 and _capture_identity(before) == expected, 'capture_unavailable')
+        with path.open('rb', buffering=0) as stream:
+            opened = os.fstat(stream.fileno())
+            _require(stat.S_ISREG(opened.st_mode) and _capture_identity(opened) == expected,
+                     'capture_unavailable')
+            _windows.reject_reparse(path)
+            _require(_capture_identity(path.lstat()) == expected, 'capture_unavailable')
+            content = stream.read(OUTPUT_LIMIT)
+            after = os.fstat(stream.fileno())
+            _require(_capture_identity(after) == expected and after.st_size == opened.st_size,
+                     'capture_unavailable')
+        return dict(state='read', **_capture_count(after), truncated=after.st_size > len(content),
+                    categories=_capture_categories(content))
+    except BaseException:
+        return dict(state='unavailable')
+
+
+def _emit_output_diagnostic(children):
+    for child in children:
+        if not getattr(child, 'output_leak', False):
+            continue
+        diagnostic = dict(diagnostic_only=True, code='child_output_leak',
+            child=child.label if child.label in OUTPUT_LABELS else 'unknown',
+            checkpoints=child.output_checkpoints,
+            streams={name: _read_capture(child, index) for index, name in enumerate(OUTPUT_STREAMS)})
+        print(json.dumps(diagnostic, ensure_ascii=True, separators=(',', ':')), file=sys.stderr)
+        return  # One bounded diagnostic; the original failure remains authoritative.
+
+
 class _Child:
     def __init__(self, executable, profile, qa, label, environment):
         self.identity = None
+        self.label = label
         self.logs = [qa / (label + '.stdout'), qa / (label + '.stderr')]
         self.streams = []
+        self.log_identities = []
+        self.output_checkpoints = {}
+        self.output_leak = False
         self.process = None
         self.closed = False
         self.cleanup_confirmed = False
         try:
             for path in self.logs:
                 self.streams.append(path.open('xb', buffering=0))
+                self.log_identities.append(_capture_identity(os.fstat(self.streams[-1].fileno())))
             self.process = subprocess.Popen(
                 [str(executable), '--serve', '--data-dir', str(profile), '--model-dir',
                  str(executable.parent / '_internal/models'), '--control-stdin'],
@@ -121,10 +192,26 @@ class _Child:
 
     def stop(self):
         _require(self.process.poll() is None, 'child_exited_before_eof')
+        self.output_checkpoints['beforeEOF'] = self._output_counts()
         with _windows.verified_process(self.identity):
             self.process.stdin.close()
             _require(self.process.wait(SHUTDOWN_SECONDS) == 0, 'child_nonzero_exit')
-        _require(all(path.stat().st_size == 0 for path in self.logs), 'child_output_leak')
+        self.output_checkpoints['afterExit'] = self._output_counts()
+        self.output_leak = any(value.get('bytes') != 0
+                               for value in self.output_checkpoints['afterExit'].values())
+        _require(not self.output_leak, 'child_output_leak')
+
+    def _output_counts(self):
+        counts = {}
+        for index, name in enumerate(OUTPUT_STREAMS):
+            try:
+                info = self.logs[index].lstat()
+                _require(stat.S_ISREG(info.st_mode)
+                         and _capture_identity(info) == self.log_identities[index], 'capture_unavailable')
+                counts[name] = _capture_count(info)
+            except BaseException:
+                counts[name] = dict(state='unavailable')
+        return counts
 
     def cleanup(self):
         if self.closed:
@@ -289,6 +376,8 @@ def run_gate(args):
                     cleanup_ok = False
             except BaseException:
                 cleanup_ok = False
+    if failure == 'child_output_leak':
+        _emit_output_diagnostic(children)
     _require(cleanup_ok, 'owned_cleanup_unconfirmed')
     _require(failure is None, failure or 'frozen_service_gate_failed')
     after = _sha256(args.service_executable)
