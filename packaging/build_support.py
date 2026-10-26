@@ -231,6 +231,17 @@ def prepare_development_build(repository: Path, *, quick=False, test_targets=(),
         layout["base"].mkdir(parents=True, exist_ok=False)
     except FileExistsError as error:
         raise BuildError(f"Каталог development-сборки уже существует: {layout['base']}") from error
+    if desktop_stack:
+        # Node's mode0700 is unsupported on Windows. The hidden Electron proof
+        # creates its profile before Python validates it, so protect this fresh
+        # parent before any shell directory, report or raw capture inherits it.
+        # Existing directories are inspected by the same fail-closed boundary;
+        # this never repairs an existing application's profile or permissions.
+        from atom_search.runtime import _windows
+        try:
+            _windows.private_directory(layout['qa'])
+        except _windows.WindowsError as error:
+            raise BuildError('Desktop QA requires a private Windows directory.') from error
     return layout
 
 

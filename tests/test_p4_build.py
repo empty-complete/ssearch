@@ -91,19 +91,20 @@ $boundary=$ast.Find({param($n) $n -is [System.Management.Automation.Language.Fun
 $ownedBoundary=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-OwnedProof'},$true)
 if (!$ownedBoundary) { throw 'Bounded frozen native proof controller is required' }
 . ([scriptblock]::Create($ownedBoundary.Extent.Text.Replace('function Invoke-OwnedProof','function Invoke-OriginalOwnedProof')))
-$script:proofBudget=0
 $fake=@'
 function Invoke-Checked {
     param([string]$Program,[string[]]$Arguments)
     $native = $Arguments -contains '--postgres-self-test' -or $Arguments -contains '--self-test' -or
         $Arguments -contains '--service-test' -or $Arguments -contains '--ui-self-test'
+    $timeoutSeconds = 0
+    if ($native) { $timeoutSeconds = $script:proofBudget }
     $profilesPreserved = $true
     foreach ($name in @('LOCALAPPDATA','APPDATA','TEMP','TMP')) {
         if ([Environment]::GetEnvironmentVariable($name,'Process') -cne $expectedProfiles[$name]) { $profilesPreserved=$false }
     }
     @{program=$Program;arguments=@($Arguments);native=$native;profiles_preserved=$profilesPreserved;
       isolated_path=($env:PATH -ceq (Join-Path $env:SystemRoot 'System32'));
-      source_bootstrap_absent=(!(Test-Path Env:PYTHONPATH));timeout_seconds=$script:proofBudget} | ConvertTo-Json -Compress |
+      source_bootstrap_absent=(!(Test-Path Env:PYTHONPATH));timeout_seconds=$timeoutSeconds} | ConvertTo-Json -Compress |
         Add-Content -LiteralPath (Join-Path $repository 'calls.jsonl')
     if ($Arguments -contains $helper) {
         & $Program @Arguments
