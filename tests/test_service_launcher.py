@@ -249,8 +249,8 @@ def test_entry_scopes_only_proven_ort_server_advisory_and_restores_warning_polic
 
     monkeypatch.setattr(builtins, '__import__', no_eager_ort)
     calls = []
-    route(monkeypatch, 'atom_search.runtime.postgres', 'sanitize_host_environment',
-          lambda: calls.append('sanitize'))
+    monkeypatch.setattr(importlib.import_module('atom_search.runtime.postgres'),
+                        'sanitize_host_environment', lambda: calls.append('sanitize'))
     message = ('Unsupported Windows version (2025server). '
                'ONNX Runtime supports Windows 10 and above, only.')
     if case == 'message':
