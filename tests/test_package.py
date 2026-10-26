@@ -70,19 +70,26 @@ function Start-Process {
 }
 $script:processCompletionConfirmed = $false
 $caught = $false
+$caughtType = $null
 try {
     try {
         Start-HiddenAndWait -Program $Python -Arguments @($Toy, 'parent', $Marker) `
             -Label 'owned toy tree' -TimeoutMilliseconds $Limit
-    } catch { $caught = $true }
+    } catch { $caught = $true; $caughtType = $_.Exception.GetType().Name }
+    $observation = @{caught=$caught; confirmed=$script:processCompletionConfirmed;
+        marker_present=(Test-Path -LiteralPath $Marker); caught_type=$caughtType;
+        reason=$script:processCompletionReason; waiter=$script:processWaitObservation;
+        payload=$script:processCompletionPayload}
     if ($ExpectTimeout) {
         if (-not $caught -or $script:processCompletionConfirmed -or
             (Test-Path -LiteralPath $Marker)) {
+            [Console]::Error.WriteLine('owned_tree_observation=' + ($observation | ConvertTo-Json -Depth 4 -Compress))
             throw 'Timed-out descendant tree was marked complete.'
         }
     } else {
         if ($caught -or -not $script:processCompletionConfirmed -or
             -not (Test-Path -LiteralPath $Marker)) {
+            [Console]::Error.WriteLine('owned_tree_observation=' + ($observation | ConvertTo-Json -Depth 4 -Compress))
             throw 'Initial process exit was mistaken for descendant completion.'
         }
 }

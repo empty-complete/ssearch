@@ -58,6 +58,10 @@ function Start-HiddenAndWait {
         '"' + $argument + '"'
     }
     $script:processCompletionConfirmed = $false
+    $script:processCompletionReason = 'preparing_waiter'
+    $script:processWaitObservation = @{waiter_finished=$false; waiter_exit_integer=$false;
+        waiter_exit_zero=$false; completion_present=$false}
+    $script:processCompletionPayload = $null
     # Inno's initial uninstaller exits before its temporary child finishes.
     # A separate hidden waiter preserves Start-Process -Wait's descendant-tree
     # semantics while the coordinator bounds the wait without killing anything.
@@ -91,16 +95,36 @@ try {
     $process = Start-Process -FilePath $waiter -ArgumentList @(
         '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedScript) `
         -WorkingDirectory $testPath -WindowStyle Hidden -PassThru
+    $script:processCompletionReason = 'waiting'
     if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+        $script:processCompletionReason = 'waiter_timeout'
         throw "$Label timed out; descendant completion unknown, files preserved."
     }
-    if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $completionPath -PathType Leaf)) {
+    $script:processWaitObservation.waiter_finished = $true
+    $script:processCompletionReason = 'reading_waiter_exit'
+    $waiterExitCode = $process.ExitCode
+    $script:processCompletionReason = 'checking_completion_file'
+    $completionPresent = Test-Path -LiteralPath $completionPath -PathType Leaf
+    $script:processWaitObservation = @{waiter_finished=$true;
+        waiter_exit_integer=($waiterExitCode -is [int] -or $waiterExitCode -is [long]);
+        waiter_exit_zero=($null -ne $waiterExitCode -and $waiterExitCode -eq 0);
+        completion_present=$completionPresent}
+    if ($waiterExitCode -ne 0 -or -not $completionPresent) {
+        $script:processCompletionReason = if ($null -eq $waiterExitCode) { 'waiter_exit_unavailable' }
+            elseif ($waiterExitCode -ne 0) { 'waiter_exit_nonzero' } else { 'completion_missing' }
         throw "$Label descendant completion unknown; files preserved."
     }
+    $script:processCompletionReason = 'reading_completion'
     $completion = Get-Content -LiteralPath $completionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $integerExit = $completion.exit_code -is [int] -or $completion.exit_code -is [long]
+    $script:processCompletionPayload = @{id_matches=($completion.id -ceq $waitId);
+        completed=($completion.completed -eq $true); exit_integer=$integerExit;
+        exit_in_range=($integerExit -and $completion.exit_code -ge [int]::MinValue -and $completion.exit_code -le [int]::MaxValue);
+        exit_zero=($integerExit -and $completion.exit_code -eq 0)}
     if ($completion.id -cne $waitId -or $completion.completed -ne $true -or
         -not ($completion.exit_code -is [int] -or $completion.exit_code -is [long]) -or
         $completion.exit_code -lt [int]::MinValue -or $completion.exit_code -gt [int]::MaxValue) {
+        $script:processCompletionReason = 'completion_payload_invalid'
         throw "$Label descendant completion evidence invalid; files preserved."
     }
     # ConvertFrom-Json returns Int32 in Windows PowerShell, Int64 in PowerShell 7.
@@ -108,8 +132,10 @@ try {
     $exitCode = [int]$completion.exit_code
     $script:processCompletionConfirmed = $true
     if ($exitCode -ne 0) {
+        $script:processCompletionReason = 'child_exit_nonzero'
         throw "$Label завершился с кодом $exitCode. Журналы: $testPath"
     }
+    $script:processCompletionReason = 'complete'
 }
 
 function Assert-Marker {
