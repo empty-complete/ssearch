@@ -135,6 +135,63 @@ def test_failure_diagnostics_are_only_for_failed_ui_process_and_report(formatter
     assert 'failure_diagnostics' not in summary['fields']
 
 
+HELPER_DOMAINS = {
+    'helper_stage': ('admission', 'native_profile', 'spawn', 'reply', 'child_exit', 'deadline'),
+    'helper_category': ('refused', 'spawn_error', 'identity_refused', 'decode_refused', 'binding_refused',
+                        'missing', 'truncated', 'duplicate', 'nonzero', 'signal', 'timeout', 'write_error'),
+}
+HELPER_FAILURE = {'helper_stage': 'native_profile', 'helper_category': 'identity_refused'}
+
+
+@pytest.mark.parametrize('role', ['ui-load', 'ui-security', 'ui-lifecycle', 'ui-empty-profile'])
+def test_failed_ui_summary_retains_optional_helper_facts_but_no_native_internals(formatter, tmp_path, role):
+    report = tmp_path / 'ui.json'
+    expected = {**UI_FAILURE, **HELPER_FAILURE}
+    report.write_text(json.dumps({'ok': False, 'failure_diagnostics': {
+        **expected, 'native_failure_category': 'spawn_error', 'nativeFailureCategories': ['nonzero'],
+        'raw_frame': PRIVATE, 'message': PRIVATE, 'pid': 12345, 'path': PRIVATE}}), encoding='utf-8')
+    summary = formatter.summarize_report(report, role, 1, not_before_ms=0)
+    assert summary['diagnostic_only'] is True and summary['process_exit_code'] == 1
+    assert summary['fields']['failure_diagnostics'] == expected
+    rendered = json.dumps(summary)
+    assert PRIVATE not in rendered and '12345' not in rendered
+
+
+@pytest.mark.parametrize('field,value', [(field, value) for field, values in HELPER_DOMAINS.items() for value in values])
+def test_failed_ui_summary_accepts_each_optional_helper_domain_member(formatter, tmp_path, field, value):
+    report = tmp_path / 'ui.json'
+    expected = {**UI_FAILURE, field: value}
+    report.write_text(json.dumps({'ok': False, 'failure_diagnostics': expected}), encoding='utf-8')
+    summary = formatter.summarize_report(report, 'ui-lifecycle', 1, not_before_ms=0)
+    assert summary['fields']['failure_diagnostics'] == expected
+
+
+@pytest.mark.parametrize('field,value', [
+    ('helper_stage', 'identity_refused'), ('helper_category', 'native_profile'),
+    ('helper_stage', 'bootstrap'), ('helper_category', 'runtime_failure'),
+    *[(field, value) for field in HELPER_DOMAINS for value in (None, PRIVATE, 'unknown_public_code',
+                                                             True, 1, [PRIVATE], {'message': PRIVATE})],
+])
+def test_invalid_helper_field_is_dropped_without_losing_other_safe_facts(formatter, tmp_path, field, value):
+    report = tmp_path / 'ui.json'
+    expected = {**UI_FAILURE, **HELPER_FAILURE}
+    report.write_text(json.dumps({'ok': False, 'failure_diagnostics': {**expected, field: value}}), encoding='utf-8')
+    summary = formatter.summarize_report(report, 'ui-lifecycle', 1, not_before_ms=0)
+    assert summary['fields']['failure_diagnostics'] == {key: item for key, item in expected.items() if key != field}
+    assert PRIVATE not in json.dumps(summary)
+
+
+@pytest.mark.parametrize('role,ok,exit_code', [
+    ('service-owner', False, 1), ('postgres', False, 1), ('application', False, 1),
+    ('ui-lifecycle', True, 0), ('ui-lifecycle', True, 1), ('ui-lifecycle', False, 0),
+])
+def test_optional_helper_facts_never_appear_outside_failed_ui_report(formatter, tmp_path, role, ok, exit_code):
+    report = tmp_path / 'report.json'
+    report.write_text(json.dumps({'ok': ok, 'failure_diagnostics': {**UI_FAILURE, **HELPER_FAILURE}}), encoding='utf-8')
+    summary = formatter.summarize_report(report, role, exit_code, not_before_ms=0)
+    assert 'failure_diagnostics' not in summary['fields']
+
+
 @pytest.mark.parametrize('state', ['missing', 'malformed', 'oversized', 'stale'])
 def test_unavailable_report_is_only_a_fixed_diagnostic(formatter, tmp_path, state):
     report = tmp_path / 'report.json'
