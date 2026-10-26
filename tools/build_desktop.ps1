@@ -80,6 +80,8 @@ try {
     $env:SSEARCH_PRODUCT_METADATA = Join-Path $OutputDirectory 'product-metadata.json'
     Invoke-DesktopChecked $Python @($helper, 'export-product', '--root', $repository,
                                      '--output', $env:SSEARCH_PRODUCT_METADATA)
+    & (Join-Path $repository 'tools/check_offline_caches.ps1') -DesktopCachePath $DesktopCachePath
+    if (!$?) { throw 'Real offline cache-negative proof failed.' }
     & (Join-Path $repository 'tools/build_frontend.ps1') -CachePath $FrontendCachePath -DesktopCachePath $DesktopCachePath
     if (!$?) { throw 'Offline frontend build failed.' }
     Push-Location -LiteralPath (Join-Path $repository 'frontend')
