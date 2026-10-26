@@ -58,6 +58,83 @@ def test_unknown_values_in_known_fields_are_redacted(formatter, tmp_path):
                 'error_code', 'error_type'} & summary['fields'].keys()
 
 
+UI_FAILURE_DOMAINS = {
+    'primary_phase': ('bootstrap', 'action', 'audit_before_action', 'audit_after_action',
+                      'cleanup', 'final_report', 'unhandled', 'deadline'),
+    'primary_category': ('wire_audit', 'renderer_load', 'assertion', 'deadline', 'cancelled',
+                         'service_unavailable', 'runtime_failure', 'report_write', 'retained_child', 'owner_state'),
+    'wire_audit_category': ('unclassified', 'duplicate_stream', 'stream_limit', 'end_payload_empty',
+                            'end_payload_nonempty', 'unsupported_chunk', 'frame_decode', 'frame_shape',
+                            'request_limit', 'truncated_frame', 'partial_snapshot'),
+}
+UI_FAILURE_DOMAINS['cleanup_category'] = UI_FAILURE_DOMAINS['primary_category']
+UI_FAILURE = {'primary_phase': 'audit_after_action', 'primary_category': 'wire_audit',
+              'wire_audit_category': 'unsupported_chunk', 'cleanup_category': 'retained_child'}
+
+
+@pytest.mark.parametrize('role', ['ui-load', 'ui-security', 'ui-lifecycle', 'ui-empty-profile'])
+def test_failed_ui_summary_retains_only_four_public_diagnostics(formatter, tmp_path, role):
+    report = tmp_path / 'ui.json'
+    report.write_text(json.dumps({'ok': False, 'failure_diagnostics': {
+        **UI_FAILURE, 'message': PRIVATE, 'path': PRIVATE, 'token': PRIVATE, 'pid': 12345},
+        'raw_stderr': PRIVATE}), encoding='utf-8')
+    summary = formatter.summarize_report(report, role, 1, not_before_ms=0)
+    assert summary['diagnostic_only'] is True and summary['process_exit_code'] == 1
+    assert summary['fields']['ok'] is False and summary['report_state'] == 'read'
+    assert summary['fields']['failure_diagnostics'] == UI_FAILURE
+    rendered = json.dumps(summary)
+    assert PRIVATE not in rendered and '12345' not in rendered
+
+
+@pytest.mark.parametrize('field,value', [
+    (field, value) for field, values in UI_FAILURE_DOMAINS.items() for value in values
+] + [('wire_audit_category', None), ('cleanup_category', None)])
+def test_failed_ui_summary_accepts_each_public_field_domain(formatter, tmp_path, field, value):
+    report = tmp_path / 'ui.json'
+    expected = {**UI_FAILURE, field: value}
+    report.write_text(json.dumps({'ok': False, 'failure_diagnostics': expected}), encoding='utf-8')
+    summary = formatter.summarize_report(report, 'ui-security', 1, not_before_ms=0)
+    assert summary['fields']['failure_diagnostics'] == expected
+
+
+@pytest.mark.parametrize('field,value', [
+    ('primary_phase', 'wire_audit'), ('primary_category', 'bootstrap'),
+    ('wire_audit_category', 'runtime_failure'), ('cleanup_category', 'frame_decode'),
+    ('primary_phase', 'clean_shutdown'), ('primary_category', PRIVATE),
+    ('wire_audit_category', PRIVATE), ('cleanup_category', PRIVATE),
+    ('primary_phase', None), ('primary_category', None),
+    ('primary_phase', [PRIVATE]), ('primary_category', {'message': PRIVATE}),
+    ('wire_audit_category', True), ('cleanup_category', 1),
+])
+def test_failed_ui_summary_drops_only_invalid_individual_fields(formatter, tmp_path, field, value):
+    report = tmp_path / 'ui.json'
+    report.write_text(json.dumps({'ok': False, 'failure_diagnostics': {**UI_FAILURE, field: value}}),
+                      encoding='utf-8')
+    summary = formatter.summarize_report(report, 'ui-security', 1, not_before_ms=0)
+    assert summary['fields']['failure_diagnostics'] == {key: item for key, item in UI_FAILURE.items() if key != field}
+    assert PRIVATE not in json.dumps(summary)
+
+
+@pytest.mark.parametrize('details', [PRIVATE, [PRIVATE], None, True, 1, {'message': PRIVATE}])
+def test_malformed_ui_failure_diagnostics_are_not_emitted(formatter, tmp_path, details):
+    report = tmp_path / 'ui.json'
+    report.write_text(json.dumps({'ok': False, 'failure_diagnostics': details}), encoding='utf-8')
+    summary = formatter.summarize_report(report, 'ui-security', 1, not_before_ms=0)
+    assert 'failure_diagnostics' not in summary['fields']
+    assert PRIVATE not in json.dumps(summary)
+
+
+@pytest.mark.parametrize('role,ok,exit_code', [
+    ('service-owner', False, 1), ('postgres', False, 1), ('application', False, 1),
+    ('ui-security', True, 0), ('ui-security', True, 1), ('ui-security', False, 0),
+])
+def test_failure_diagnostics_are_only_for_failed_ui_process_and_report(formatter, tmp_path, role, ok, exit_code):
+    report = tmp_path / 'report.json'
+    report.write_text(json.dumps({'ok': ok, 'failure_diagnostics': UI_FAILURE}), encoding='utf-8')
+    summary = formatter.summarize_report(report, role, exit_code, not_before_ms=0)
+    assert 'failure_diagnostics' not in summary['fields']
+
+
 @pytest.mark.parametrize('state', ['missing', 'malformed', 'oversized', 'stale'])
 def test_unavailable_report_is_only_a_fixed_diagnostic(formatter, tmp_path, state):
     report = tmp_path / 'report.json'
