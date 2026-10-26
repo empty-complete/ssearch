@@ -77,7 +77,7 @@ $receipt = @{schema_version=1;source_commit=('a'*40);test_scope=$(if($Quick){'ta
     package_only=$true;frozen_acceptance=$false}
 if ($env:P4_BUILD_FAULT -eq 'receipt') { $receipt.source_commit=('b'*40) }
 [IO.File]::WriteAllText((Join-Path $OutputDirectory 'desktop-build-receipt.json'), ($receipt|ConvertTo-Json -Depth 5))
-$PSBoundParameters | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $root 'desktop-call.json')
+$PSBoundParameters | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $root 'desktop-call.json') -Encoding UTF8
 ''', encoding='utf-8-sig')
     driver = tmp_path / 'driver.ps1'
     driver.write_text(r'''
@@ -105,7 +105,7 @@ function Invoke-Checked {
     @{program=$Program;arguments=@($Arguments);native=$native;profiles_preserved=$profilesPreserved;
       isolated_path=($env:PATH -ceq (Join-Path $env:SystemRoot 'System32'));
       source_bootstrap_absent=(!(Test-Path Env:PYTHONPATH));timeout_seconds=$timeoutSeconds} | ConvertTo-Json -Compress |
-        Add-Content -LiteralPath (Join-Path $repository 'calls.jsonl')
+        Add-Content -LiteralPath (Join-Path $repository 'calls.jsonl') -Encoding UTF8
     if ($Arguments -contains $helper) {
         & $Program @Arguments
         if ($LASTEXITCODE -ne 0) { throw 'Helper rejected build' }
