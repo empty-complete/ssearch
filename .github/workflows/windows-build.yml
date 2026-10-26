@@ -13,7 +13,19 @@ on:
         options: [full, quick, source]
         default: full
       test_targets:
-        description: 'Quick/source: nonempty JSON array of existing test files/nodeids'
+        description: 'Python targets: JSON array of existing test files/nodeids'
+        type: string
+        default: '[]'
+      desktop_stack:
+        description: Build the Electron package and frozen headless service candidate
+        type: boolean
+        default: false
+      frontend_test_targets:
+        description: 'Electron Quick: JSON array of frontend test files'
+        type: string
+        default: '[]'
+      desktop_test_targets:
+        description: 'Electron Quick: JSON array of desktop test files'
         type: string
         default: '[]'
       publish:
@@ -116,6 +128,9 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       BUILD_MODE: ${{ inputs.mode || 'full' }}
       TEST_TARGETS_JSON: ${{ inputs.test_targets || '[]' }}
+      DESKTOP_STACK: ${{ inputs.desktop_stack && 'true' || 'false' }}
+      FRONTEND_TEST_TARGETS_JSON: ${{ inputs.frontend_test_targets || '[]' }}
+      DESKTOP_TEST_TARGETS_JSON: ${{ inputs.desktop_test_targets || '[]' }}
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,19 +147,50 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = ConvertFrom-Json -InputObject $env:TEST_TARGETS_JSON -NoEnumerate
-          if ($targets -isnot [array] -or @($targets | Where-Object { $_ -isnot [string] }).Count) {
-            throw 'test_targets must be a JSON array of strings.'
+          $count = 0
+          foreach ($name in @('TEST_TARGETS_JSON', 'FRONTEND_TEST_TARGETS_JSON', 'DESKTOP_TEST_TARGETS_JSON')) {
+            $targets = ConvertFrom-Json -InputObject ([Environment]::GetEnvironmentVariable($name)) -NoEnumerate
+            if ($targets -isnot [array] -or @($targets | Where-Object { $_ -isnot [string] }).Count) {
+              throw 'Test targets must be JSON arrays of strings.'
+            }
+            if ($name -ne 'TEST_TARGETS_JSON' -and $env:DESKTOP_STACK -ne 'true' -and $targets.Count) {
+              throw 'UI targets require the desktop stack.'
+            }
+            $count += $targets.Count
           }
-          if ($env:BUILD_MODE -eq 'full' -and $targets.Count -ne 0) { throw 'Full does not accept test targets.' }
-          if ($env:BUILD_MODE -in @('quick', 'source') -and $targets.Count -eq 0) { throw 'Quick/source requires explicit targets.' }
+          if ($env:BUILD_MODE -eq 'full' -and $count -ne 0) { throw 'Full does not accept test targets.' }
+          if ($env:BUILD_MODE -in @('quick', 'source') -and $count -eq 0) { throw 'Quick/source requires explicit targets.' }
           if ($env:BUILD_MODE -notin @('full', 'quick', 'source')) { throw 'Unknown build mode.' }
           if ($env:BUILD_MODE -eq 'source' -and '${{ inputs.publish }}' -eq 'true') { throw 'Source tests cannot publish a build.' }
+          if ($env:BUILD_MODE -eq 'source' -and $env:DESKTOP_STACK -eq 'true') { throw 'Source mode cannot package the desktop stack.' }
+      - name: Pinned Node for the explicit desktop candidate
+        if: env.DESKTOP_STACK == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.22.1'
+      - name: Prepare pinned npm and locked offline desktop caches
+        if: env.DESKTOP_STACK == 'true'
+        shell: pwsh
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & npm install --global npm@11.19.1 --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($project in @('frontend', 'desktop')) {
+            Push-Location -LiteralPath $project
+            try {
+              & npm ci --ignore-scripts --cache .cache/npm --no-audit --no-fund
+              if ($LASTEXITCODE -ne 0) { throw 'Locked cache preparation failed.' }
+            } finally { Pop-Location }
+          }
+          & ./tools/prepare_desktop_ci.ps1
       - name: Prepare verified public inputs
         shell: pwsh
         run: |
           $arguments = @('tools/prepare_ci.py')
           if ($env:BUILD_MODE -eq 'source') { $arguments += '--source' }
+          if ($env:DESKTOP_STACK -eq 'true') { $arguments += '--desktop' }
           & python @arguments
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run selected scope under the verified standard user

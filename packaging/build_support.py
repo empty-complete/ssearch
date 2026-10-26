@@ -8,6 +8,7 @@ import argparse
 import ast
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -59,6 +60,39 @@ def validate_application_proof(proof, *, source_commit, app_version, core_versio
             or any(type(path) is not str or not path or not valid_uuid(value) for path, value in files.items())
             or len(set(files.values())) != 3):
         raise BuildError('postgres_application_proof_invalid')
+
+
+def validate_postgres_proof(postgres, *, source_commit, app_version, core_version):
+    """The same real frozen PG contract applies to Qt and Electron candidates."""
+    if type(postgres) is not dict:
+        raise BuildError('postgres_runtime_proof_invalid')
+    backup, restore = postgres.get('backup', {}), postgres.get('restore', {})
+    if (any(postgres.get(key) is not True for key in
+            ('ok', 'scram', 'wrong_password_rejected', 'clean_stop', 'profile_removed',
+             'restart_verified', 'dpapi_verified', 'private_acl_verified', 'application_privileges_verified'))
+            or postgres.get('execution_mode') != 'frozen' or postgres.get('runtime_api') != 'PostgresRuntime'
+            or postgres.get('server_version') != '18.6' or postgres.get('extension_version') != '0.8.7'
+            or postgres.get('dimension') != 384 or postgres.get('cosine_rows') != [[1, 0.0], [2, 1.0], [3, 2.0]]
+            or postgres.get('source_commit') != source_commit or postgres.get('app_version') != app_version
+            or postgres.get('core_version') != core_version or type(backup) is not dict or type(restore) is not dict
+            or backup.get('method') != 'logical-schema' or backup.get('scope') != 'synthetic-fixture-schema'
+            or backup.get('same_major') is not True or backup.get('runtime_marker_excluded') is not True
+            or backup.get('dump_exit_code') != 0 or type(backup.get('bytes')) is not int or backup['bytes'] <= 0
+            or not re.fullmatch('[0-9a-f]{64}', backup.get('sha256', ''))
+            or any(restore.get(key) is not True for key in ('rows_equal', 'restart_verified', 'target_identity_preserved'))
+            or restore.get('restore_exit_code') != 0 or not restore.get('source_installation_id')
+            or not restore.get('target_installation_id')
+            or restore['source_installation_id'] == restore['target_installation_id']
+            or restore.get('dimension') != 384 or restore.get('cosine_rows') != [[1, 0.0], [2, 1.0], [3, 2.0]]
+            or postgres.get('preservation', {}).get('source_verified') is not True):
+        raise BuildError('postgres_runtime_proof_invalid')
+
+
+def desktop_proof_contracts():
+    spec = importlib.util.spec_from_file_location('ssearch_desktop_proofs', ROOT / 'packaging/desktop_proofs.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def validate_test_selection(repository: Path, *, development=False, quick=False, test_targets=()):
@@ -244,37 +278,8 @@ def write_development_manifest(repository: Path, commit: str, *, quick=False, te
         raise BuildError("Frozen self-test с моделью не подтверждён.") from error
     try:
         postgres = json.loads(qa['postgresql'].read_text(encoding='utf-8'))
-        backup, restore = postgres.get("backup", {}), postgres.get("restore", {})
-        if (any(postgres.get(key) is not True for key in
-                ('ok', 'scram', 'wrong_password_rejected', 'clean_stop', 'profile_removed',
-                 'restart_verified', 'dpapi_verified', 'private_acl_verified',
-                 'application_privileges_verified'))
-                or postgres.get('execution_mode') != 'frozen'
-                or postgres.get('runtime_api') != 'PostgresRuntime'
-                or postgres.get('server_version') != '18.6'
-                or postgres.get('extension_version') != '0.8.7'
-                or postgres.get('dimension') != 384
-                or postgres.get('cosine_rows') != [[1, 0.0], [2, 1.0], [3, 2.0]]
-                or postgres.get("source_commit") != commit
-                or postgres.get("app_version") != version
-                or postgres.get("core_version") != project_version(repository / "packages/atom-search-core")
-                or backup.get("method") != "logical-schema"
-                or backup.get("scope") != "synthetic-fixture-schema"
-                or backup.get("same_major") is not True
-                or backup.get("runtime_marker_excluded") is not True
-                or backup.get("dump_exit_code") != 0
-                or type(backup.get("bytes")) is not int or backup["bytes"] <= 0
-                or not re.fullmatch("[0-9a-f]{64}", backup.get("sha256", ""))
-                or any(restore.get(key) is not True for key in
-                       ("rows_equal", "restart_verified", "target_identity_preserved"))
-                or restore.get("restore_exit_code") != 0
-                or not restore.get("source_installation_id")
-                or not restore.get("target_installation_id")
-                or restore["source_installation_id"] == restore["target_installation_id"]
-                or restore.get("dimension") != 384
-                or restore.get("cosine_rows") != [[1, 0.0], [2, 1.0], [3, 2.0]]
-                or postgres.get("preservation", {}).get("source_verified") is not True):
-            raise ValueError('Required PostgreSQL proof did not pass')
+        validate_postgres_proof(postgres, source_commit=commit, app_version=version,
+                                core_version=project_version(repository / 'packages/atom-search-core'))
     except (ValueError, TypeError, AttributeError) as error:
         raise BuildError('Disposable PostgreSQL SCRAM/vector proof не подтверждён.') from error
     digest = hashlib.sha256()
@@ -621,16 +626,119 @@ def validate_desktop_bundle(directory: Path, *, source_commit, app_version, core
     return dict(sorted(inventory.items()))
 
 
+def verify_desktop_inventory(directory: Path, inventory_path: Path, *, source_commit, app_version, core_version):
+    """Recheck unchanged payload bytes against the existing exclusive inventory."""
+    if inventory_path.resolve().is_relative_to(directory.resolve()):
+        raise BuildError('Inventory must be outside the packaged payload.')
+    try:
+        if inventory_path.is_symlink() or inventory_path.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError('invalid inventory file')
+        document = json.loads(inventory_path.read_text(encoding='utf-8'))
+        if type(document) is not dict or type(document.get('schema_version')) is not int:
+            raise ValueError('invalid inventory schema')
+        files = document.get('files')
+        if type(files) is not dict or any(type(record) is not dict or type(record.get('size')) is not int
+                                         for record in files.values()):
+            raise ValueError('invalid file inventory')
+    except (OSError, ValueError, TypeError) as error:
+        raise BuildError('Missing or invalid desktop inventory.') from error
+    actual = validate_desktop_bundle(directory, source_commit=source_commit,
+                                     app_version=app_version, core_version=core_version)
+    expected = dict(schema_version=1, source_commit=source_commit, app_version=app_version,
+                    core_version=core_version, files=actual, inventory_only=True)
+    if document != expected or document.get('inventory_only') is not True:
+        raise BuildError('Desktop payload differs from its inventory.')
+    return actual
+
+
+def verify_desktop_proofs(repository: Path, commit: str, directory: Path, qa: Path, desktop_receipt: Path,
+                          *, write_index=True):
+    verify_source_commit(repository, commit)
+    contracts = desktop_proof_contracts()
+    try:
+        tests = contracts.read_report(qa / 'test-receipt.json')
+        if tests.get('scope') not in {'targeted', 'full'}:
+            raise BuildError('Invalid desktop test scope.')
+        layout = development_layout(repository, commit, quick=tests['scope'] == 'targeted')
+        if (qa.resolve() != layout['qa'].resolve()
+                or not directory.resolve().is_relative_to(layout['build'].resolve())
+                or desktop_receipt.resolve() != (layout['build'] / 'desktop-stage/desktop-build-receipt.json').resolve()):
+            raise BuildError('Desktop proof paths do not match this build.')
+        index = contracts.verify_desktop_proofs(
+            repository, commit, directory, qa, desktop_receipt,
+            app_version=project_version(repository), core_version=project_version(repository / 'packages/atom-search-core'),
+            inventory_validator=verify_desktop_inventory, application_validator=validate_application_proof,
+            postgres_validator=validate_postgres_proof)
+        verify_source_commit(repository, commit)
+        output = qa / 'desktop-proof-index.json'
+        if write_index:
+            with output.open('x', encoding='utf-8') as stream:
+                json.dump(index, stream, indent=2)
+                stream.write('\n')
+        elif contracts.read_report(output) != index:
+            raise BuildError('Desktop proofs changed after pre-installer verification.')
+        return index
+    except (ValueError, KeyError, TypeError, OSError) as error:
+        raise BuildError('Required desktop proof does not match this payload.') from error
+
+
+def write_desktop_development_manifest(repository: Path, commit: str, *, quick=False, test_targets=(),
+                                        frontend_test_targets=(), desktop_test_targets=()):
+    selection = validate_desktop_test_selection(repository, development=True, quick=quick, test_targets=test_targets,
+                                                frontend_test_targets=frontend_test_targets,
+                                                desktop_test_targets=desktop_test_targets)
+    layout = development_layout(repository, commit, quick=quick)
+    contracts = desktop_proof_contracts()
+    receipt_path = layout['build'] / 'desktop-stage/desktop-build-receipt.json'
+    build = contracts.read_report(receipt_path)
+    directory = Path(build['packaged_path'])
+    index = verify_desktop_proofs(repository, commit, directory, layout['qa'], receipt_path, write_index=False)
+    tests = contracts.read_report(layout['qa'] / 'test-receipt.json')
+    expected_tests = dict(source_commit=commit, **selection, full_suite_passed=not quick, exit_code=0)
+    if tests != expected_tests or type(tests.get('exit_code')) is not int:
+        raise BuildError('Desktop test receipt does not match the requested selection.')
+    version, core = project_version(repository), project_version(repository / 'packages/atom-search-core')
+    installer = layout['artifacts'] / f'ssearch-Setup-{version}.exe'
+    for path in (installer, directory / 'ssearch.exe', directory / 'service/ssearch-service.exe'):
+        if not path.resolve().is_relative_to(layout['base'].resolve()):
+            raise BuildError('Desktop output escaped this build.')
+        _require_file(path)
+    def record(path):
+        return dict(path=path.relative_to(layout['base']).as_posix(), size=path.stat().st_size,
+                    sha256=contracts.file_hash(path))
+    manifest = dict(source_commit=commit, app_version=version, core_version=core,
+        payload_kind='electron-service', test_scope=selection['scope'], test_targets=selection['test_targets'],
+        frontend_test_targets=selection['frontend_test_targets'], desktop_test_targets=selection['desktop_test_targets'],
+        full_suite_passed=not quick, catalog=dict(backend='postgresql', schema_version=5),
+        capabilities=dict(postgresql='application_verified'), windows_validation=[],
+        installer=record(installer), executable=record(directory / 'ssearch.exe'),
+        service_executable=record(directory / 'service/ssearch-service.exe'),
+        qa=dict(tests='qa/test-receipt.json', desktop_proofs='qa/desktop-proof-index.json', log='qa/build.log'),
+        desktop=dict(required_frozen_proofs_passed=True, stage_accepted=False,
+                     proof_index_sha256=contracts.file_hash(layout['qa'] / 'desktop-proof-index.json'),
+                     inventory_sha256=index['inventory_sha256'],
+                     open_gates=['qt_upgrade', 'native_windows_11', 'windows_10', 'full_p4_acceptance']))
+    verify_source_commit(repository, commit)
+    output = layout['base'] / 'build-manifest.json'
+    with output.open('x', encoding='utf-8') as stream:
+        json.dump(manifest, stream, indent=2)
+        stream.write('\n')
+    return output
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="ssearch offline build verification")
     parser.add_argument("command", choices=("version", "core-wheel", "preflight", "verify-bundle",
                                              "development-start", "development-manifest", "verify-source",
                                              "test-selection", "test-receipt", "export-product",
                                              "desktop-test-selection", "verify-service-bundle",
-                                             "verify-desktop-bundle"))
+                                             "verify-desktop-bundle", "verify-desktop-proofs", "ui-proof-policy"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--directory", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument('--inventory', type=Path)
+    parser.add_argument('--qa-directory', type=Path)
+    parser.add_argument('--desktop-receipt', type=Path)
     parser.add_argument("--check-dependencies", action="store_true")
     parser.add_argument("--commit")
     parser.add_argument("--development", action="store_true")
@@ -642,7 +750,7 @@ def main(argv=None) -> int:
     parser.add_argument("--exit-code", type=int)
     args = parser.parse_args(argv)
     try:
-        if args.desktop_stack and args.command not in {'development-start', 'test-receipt'}:
+        if args.desktop_stack and args.command not in {'development-start', 'test-receipt', 'development-manifest'}:
             raise BuildError('This command does not support the desktop stack.')
         if (args.command != 'desktop-test-selection' and not args.desktop_stack
                 and (args.frontend_test_target or args.desktop_test_target)):
@@ -651,13 +759,27 @@ def main(argv=None) -> int:
         if args.desktop_stack:
             options.update(desktop_stack=True, frontend_test_targets=args.frontend_test_target,
                            desktop_test_targets=args.desktop_test_target)
-        if args.command == 'verify-desktop-bundle':
-            if args.directory is None or args.commit is None or args.output is None:
-                raise BuildError('Desktop bundle verification requires --directory, --commit and --output.')
-            if args.output.resolve().is_relative_to(args.directory.resolve()):
+        if args.command == 'ui-proof-policy':
+            print(json.dumps(desktop_proof_contracts().load_ui_policy(args.root)))
+        elif args.command == 'verify-desktop-proofs':
+            if None in (args.directory, args.commit, args.qa_directory, args.desktop_receipt):
+                raise BuildError('Desktop proofs require directory, commit, QA directory and desktop receipt.')
+            verify_desktop_proofs(args.root, args.commit, args.directory, args.qa_directory, args.desktop_receipt)
+            print('Required frozen desktop/service proofs verified; native acceptance remains open.')
+        elif args.command == 'verify-desktop-bundle':
+            if (args.directory is None or args.commit is None
+                    or (args.output is None) == (args.inventory is None)):
+                raise BuildError('Desktop bundle verification requires --directory, --commit and one of --output/--inventory.')
+            if args.output and args.output.resolve().is_relative_to(args.directory.resolve()):
                 raise BuildError('Inventory output must be outside the packaged payload.')
             commit = verify_source_commit(args.root, args.commit)
             version, core = project_version(args.root), project_version(args.root / 'packages/atom-search-core')
+            if args.inventory:
+                verify_desktop_inventory(args.directory, args.inventory, source_commit=commit,
+                                          app_version=version, core_version=core)
+                verify_source_commit(args.root, commit)
+                print('Desktop inventory matches unchanged payload.')
+                return 0
             inventory = validate_desktop_bundle(args.directory, source_commit=commit,
                                                 app_version=version, core_version=core)
             verify_source_commit(args.root, commit)
@@ -688,7 +810,11 @@ def main(argv=None) -> int:
         elif args.command == "development-manifest":
             if args.commit is None:
                 raise BuildError("Укажите --commit для development manifest.")
-            print(write_development_manifest(args.root, args.commit, **options))
+            if args.desktop_stack:
+                options.pop('desktop_stack')
+                print(write_desktop_development_manifest(args.root, args.commit, **options))
+            else:
+                print(write_development_manifest(args.root, args.commit, **options))
         elif args.command == "version":
             print(project_version(args.root))
         elif args.command == "core-wheel":

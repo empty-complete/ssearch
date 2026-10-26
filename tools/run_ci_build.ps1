@@ -163,10 +163,20 @@ print('CI preflight: standard_user=true loaded_profile=true clean_pg_environment
     & $python -c $preflight (Join-Path $RunDirectory 'preflight')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $targets = ConvertFrom-Json -InputObject $env:TEST_TARGETS_JSON -NoEnumerate
-    if ($targets -isnot [array] -or @($targets | Where-Object { $_ -isnot [string] }).Count -or
+    # Older source-only callers supply no desktop inputs. They stay Python-only.
+    $desktopStack = $env:DESKTOP_STACK -ceq 'true'
+    if ($env:DESKTOP_STACK -and $env:DESKTOP_STACK -cnotin @('true', 'false')) { throw 'CI_BUILD_SCOPE_INVALID' }
+    $frontendTargets = ConvertFrom-Json -InputObject $(if ($env:FRONTEND_TEST_TARGETS_JSON) { $env:FRONTEND_TEST_TARGETS_JSON } else { '[]' }) -NoEnumerate
+    $desktopTargets = ConvertFrom-Json -InputObject $(if ($env:DESKTOP_TEST_TARGETS_JSON) { $env:DESKTOP_TEST_TARGETS_JSON } else { '[]' }) -NoEnumerate
+    foreach ($list in @(@{items=$targets}, @{items=$frontendTargets}, @{items=$desktopTargets})) {
+        if ($list.items -isnot [array] -or @($list.items | Where-Object { $_ -isnot [string] }).Count) { throw 'CI_BUILD_SCOPE_INVALID' }
+    }
+    $targetCount = $targets.Count + $frontendTargets.Count + $desktopTargets.Count
+    if ((-not $desktopStack -and ($frontendTargets.Count -or $desktopTargets.Count)) -or
+        ($desktopStack -and $env:BUILD_MODE -eq 'source') -or
         $env:BUILD_MODE -notin @('full', 'quick', 'source') -or
-        ($env:BUILD_MODE -eq 'full' -and $targets.Count -ne 0) -or
-        ($env:BUILD_MODE -in @('quick', 'source') -and $targets.Count -eq 0)) { throw 'CI_BUILD_SCOPE_INVALID' }
+        ($env:BUILD_MODE -eq 'full' -and $targetCount -ne 0) -or
+        ($env:BUILD_MODE -in @('quick', 'source') -and $targetCount -eq 0)) { throw 'CI_BUILD_SCOPE_INVALID' }
     if ($env:BUILD_MODE -eq 'source') {
         if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'CI_SOURCE_SHA_REQUIRED' }
         $helper = Join-Path $repository 'packaging/build_support.py'
@@ -199,11 +209,23 @@ print('CI preflight: standard_user=true loaded_profile=true clean_pg_environment
     }
     $parameters = @{ Development = $true; Python = $python; ISCC = (Join-Path $repository '.tools/InnoSetup7/ISCC.exe') }
     if ($env:BUILD_MODE -eq 'quick') { $parameters.Quick = $true; $parameters.TestTargets = [string[]]$targets }
+    if ($desktopStack) {
+        $inputs = Get-Content -LiteralPath (Join-Path $repository 'resources/ci/build-inputs.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $parameters.Electron = $true
+        $parameters.NodeDirectory = Join-Path $repository '.tools/ci-node'
+        $parameters.FrontendCachePath = Join-Path $repository 'frontend/.cache/npm'
+        $parameters.DesktopCachePath = Join-Path $repository 'desktop/.cache/npm'
+        $parameters.ElectronZipDirectory = Join-Path $repository '.tools/electron-cache'
+        $parameters.ElectronZipSha256 = $inputs.electron_runtime.archive.sha256
+        $parameters.FrontendTestTargets = [string[]]$frontendTargets
+        $parameters.DesktopTestTargets = [string[]]$desktopTargets
+    }
     & (Join-Path $repository 'tools/build.ps1') @parameters
     # A build exception stops here. Export reads private proofs under the same
     # user and writes only the existing public allowlist for upload-artifact.
     $arguments = @((Join-Path $repository 'tools/export_ci_artifacts.py'), '--commit', $env:SOURCE_SHA)
     if ($env:BUILD_MODE -eq 'quick') { $arguments += '--quick' }
+    if ($desktopStack) { $arguments += '--desktop-stack' }
     & $python @arguments
     exit $LASTEXITCODE
 }
@@ -316,6 +338,9 @@ try {
             GITHUB_ACTIONS = 'true'; GITHUB_WORKSPACE = $repository
             SOURCE_SHA = $env:SOURCE_SHA; BUILD_MODE = $env:BUILD_MODE
             TEST_TARGETS_JSON = $env:TEST_TARGETS_JSON; PYTHONUTF8 = '1'
+            DESKTOP_STACK = $env:DESKTOP_STACK
+            FRONTEND_TEST_TARGETS_JSON = $env:FRONTEND_TEST_TARGETS_JSON
+            DESKTOP_TEST_TARGETS_JSON = $env:DESKTOP_TEST_TARGETS_JSON
             PIP_DISABLE_PIP_VERSION_CHECK = '1'
         }
     }
@@ -325,7 +350,8 @@ Set-StrictMode -Version Latest
 try {
     $data = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'launch.json') -Raw | ConvertFrom-Json
     foreach ($name in @('GITHUB_ACTIONS', 'GITHUB_WORKSPACE', 'SOURCE_SHA', 'BUILD_MODE',
-                        'TEST_TARGETS_JSON', 'PYTHONUTF8', 'PIP_DISABLE_PIP_VERSION_CHECK')) {
+                        'TEST_TARGETS_JSON', 'DESKTOP_STACK', 'FRONTEND_TEST_TARGETS_JSON',
+                        'DESKTOP_TEST_TARGETS_JSON', 'PYTHONUTF8', 'PIP_DISABLE_PIP_VERSION_CHECK')) {
         [Environment]::SetEnvironmentVariable($name, [string]$data.context.$name, 'Process')
     }
 } catch {
