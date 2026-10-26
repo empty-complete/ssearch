@@ -1,5 +1,7 @@
 export const MAX_REQUEST_FRAME = 65_536 + 4096;
 export const MAX_RESPONSE_FRAME = 2_097_152 + 4096;
+export const decoderFailureCategories = ['length', 'utf8', 'json', 'truncated'] as const;
+export type DecoderFailureCategory = typeof decoderFailureCategories[number];
 
 /** Incremental, allocation-bounded four-byte BE/UTF-8 JSON framing. */
 export class BrokerFrameDecoder {
@@ -7,7 +9,9 @@ export class BrokerFrameDecoder {
   private headerBytes = 0;
   private body: Buffer | null = null;
   private bodyBytes = 0;
+  private failure: DecoderFailureCategory | null = null;
   constructor(private maximum = MAX_RESPONSE_FRAME) {}
+  get failureCategory(): DecoderFailureCategory | null { return this.failure; }
   get partial(): boolean { return this.headerBytes > 0 || this.body !== null; }
   push(chunk: Uint8Array): unknown[] {
     const results: unknown[] = [];
@@ -20,7 +24,10 @@ export class BrokerFrameDecoder {
         this.headerBytes += count;
         if (this.headerBytes !== 4) continue;
         const length = this.header.readUInt32BE(0);
-        if (length < 1 || length > this.maximum) throw new Error('invalid_broker_frame');
+        if (length < 1 || length > this.maximum) {
+          this.failure ??= 'length';
+          throw new Error('invalid_broker_frame');
+        }
         this.body = Buffer.alloc(length);
         this.bodyBytes = 0;
       }
@@ -29,8 +36,11 @@ export class BrokerFrameDecoder {
       this.bodyBytes += count;
       offset += count;
       if (this.bodyBytes === this.body.length) {
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(this.body);
-        results.push(JSON.parse(text) as unknown);
+        let text: string;
+        try { text = new TextDecoder('utf-8', { fatal: true }).decode(this.body); }
+        catch (error) { this.failure ??= 'utf8'; throw error; }
+        try { results.push(JSON.parse(text) as unknown); }
+        catch (error) { this.failure ??= 'json'; throw error; }
         this.body = null;
         this.headerBytes = 0;
         this.bodyBytes = 0;
@@ -38,7 +48,12 @@ export class BrokerFrameDecoder {
     }
     return results;
   }
-  end(): void { if (this.partial) throw new Error('truncated_broker_frame'); }
+  end(): void {
+    if (this.partial) {
+      this.failure ??= 'truncated';
+      throw new Error('truncated_broker_frame');
+    }
+  }
 }
 
 export function encodeBrokerFrame(value: unknown, maximum = MAX_REQUEST_FRAME): Buffer {

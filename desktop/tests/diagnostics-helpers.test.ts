@@ -24,7 +24,8 @@ function fixture(retainedPid: number | null = 1234, closeOnKill = false) {
     timing.milliseconds = milliseconds;
     return () => { timing.cancelled = true; };
   };
-  const child: HelperReplyChild = { ...(retainedPid === null ? {} : { pid: retainedPid }), stdout, once: events.once.bind(events),
+  const child: HelperReplyChild = { ...(retainedPid === null ? {} : { pid: retainedPid }), stdout,
+    stdio: [null, null, null, stdout], once: events.once.bind(events),
     kill() { timing.kills++; if (closeOnKill) events.emit('close', 1, null); return true; } };
   const reply = receiveHelper(child, marker, clock);
   // Handle rejection immediately; test actions may synchronously emit a refusal.
@@ -188,9 +189,9 @@ test('spawn, child nonzero/signal, admission exit and unchanged deadline have di
 });
 
 test('missing, malformed and truncated replies remain failures with safe distinct outcomes', async () => {
-  for (const category of ['missing', 'decode_refused', 'truncated'] as const) {
+  for (const category of ['missing', 'length_refused', 'truncated'] as const) {
     const f = fixture();
-    if (category === 'decode_refused') f.stdout.write(Buffer.alloc(4));
+    if (category === 'length_refused') f.stdout.write(Buffer.alloc(4));
     if (category === 'truncated') f.stdout.write(encodeBrokerFrame(positive()).subarray(0, 8));
     f.events.emit('close', category === 'truncated' ? 1 : 0, null);
     await refused(f, { stage: 'reply', category });
@@ -245,9 +246,9 @@ test('first reply binding refusal survives later child error, nonzero close and 
 });
 
 test('decode, binding and deadline refusal is recorded before kill can deliver child close', async () => {
-  for (const category of ['decode_refused', 'binding_refused', 'timeout'] as const) {
+  for (const category of ['length_refused', 'binding_refused', 'timeout'] as const) {
     const f = fixture(1234, true);
-    if (category === 'decode_refused') f.stdout.write(Buffer.alloc(4));
+    if (category === 'length_refused') f.stdout.write(Buffer.alloc(4));
     else if (category === 'binding_refused') f.stdout.write(encodeBrokerFrame({ ...positive(), role: 'orphan' }));
     else f.timing.fire();
     await refused(f, { stage: category === 'timeout' ? 'deadline' : 'reply', category });
