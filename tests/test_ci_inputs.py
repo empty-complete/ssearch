@@ -22,6 +22,31 @@ prepare = load_tool('prepare_ci')
 exporter = load_tool('export_ci_artifacts')
 
 
+@pytest.mark.parametrize('entry', ['valid', 'wrong', 'missing', 'duplicate'])
+def test_electron_preparation_requires_pinned_archive_and_matching_upstream_entry(tmp_path, entry):
+    archive = tmp_path / 'electron-v45.0.0-win32-x64.zip'
+    archive.write_bytes(b'unit input bytes; not an executable qualification')
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    line = f'{digest} *{archive.name}\n'
+    if entry == 'wrong':
+        line = f'{"0" * 64} *{archive.name}\n'
+    elif entry == 'missing':
+        line = f'{digest} *other-platform.zip\n'
+    elif entry == 'duplicate':
+        line += line
+    checksums = tmp_path / 'SHASUMS256.txt'
+    checksums.write_text(line, encoding='utf-8')
+    config = dict(version='45.0.0', platform='win32', architecture='x64',
+                  archive=dict(size=archive.stat().st_size, sha256=digest),
+                  checksums=dict(size=checksums.stat().st_size,
+                                 sha256=hashlib.sha256(checksums.read_bytes()).hexdigest()))
+    if entry == 'valid':
+        prepare.verify_electron_inputs(config, archive, checksums)
+        archive.write_bytes(b'corrupt cache entry')
+    with pytest.raises(ValueError):
+        prepare.verify_electron_inputs(config, archive, checksums)
+
+
 def test_ci_pytest_preserves_module_invocation_cross_test_imports(tmp_path):
     """Match the real namespace tests/ tree, without a root test module."""
     (tmp_path / 'pytest.ini').write_text('[pytest]\ntestpaths = tests\n', encoding='utf-8')

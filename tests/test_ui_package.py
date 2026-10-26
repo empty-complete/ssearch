@@ -83,7 +83,8 @@ def test_full_selects_all_suites_without_synthetic_python_target(repository):
 def test_failed_desktop_preflight_restores_parent_environment(tmp_path, prior_value):
     powershell = shutil.which('powershell.exe')
     assert powershell, 'Windows build requires PowerShell'
-    names = ('SSEARCH_PRODUCT_METADATA', 'SSEARCH_ELECTRON_ZIP_DIR', 'SSEARCH_ELECTRON_ZIP_SHA256')
+    names = ('SSEARCH_PRODUCT_METADATA', 'SSEARCH_ELECTRON_ZIP_DIR', 'SSEARCH_ELECTRON_ZIP_SHA256',
+             'SSEARCH_SERVICE_STAGE_DIR')
     environment = {key: value for key, value in os.environ.items() if key.upper() not in names}
     if prior_value is not None:
         environment.update(dict.fromkeys(names, prior_value))
@@ -94,12 +95,13 @@ $ErrorActionPreference = 'Stop'
 try {
     & $BuildScript -Python (Join-Path $Directory 'missing-python.exe') -NodeDirectory $Directory `
         -FrontendCachePath $Directory -DesktopCachePath $Directory -OutputDirectory $Directory `
-        -ElectronZipDirectory $Directory -ElectronZipSha256 ('a' * 64)
+        -ElectronZipDirectory $Directory -ElectronZipSha256 ('a' * 64) -ServiceStageDirectory $Directory
     throw 'Expected preflight refusal'
 } catch {
     if ($_.Exception.Message -ne 'Prepared build runtime is missing.') { throw }
 }
-foreach ($name in @('SSEARCH_PRODUCT_METADATA', 'SSEARCH_ELECTRON_ZIP_DIR', 'SSEARCH_ELECTRON_ZIP_SHA256')) {
+foreach ($name in @('SSEARCH_PRODUCT_METADATA', 'SSEARCH_ELECTRON_ZIP_DIR', 'SSEARCH_ELECTRON_ZIP_SHA256',
+                    'SSEARCH_SERVICE_STAGE_DIR')) {
     if ($Prior -eq 'absent') {
         if (Test-Path -LiteralPath "Env:\$name") { throw 'Environment entry leaked' }
     } elseif ([Environment]::GetEnvironmentVariable($name, 'Process') -cne 'previous-build-value') {

@@ -314,6 +314,25 @@ foreach ($case in $cases) {
             self.root, development=True, quick=True, test_targets=["tests/test_sample.py::test_ok"]),
             {"scope": "targeted", "test_targets": ["tests/test_sample.py::test_ok"]})
 
+    def test_ui_only_quick_reserves_and_records_combined_selection(self):
+        commit = self.make_git_source()
+        target = self.root / 'frontend/tests/candidate.test.tsx'
+        target.parent.mkdir(parents=True)
+        target.write_text('// selected UI contract', encoding='utf-8')
+        options = dict(quick=True, desktop_stack=True,
+                       frontend_test_targets=['tests/candidate.test.tsx'])
+        layout = self.module.prepare_development_build(self.root, **options)
+        layout['qa'].mkdir()
+        receipt = self.module.write_test_receipt(self.root, commit, exit_code=0, **options)
+        data = json.loads(receipt.read_text(encoding='utf-8'))
+        self.assertEqual(data['test_targets'], [])
+        self.assertEqual(data['frontend_test_targets'], ['tests/candidate.test.tsx'])
+        self.assertEqual(data['desktop_test_targets'], [])
+        self.assertEqual(data['scope'], 'targeted')
+        self.assertFalse(data['full_suite_passed'])
+        with self.assertRaises(self.module.BuildError):
+            self.module.write_test_receipt(self.root, commit, exit_code=1, **options)
+
     def test_embedded_identity_is_generated_from_clean_source_and_rejects_dirty_source(self):
         commit = self.make_git_source()
         core = self.root / "packages/atom-search-core"
@@ -919,6 +938,51 @@ foreach ($name in $before.Keys) {
         (bundle / 'owner.json').write_text('{}')
         with self.assertRaises(self.module.BuildError):
             self.module.validate_bundle(bundle, service_only=True)
+
+    def test_combined_desktop_payload_binds_identity_and_has_one_model_copy(self):
+        original = self.make_bundle()
+        bundle = self.root / 'dist/desktop'
+        shutil.copytree(original, bundle / 'service')
+        (bundle / 'service/ssearch.exe').rename(bundle / 'service/ssearch-service.exe')
+        shutil.rmtree(bundle / 'service/_internal/PySide6')
+        for relative in ('ssearch.exe', 'resources/app.asar', 'LICENSE',
+                         'LICENSES.chromium.html', 'locales/en-US.pak'):
+            target = bundle / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b'local Electron fixture')
+        metadata = dict(schema_version=1, source_commit='a' * 40, app_version='0.1.0', core_version='0.1.1',
+                        product=dict(product_name='ssearch', product_name_ru='Simple Search',
+                                     support_email='author@example.invalid', author_name='Author',
+                                     author_title='developer', organization_group='upstream', copyright_holder='Author'))
+        target = bundle / 'resources/product-metadata.json'
+        target.write_text(json.dumps(metadata), encoding='utf-8')
+        options = dict(source_commit='a' * 40, app_version='0.1.0', core_version='0.1.1')
+        inventory = self.module.validate_desktop_bundle(bundle, **options)
+        assert inventory['ssearch.exe']['sha256'] == hashlib.sha256(b'local Electron fixture').hexdigest()
+        assert 'service/ssearch-service.exe' in inventory
+        metadata['source_commit'] = 'b' * 40
+        target.write_text(json.dumps(metadata), encoding='utf-8')
+        with self.assertRaises(self.module.BuildError):
+            self.module.validate_desktop_bundle(bundle, **options)
+        metadata['source_commit'] = 'a' * 40
+        target.write_text(json.dumps(metadata), encoding='utf-8')
+        shutil.copy(bundle / 'service/_internal/models/model_quantized.onnx', bundle)
+        with self.assertRaisesRegex(self.module.BuildError, 'model_quantized.onnx'):
+            self.module.validate_desktop_bundle(bundle, **options)
+
+    def test_combined_payload_rejects_other_reparse_tags_before_traversal(self):
+        from types import SimpleNamespace
+        original_lstat = Path.lstat
+        def reparse_metadata(path):
+            details = original_lstat(path)
+            if path == self.root:
+                return SimpleNamespace(st_mode=details.st_mode, st_file_attributes=0x400)
+            return details
+        with patch.object(Path, 'lstat', reparse_metadata), \
+                patch.object(Path, 'iterdir', side_effect=AssertionError('must not traverse reparse entry')):
+            with self.assertRaisesRegex(self.module.BuildError, 'reparse'):
+                self.module.validate_desktop_bundle(self.root, source_commit='a' * 40,
+                                                    app_version='0.1.0', core_version='0.1.1')
 
     def test_packaged_runtime_is_complete_without_user_database_or_credentials(self):
         bundle = self.make_bundle()
