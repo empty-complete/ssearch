@@ -15,27 +15,28 @@ export type AuditFailureCategory = typeof auditFailureCategories[number];
 export class BrokerStdinAudit {
   private counts = Object.fromEntries(methods.map(method => [method, 0])) as Record<UiMethod, number>;
   private requests = new Map<string, number>();
-  private decoders: BrokerFrameDecoder[] = [];
+  private decoders = new Set<BrokerFrameDecoder>();
   private observed = new WeakSet<Writable>();
   private incomplete: AuditFailureCategory | null = null;
 
   get failureCategory(): AuditFailureCategory | null {
-    return this.incomplete ?? (this.decoders.some(decoder => decoder.partial) ? 'partial_snapshot' : null);
+    return this.incomplete ?? ([...this.decoders].some(decoder => decoder.partial) ? 'partial_snapshot' : null);
   }
 
   private refuse(category: AuditFailureCategory): void { this.incomplete ??= category; }
 
   observe(stdin: Writable): void {
     if (this.observed.has(stdin)) { this.refuse('duplicate_stream'); return; }
-    if (this.decoders.length >= 64) { this.refuse('stream_limit'); return; }
+    if (this.decoders.size >= 64) { this.refuse('stream_limit'); return; }
     this.observed.add(stdin);
-    const decoder = new BrokerFrameDecoder(MAX_REQUEST_FRAME);
-    this.decoders.push(decoder);
+    let decoder: BrokerFrameDecoder | null = new BrokerFrameDecoder(MAX_REQUEST_FRAME);
+    this.decoders.add(decoder);
     const audit = this;
     const originalWrite = stdin.write;
     stdin.write = function(this: Writable, ...arguments_: unknown[]) {
       const result = Reflect.apply(originalWrite, this, arguments_) as boolean;
-      audit.submitted(decoder, arguments_[0]);
+      if (decoder) audit.submitted(decoder, arguments_[0]);
+      else audit.refuse('frame_shape'); // A retired writer cannot resume outside observation.
       return result;
     } as typeof stdin.write;
     const originalEnd = stdin.end;
@@ -49,7 +50,18 @@ export class BrokerStdinAudit {
       }
       return Reflect.apply(originalEnd, this, arguments_);
     } as typeof stdin.end;
-    const finished = () => { try { decoder.end(); } catch { audit.refuse('truncated_frame'); } };
+    const finished = () => {
+      if (!decoder) return;
+      const completed = decoder;
+      try { completed.end(); }
+      catch { audit.refuse('truncated_frame'); }
+      finally {
+        audit.decoders.delete(completed);
+        // runtime.brokers can retain this stream and its wrappers. Release the
+        // completed decoder here too, while keeping aggregate counts/IDs.
+        decoder = null;
+      }
+    };
     stdin.once('finish', finished);
     stdin.once('close', finished);
   }
@@ -76,7 +88,7 @@ export class BrokerStdinAudit {
   }
 
   snapshot(): BrokerFrameCounts {
-    if (this.incomplete || this.decoders.some(decoder => decoder.partial)) throw new Error('ui_proof_wire_audit_incomplete');
+    if (this.incomplete || [...this.decoders].some(decoder => decoder.partial)) throw new Error('ui_proof_wire_audit_incomplete');
     return Object.freeze({ ...this.counts });
   }
 
