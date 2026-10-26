@@ -58,7 +58,8 @@ test('helper receiver projects only closed decode outcomes and preserves the fir
     [body(Buffer.from('{PRIVATE_SYNTHETIC_INPUT')), 'json_refused']] as const) {
     const events = new EventEmitter();
     const stdout = new PassThrough();
-    const child: HelperReplyChild = { pid: 1234, stdout, once: events.once.bind(events), kill: () => true };
+    const child: HelperReplyChild = { pid: 1234, stdout, stdio: [null, null, null, stdout],
+      once: events.once.bind(events), kill: () => true };
     const outcome = receiveHelper(child, context, () => () => {}).then(() => null, error => error as unknown);
     stdout.write(bytes);
     events.emit('close', 1, null);

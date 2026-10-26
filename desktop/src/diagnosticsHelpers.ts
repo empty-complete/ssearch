@@ -4,6 +4,7 @@ import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 
 import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
 import { BrokerFrameDecoder, encodeBrokerFrame } from './brokerFrames.js';
+import { HELPER_PROTOCOL_FD, writeNativeHelperPipe } from './diagnosticsHelperPipe.js';
 import { decodeProfileIdentity, type ProfileIdentity, type RuntimeProcesses } from './runtime.js';
 import { frozenServiceEnvironment } from './packagedRuntime.js';
 import { canonicalDirectory, type UiProofRequest } from './diagnosticsPolicy.js';
@@ -45,16 +46,27 @@ export interface HelperReplyChild {
   once(event: string, listener: (...arguments_: unknown[]) => void): unknown;
   kill(): boolean;
 }
-/** Current stdout selection extracted without changing the pre-FD3 baseline. */
-export function helperProtocolStream(child: HelperReplyChild): Readable | null { return child.stdout; }
-export function helperEnvironment(): NodeJS.ProcessEnv { return frozenServiceEnvironment(); }
+/** Self-test replies have an exclusive inherited pipe. stdout is never protocol. */
+export function helperProtocolStream(child: HelperReplyChild): Readable | null {
+  const stream = child.stdio?.[HELPER_PROTOCOL_FD];
+  return stream && 'readable' in stream && stream.readable && typeof stream.on === 'function' ? stream as Readable : null;
+}
+export function helperEnvironment(): NodeJS.ProcessEnv {
+  const environment = frozenServiceEnvironment();
+  // Node consumes these before helper user code, claiming fd3 for IPC/cluster.
+  // Windows environment names are case-insensitive. Other service spawns retain
+  // their existing environment policy.
+  const reserved = new Set(['NODE_CHANNEL_FD', 'NODE_CHANNEL_SERIALIZATION_MODE', 'NODE_UNIQUE_ID']);
+  for (const key of Object.keys(environment)) if (reserved.has(key.toUpperCase())) delete environment[key];
+  return environment;
+}
 export type HelperClock = (callback: () => void, milliseconds: number) => () => void;
 const helperClock: HelperClock = (callback, milliseconds) => {
   const timer = setTimeout(callback, milliseconds);
   return () => clearTimeout(timer);
 };
 export type HelperFrameWriter = (bytes: Buffer, callback: (error?: Error | null) => void) => unknown;
-const helperOutput: HelperFrameWriter = (bytes, callback) => process.stdout.write(bytes, callback);
+const helperOutput: HelperFrameWriter = writeNativeHelperPipe;
 const nativeProfile: RuntimeProcesses['profile'] = (image, args, options) => spawnSync(image, args, options);
 
 /** A closed negative observation, never admission/identity proof. No bytes are
@@ -69,15 +81,22 @@ export function writeHelperFailure(error: unknown, write: HelperFrameWriter = he
   return new Promise((resolve, reject) => {
     let settled = false;
     let cancel = () => {};
+    let cancelWrite = () => {};
     const finish = (failed: boolean) => {
       if (settled) return;
       settled = true;
       cancel();
+      cancelWrite();
       if (failed) reject(helperError('reply', 'write_error'));
       else resolve(true);
     };
     cancel = clock(() => finish(true), 2_000);
-    try { write(bytes, failure => finish(!!failure)); }
+    if (settled) { cancel(); return; }
+    try {
+      const pending = write(bytes, failure => finish(!!failure));
+      if (typeof pending === 'function') cancelWrite = pending as () => void;
+      if (settled) cancelWrite();
+    }
     catch { finish(true); }
   });
 }
@@ -135,7 +154,7 @@ export function authenticateUiHelper(request: UiProofRequest, root: string, sour
 export function writeHelperReply(context: { session_id: string; challenge: string; role: Role },
   values: { kind: 'second_instance' | 'orphan_ready'; owner_starts: number; broker_starts: number;
     profile_invocations: number; generation?: string; owner_pid?: number }): Promise<void> {
-  return new Promise((resolve, reject) => process.stdout.write(encodeBrokerFrame({ schema_version: 1,
+  return new Promise((resolve, reject) => helperOutput(encodeBrokerFrame({ schema_version: 1,
     session_id: context.session_id, challenge: context.challenge, role: context.role,
     helper_pid: process.pid, ...values }), error => error ? reject(new Error('ui_proof_helper_write_failed')) : resolve()));
 }
@@ -153,8 +172,9 @@ export function startUiHelper(root: string, reportSource: string, role: Role, pr
   writeFileSync(join(directory, `${id}.context.json`), JSON.stringify(marker), { flag: 'wx', mode: 0o600 });
   const child = spawn(process.execPath, ['--ui-self-test', join(helperRoot, 'helper.json'), '--ui-scenario', 'lifecycle',
     '--data-dir', helperRoot, '--ui-proof-helper', role], {
-    cwd: dirname(process.execPath), env: frozenServiceEnvironment(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: dirname(process.execPath), env: helperEnvironment(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
   });
+  child.stdout.resume();
   child.stderr.resume();
   const reply = receiveHelper(child, marker);
   child.stdin.on('error', () => {});
@@ -183,7 +203,8 @@ export function receiveHelper(child: HelperReplyChild, marker: HelperReplyContex
     cancel = clock(() => { if (!settled) { fail('deadline', 'timeout'); stop(); } }, 180_000);
     child.once('error', () => fail('spawn', 'spawn_error'));
     const protocol = helperProtocolStream(child);
-    if (!protocol) { fail('spawn', 'spawn_error'); return; }
+    if (!protocol) { fail('spawn', 'spawn_error'); stop(); return; }
+    protocol.on('error', () => { if (!settled) { fail('reply', 'write_error'); stop(); } });
     protocol.on('data', chunk => {
       if (settled) return;
       let frames: unknown[];

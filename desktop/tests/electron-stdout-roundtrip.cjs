@@ -1,4 +1,4 @@
-// GitHub-only source stdout transport proof. No service, SDK, singleton, windows,
+// GitHub-only private helper pipe proof. No service, SDK, singleton, windows,
 // frozen package or native acceptance. Raw Electron streams never reach job logs.
 const childMode = !!process.versions.electron && process.argv.includes('--stdout-child');
 let app;
@@ -13,9 +13,9 @@ const EXIT_RUNTIME = 91;
 const EXIT_DEADLINE = 92;
 const EXIT_HELPER = 100;
 const EXIT_NO_WRITE = 89;
-// Windows-only finite domain: outcome index plus seven closed predicate bits.
+// Windows-only finite domain: outcome index plus nine closed predicate bits.
 const EXIT_OBSERVATION = 1000;
-const OBSERVATION_WIDTH = 128;
+const OBSERVATION_WIDTH = 512;
 const replyFailures = [
   ['spawn', 'spawn_error'], ['admission', 'refused'], ['child_exit', 'nonzero'], ['child_exit', 'signal'],
   ['deadline', 'timeout'], ['reply', 'missing'], ['reply', 'truncated'], ['reply', 'duplicate'],
@@ -23,7 +23,7 @@ const replyFailures = [
   ['reply', 'utf8_refused'], ['reply', 'json_refused'], ['reply', 'write_error'],
 ];
 function summary(ok, status, details = null, pinned = false, memory = null) {
-  return { scope: 'source_stdout_roundtrip', ok, status, electron_pinned: pinned,
+  return { scope: 'source_private_helper_roundtrip', ok, status, electron_pinned: pinned,
     helper_stage: details?.stage ?? null, helper_category: details?.category ?? null,
     memory_predicates: memory };
 }
@@ -61,6 +61,7 @@ try {
   const { randomUUID } = require('node:crypto');
   const { publicUuid } = require('../dist/validation.js');
   const { encodeBrokerFrame } = require('../dist/brokerFrames.js');
+  const { writeNativeHelperPipe } = require('../dist/diagnosticsHelperPipe.js');
   const { frozenServiceEnvironment } = require('../dist/packagedRuntime.js');
   helpers = require('../dist/diagnosticsHelpers.js');
   if (!process.versions.electron) {
@@ -81,10 +82,12 @@ try {
         const accepted = outcome === replyFailures.length;
         const memory = { receiver_accepted: accepted, child_exited_zero: !!(mask & 1),
           writer_callback_completed: accepted && (mask & 1) ? true : null, bytes_equal_expected: !!(mask & 2),
-          expected_frame_seen: !!(mask & 4), capture_complete: !!(mask & 8),
-          no_write_completed: !!(mask & 16), no_write_nonempty: !!(mask & 32), capture_overflow: !!(mask & 64) };
+          stdout_noise_seen: !!(mask & 4), capture_complete: !!(mask & 8),
+          no_write_completed: !!(mask & 16), no_write_private_empty: !!(mask & 32),
+          private_junk_refused: !!(mask & 64), capture_overflow: !!(mask & 128), missing_private_pipe_refused: !!(mask & 256) };
         const ok = accepted && memory.child_exited_zero && memory.bytes_equal_expected && memory.capture_complete
-          && memory.no_write_completed && !memory.no_write_nonempty && !memory.capture_overflow;
+          && memory.stdout_noise_seen && memory.no_write_completed && memory.no_write_private_empty
+          && memory.private_junk_refused && memory.missing_private_pipe_refused && !memory.capture_overflow;
         const pair = replyFailures[outcome];
         finish(summary(ok, ok ? 'passed' : 'roundtrip_failed', pair ? { stage: pair[0], category: pair[1] } : null, true, memory));
         return;
@@ -105,41 +108,56 @@ try {
       // Synthetic fixture correlation is not a credential. Avoid introducing a
       // Node stdin decoder absent from the production helper's native SDK path.
       const args = process.argv.slice(process.argv.indexOf('--stdout-child') + 1);
-      const noWrite = args[5] === 'no';
+      const mode = args[5];
       if (args.length !== 6 || args[0] !== '--stdout-session' || args[2] !== '--stdout-challenge'
-        || args[4] !== '--stdout-write' || !['yes', 'no'].includes(args[5])
+        || args[4] !== '--stdout-write' || !['yes', 'no', 'junk'].includes(mode)
         || !publicUuid(args[1]) || !publicUuid(args[3])) throw new Error();
       const context = { session_id: args[1], challenge: args[3], role: 'second-instance' };
       watchdog = setTimeout(failed, 15_000);
-      if (noWrite) setImmediate(() => finish(summary(true, 'passed', null, true), EXIT_NO_WRITE));
-      else void helpers.writeHelperReply(context, { kind: 'second_instance', owner_starts: 0, broker_starts: 0, profile_invocations: 0 })
-          .then(() => finish(summary(true, 'passed', null, true)), failed);
+      // Explicit unrelated output must never enter the private decoder. Unknown
+      // native stdout remains drained too; no prefix inspection or recovery.
+      const noise = new Promise((resolve, reject) => process.stdout.write('SYNTHETIC_UNRELATED_STDOUT\n',
+        error => error ? reject(new Error()) : resolve()));
+      void noise.then(async () => {
+        if (mode === 'no') { finish(summary(true, 'passed', null, true), EXIT_NO_WRITE); return; }
+        if (mode === 'junk') await new Promise((resolve, reject) => writeNativeHelperPipe(Buffer.alloc(4),
+          error => error ? reject(new Error()) : resolve()));
+        else await helpers.writeHelperReply(context,
+          { kind: 'second_instance', owner_starts: 0, broker_starts: 0, profile_invocations: 0 });
+        finish(summary(true, 'passed', null, true));
+      }).catch(failed);
     } else {
       const marker = { source_commit: 'a'.repeat(40), role: 'second-instance', session_id: randomUUID(), challenge: randomUUID() };
-      const peer = noWrite => {
+      const peer = (mode, privatePipe = true) => {
         const args = [__filename, '--stdout-child', '--stdout-session', marker.session_id, '--stdout-challenge', marker.challenge,
-          '--stdout-write', noWrite ? 'no' : 'yes'];
+          '--stdout-write', mode];
         const child = spawn(process.execPath, args, {
-          windowsHide: true, env: frozenServiceEnvironment(), stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true, env: helpers.helperEnvironment(),
+          stdio: privatePipe ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
         });
         owned.add(child);
         const chunks = [];
         let size = 0;
+        let stdoutSize = 0;
         let overflow = false;
         // Tee the unchanged chunks BEFORE the strict receiver. Never strip,
         // resync or feed the memory comparisons back into decoding/acceptance.
-        child.stdout.on('data', chunk => {
+        child.stdio[3]?.on('data', chunk => {
           if (size + chunk.length > 65_536) { overflow = true; try { child.kill(); } catch {} return; }
           chunks.push(Buffer.from(chunk)); size += chunk.length;
+        });
+        child.stdout.on('data', chunk => {
+          stdoutSize += chunk.length;
+          if (stdoutSize > 65_536) { overflow = true; try { child.kill(); } catch {} }
         });
         child.stderr.resume();
         const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
         child.stdin.on('error', () => {});
-        return { child, closed, bytes: () => Buffer.concat(chunks), overflow: () => overflow };
+        return { child, closed, bytes: () => Buffer.concat(chunks), stdoutNonempty: () => stdoutSize > 0, overflow: () => overflow };
       };
       watchdog = setTimeout(() => finish(summary(false, 'deadline', null, true)), 25_000);
       void (async () => {
-        const writing = peer(false);
+        const writing = peer('yes');
         const expected = encodeBrokerFrame({ schema_version: 1, session_id: marker.session_id, challenge: marker.challenge,
           role: marker.role, helper_pid: writing.child.pid, kind: 'second_instance', owner_starts: 0, broker_starts: 0, profile_invocations: 0 });
         const reply = helpers.receiveHelper(writing.child, marker);
@@ -148,19 +166,31 @@ try {
           && value.broker_starts === 0 && value.profile_invocations === 0, details: null }),
         error => ({ accepted: false, details: helpers.helperFailureDetails(error) }));
         const writerEnd = await writing.closed;
-        const noWrite = peer(true);
+        const noWrite = peer('no');
         noWrite.child.once('error', () => {});
         noWrite.child.stdin.end();
         const controlEnd = await noWrite.closed;
+        const junk = peer('junk');
+        const junkResult = helpers.receiveHelper(junk.child, marker).then(() => false,
+          error => { const details = helpers.helperFailureDetails(error); return details?.stage === 'reply' && details.category === 'length_refused'; });
+        junk.child.stdin.end();
+        const junkRefused = await junkResult;
+        await junk.closed;
+        const missing = peer('yes', false);
+        missing.child.once('error', () => {});
+        missing.child.stdin.end();
+        const missingEnd = await missing.closed;
         const received = writing.bytes();
         const childZero = writerEnd.code === 0 && writerEnd.signal === null;
         let mask = childZero ? 1 : 0;
         if (received.equals(expected)) mask |= 2;
-        if (received.indexOf(expected) >= 0) mask |= 4; // Observation only, never a recovery rule.
+        if (writing.stdoutNonempty()) mask |= 4;
         if (childZero && !writing.overflow()) mask |= 8; // A decoder-killed capture is not complete evidence.
         if (controlEnd.code === EXIT_NO_WRITE && controlEnd.signal === null) mask |= 16;
-        if (noWrite.bytes().length !== 0) mask |= 32;
-        if (writing.overflow() || noWrite.overflow()) mask |= 64;
+        if (noWrite.bytes().length === 0) mask |= 32;
+        if (junkRefused) mask |= 64;
+        if (writing.overflow() || noWrite.overflow() || junk.overflow() || missing.overflow()) mask |= 128;
+        if (missingEnd.code === 1 && missingEnd.signal === null) mask |= 256;
         const index = replyFailures.findIndex(([stage, category]) => stage === result.details?.stage && category === result.details?.category);
         const outcome = result.accepted ? replyFailures.length : index >= 0 ? index : replyFailures.length + 1;
         finish(summary(false, 'roundtrip_failed', result.details, true, { outcome, mask }));

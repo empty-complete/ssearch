@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { encodeBrokerFrame } from '../src/brokerFrames.js';
-import { HELPER_PROTOCOL_FD, writeHelperPipe, type HelperPipeIO, type HelperPipeClock } from '../src/diagnosticsHelperPipe.js';
+import { HELPER_PROTOCOL_FD, writeHelperPipe, writeNativeHelperPipe, type HelperPipeIO, type HelperPipeClock } from '../src/diagnosticsHelperPipe.js';
 import { helperEnvironment, helperFailureDetails, receiveHelper, type HelperReplyChild } from '../src/diagnosticsHelpers.js';
 import { frozenServiceEnvironment } from '../src/packagedRuntime.js';
 
@@ -90,6 +90,33 @@ test('two-second deadline cancels pending partial IO so late callbacks cannot st
   assert.equal(writes, 1);
 });
 
+test('explicit cancellation and callback errors fail once without resuming late partial IO', async () => {
+  let late: (error: Error | null, written: number) => void = () => {};
+  let writes = 0;
+  let completions = 0;
+  let failed = false;
+  const cancel = writeHelperPipe(frame, error => { completions++; failed = !!error; }, {
+    inspect: () => ({ isFIFO: () => true }),
+    write(_fd, _bytes, _offset, _length, callback) { writes++; late = callback; },
+  });
+  cancel();
+  cancel();
+  late(null, 3);
+  await Promise.resolve();
+  assert.ok(failed && completions === 1 && writes === 1);
+  const error = await new Promise<Error | null | undefined>(resolve => writeHelperPipe(frame, resolve, {
+    inspect: () => ({ isFIFO: () => true }),
+    write(_fd, _bytes, _offset, _length, callback) { callback(new Error('PRIVATE_CALLBACK_SENTINEL'), 0); },
+  }));
+  assert.ok(error?.message === 'ui_proof_helper_write_failed');
+  assert.ok(!JSON.stringify(error).includes('PRIVATE_CALLBACK_SENTINEL'));
+});
+
+test('default native writer refuses Node test process before accessing any descriptor', async () => {
+  const error = await new Promise<Error | null | undefined>(resolve => writeNativeHelperPipe(frame, resolve));
+  assert.ok(error?.message === 'ui_proof_helper_write_failed');
+});
+
 function receiver(privatePipe: boolean) {
   const events = new EventEmitter();
   const stdout = new PassThrough();
@@ -133,18 +160,20 @@ test('private junk, partial EOF and missing reply remain fail-closed even with v
 });
 
 test('only helper environment reserves fd3 from Node IPC/cluster bootstrap claims', () => {
-  const keys = ['NODE_CHANNEL_FD', 'NODE_CHANNEL_SERIALIZATION_MODE', 'NODE_UNIQUE_ID'];
-  const previous = keys.map(key => process.env[key]);
-  try {
-    keys.forEach(key => { process.env[key] = '99'; });
-    const helper = helperEnvironment();
-    const service = frozenServiceEnvironment();
-    for (const key of keys) {
-      assert.equal(helper[key], undefined);
-      assert.equal(service[key], '99');
-      assert.equal(process.env[key], '99');
+  for (const keys of [['NODE_CHANNEL_FD', 'NODE_CHANNEL_SERIALIZATION_MODE', 'NODE_UNIQUE_ID'],
+    ['node_channel_fd', 'Node_Channel_Serialization_Mode', 'NoDe_UnIqUe_Id']]) {
+    const previous = keys.map(key => process.env[key]);
+    try {
+      keys.forEach(key => { process.env[key] = '99'; });
+      const helper = helperEnvironment();
+      const service = frozenServiceEnvironment();
+      assert.ok(Object.keys(helper).every(key => !keys.some(reserved => reserved.toUpperCase() === key.toUpperCase())));
+      for (const key of Object.keys(process.env).filter(key => keys.some(reserved => reserved.toUpperCase() === key.toUpperCase()))) {
+        assert.ok(service[key] === '99');
+        assert.ok(process.env[key] === '99');
+      }
+    } finally {
+      keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
     }
-  } finally {
-    keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
   }
 });

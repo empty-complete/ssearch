@@ -24,7 +24,8 @@ function fixture(retainedPid: number | null = 1234, closeOnKill = false) {
     timing.milliseconds = milliseconds;
     return () => { timing.cancelled = true; };
   };
-  const child: HelperReplyChild = { ...(retainedPid === null ? {} : { pid: retainedPid }), stdout, once: events.once.bind(events),
+  const child: HelperReplyChild = { ...(retainedPid === null ? {} : { pid: retainedPid }), stdout,
+    stdio: [null, null, null, stdout], once: events.once.bind(events),
     kill() { timing.kills++; if (closeOnKill) events.emit('close', 1, null); return true; } };
   const reply = receiveHelper(child, marker, clock);
   // Handle rejection immediately; test actions may synchronously emit a refusal.
