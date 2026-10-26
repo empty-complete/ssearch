@@ -58,7 +58,8 @@ def test_actual_scope_and_all_required_checks_are_needed(contracts):
 
 
 @pytest.mark.parametrize('mutation', ['source', 'hash', 'helper', 'missing', 'duplicate', 'failed',
-                                     'not_run', 'version', 'counts', 'live_owner', 'full_claim'])
+                                     'not_run', 'version', 'counts', 'live_owner', 'full_claim',
+                                     'broker', 'profile', 'method', 'wire', 'service_version'])
 def test_report_cannot_transfer_or_overstate_packaged_proof(contracts, mutation):
     report = copy.deepcopy(fixture_report())
     if mutation == 'source':
@@ -81,11 +82,28 @@ def test_report_cannot_transfer_or_overstate_packaged_proof(contracts, mutation)
         report['measured_counts']['global_models'] = 1
     elif mutation == 'live_owner':
         report['measured_counts']['live_retained_owner_children'] = 1
-    else:
+    elif mutation == 'full_claim':
         report['open_gates'].remove('full_p4_task3_acceptance')
+    elif mutation == 'broker':
+        report['measured_counts']['broker_starts'] = 1
+    elif mutation == 'profile':
+        report['measured_counts']['read_only_profile_invocations'] = 1
+    elif mutation in ('method', 'wire'):
+        report['measured_counts']['service_method_calls' if mutation == 'method' else 'broker_stdin_frame_counts']['status'] = 1
+    else:
+        report['versions']['service'] = '0.2.0'
     with pytest.raises(contracts.DesktopProofError):
         contracts.validate_ui_report(report, scenario='load', expected=expected(),
                                      policy=contracts.load_ui_policy(ROOT))
+
+
+def test_security_requires_the_authenticated_service_used_by_the_real_producer(contracts):
+    report = fixture_report()
+    policy = contracts.load_ui_policy(ROOT)
+    report.update(scenario='security', checks=[dict(name=name, status='pass')
+                  for name in policy['required_checks']['security']])
+    with pytest.raises(contracts.DesktopProofError):
+        contracts.validate_ui_report(report, scenario='security', expected=expected(), policy=policy)
 
 
 @pytest.mark.parametrize('fault', [None, 'selection', 'owner_count', 'serve_hash', 'serve_missing', 'ui_missing'])
@@ -133,7 +151,7 @@ def test_combined_gate_requires_same_payload_and_every_independent_proof(contrac
     for scenario, names in policy['required_checks'].items():
         report = fixture_report()
         report.update(scenario=scenario, checks=[dict(name=name, status='pass') for name in names])
-        if scenario in ('lifecycle', 'empty-profile'):
+        if scenario in ('security', 'lifecycle', 'empty-profile'):
             report['owner'] = dict(pid=123, created='1234', generation='00000000-0000-0000-0000-000000000001',
                                    installation_id='00000000-0000-0000-0000-000000000002')
             report['measured_counts']['verified_authority_pids'] = [123]
