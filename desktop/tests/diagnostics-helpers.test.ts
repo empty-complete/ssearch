@@ -5,8 +5,8 @@ import { PassThrough } from 'node:stream';
 import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { encodeBrokerFrame } from '../src/brokerFrames.js';
-import { authenticateUiHelper, receiveHelper, helperFailureDetails, type HelperReplyChild,
+import { encodeBrokerFrame, BrokerFrameDecoder } from '../src/brokerFrames.js';
+import { authenticateUiHelper, receiveHelper, helperFailureDetails, writeHelperFailure, type HelperReplyChild,
   type HelperReplyContext, type HelperClock, type HelperFailureDetails } from '../src/diagnosticsHelpers.js';
 import { recordProofFailure, type ProofOutcome } from '../src/diagnosticsOutcome.js';
 
@@ -15,7 +15,7 @@ const marker: HelperReplyContext = { source_commit: 'a'.repeat(40), role: 'secon
 const sentinel = 'PRIVATE_HELPER_SENTINEL_C:\\private-profile_credentials';
 
 // Stream/clock policy fixture only. No executable, singleton, native identity or owner is run.
-function fixture() {
+function fixture(retainedPid: number | null = 1234, closeOnKill = false) {
   const events = new EventEmitter();
   const stdout = new PassThrough();
   const timing = { fire: () => {}, milliseconds: 0, cancelled: false, kills: 0 };
@@ -24,8 +24,8 @@ function fixture() {
     timing.milliseconds = milliseconds;
     return () => { timing.cancelled = true; };
   };
-  const child: HelperReplyChild = { pid: 1234, stdout, once: events.once.bind(events),
-    kill() { timing.kills++; return true; } };
+  const child: HelperReplyChild = { ...(retainedPid === null ? {} : { pid: retainedPid }), stdout, once: events.once.bind(events),
+    kill() { timing.kills++; if (closeOnKill) events.emit('close', 1, null); return true; } };
   const reply = receiveHelper(child, marker, clock);
   // Handle rejection immediately; test actions may synchronously emit a refusal.
   const outcome = reply.then(value => ({ value, error: null }), error => ({ value: null, error: error as unknown }));
@@ -62,7 +62,7 @@ test('positive correlated helper reply still requires its retained child to exit
   assert.equal(f.timing.cancelled, true);
 });
 
-test('admission refusal creates no helper QA profile/report and projects no private marker content', () => {
+test('admission refusal creates no helper QA profile/report or stdout failure frame and projects no private marker content', async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'ssearch helper policy ')));
   try {
     mkdirSync(join(root, 'helpers'));
@@ -70,14 +70,106 @@ test('admission refusal creates no helper QA profile/report and projects no priv
     const profilePath = join(root, 'helpers', id);
     writeFileSync(join(root, 'helpers', `${id}.context.json`), JSON.stringify({ private: sentinel }));
     let error: unknown;
+    let probes = 0;
+    let writes = 0;
     try { authenticateUiHelper({ scenario: 'lifecycle', helper: true, helperRole: 'second-instance',
-      profilePath, reportPath: join(profilePath, 'helper.json') }, root, marker.source_commit, '0.2.0'); }
+      profilePath, reportPath: join(profilePath, 'helper.json') }, root, marker.source_commit, '0.2.0',
+      () => { probes++; throw new Error('unexpected_native_probe'); }); }
     catch (failure) { error = failure; }
     assert.ok(error);
     assert.deepEqual(helperFailureDetails(error), { stage: 'admission', category: 'refused' });
     assert.equal(existsSync(profilePath), false);
+    assert.equal(probes, 0);
+    assert.equal(await writeHelperFailure(error, () => { writes++; }), false);
+    assert.equal(writes, 0);
     assert.equal(JSON.stringify(helperFailureDetails(error)).includes(sentinel), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a positive frame followed by nonzero or signal exit remains a child-exit failure', async () => {
+  for (const category of ['nonzero', 'signal'] as const) {
+    const f = fixture();
+    f.stdout.write(encodeBrokerFrame(positive()));
+    f.events.emit('close', category === 'nonzero' ? 1 : null, category === 'signal' ? 'SIGTERM' : null);
+    await refused(f, { stage: 'child_exit', category });
+  }
+});
+
+test('a missing or nonpositive retained PID cannot establish positive or negative binding', async () => {
+  for (const retainedPid of [null, 0]) {
+    for (const frame of [positive(), negative()]) {
+      const f = fixture(retainedPid);
+      f.stdout.write(encodeBrokerFrame({ ...frame, helper_pid: retainedPid }));
+      f.events.emit('close', 0, null);
+      await refused(f, { stage: 'reply', category: 'binding_refused' });
+    }
+  }
+});
+
+// Valid marker context is not native proof: this process-result seam returns a
+// refused native call, so no real executable, native owner or service is started.
+function nativeRefusal() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ssearch native helper policy ')));
+  mkdirSync(join(root, 'helpers'));
+  const id = '00000000-0000-0000-0000-000000000003';
+  const profilePath = join(root, 'helpers', id);
+  writeFileSync(join(root, 'helpers', `${id}.context.json`), JSON.stringify({ ...marker, schema_version: 1,
+    profile_key: 'b'.repeat(64), parent: { pid: process.ppid, executable: realpathSync(process.execPath), created: '132000000000000001' } }));
+  let error: unknown;
+  try { authenticateUiHelper({ scenario: 'lifecycle', helper: true, helperRole: 'second-instance',
+    profilePath, reportPath: join(profilePath, 'helper.json') }, root, marker.source_commit, '0.2.0', (image, args, options) => {
+      assert.equal(image, join(root, 'service/ssearch-service.exe'));
+      assert.deepEqual(args, ['--profile-info', '--data-dir', root]);
+      assert.equal(options.windowsHide, true);
+      assert.deepEqual(options.stdio, [0, 'pipe', 'ignore']);
+      return { pid: 1234, output: [], stdout: Buffer.from(sentinel), stderr: Buffer.from(sentinel), status: 1, signal: null };
+    }); }
+  catch (failure) { error = failure; }
+  return { error, profilePath, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+test('only a post-marker native refusal emits one bounded correlated negative frame without QA writes', async () => {
+  const f = nativeRefusal();
+  try {
+    assert.deepEqual(helperFailureDetails(f.error), { stage: 'native_profile', category: 'nonzero' });
+    const frames: Buffer[] = [];
+    assert.equal(await writeHelperFailure(f.error, (bytes, callback) => { frames.push(bytes); callback(); }), true);
+    assert.equal(frames.length, 1);
+    assert.ok(frames[0].length < 65_536);
+    const decoder = new BrokerFrameDecoder(65_536);
+    const parsed = decoder.push(frames[0]);
+    decoder.end();
+    assert.deepEqual(parsed, [{ ...marker, schema_version: 1, kind: 'helper_failure', helper_pid: process.pid,
+      stage: 'native_profile', category: 'nonzero' }]);
+    assert.equal(frames[0].includes(Buffer.from(sentinel)), false);
+    assert.equal(existsSync(f.profilePath), false);
+    assert.deepEqual(Object.keys(helperFailureDetails(f.error)!).sort(), ['category', 'stage']);
+  } finally { f.cleanup(); }
+});
+
+test('negative handoff callback, thrown writer and bounded write deadline failures remain FAIL', async () => {
+  const f = nativeRefusal();
+  try {
+    const check = (error: unknown) => {
+      assert.deepEqual(helperFailureDetails(error), { stage: 'reply', category: 'write_error' });
+      assert.equal(JSON.stringify(helperFailureDetails(error)).includes(sentinel), false);
+      return true;
+    };
+    await assert.rejects(writeHelperFailure(f.error, (_bytes, callback) => callback(new Error(sentinel))), check);
+    await assert.rejects(writeHelperFailure(f.error, () => { throw new Error(sentinel); }), check);
+    let expire = () => {};
+    let writes = 0;
+    const pending = writeHelperFailure(f.error, () => { writes++; }, (callback, milliseconds) => {
+      assert.equal(milliseconds, 2_000);
+      expire = callback;
+      return () => {};
+    });
+    const failed = assert.rejects(pending, check);
+    expire();
+    await failed;
+    assert.equal(writes, 1);
+    assert.equal(existsSync(f.profilePath), false);
+  } finally { f.cleanup(); }
 });
 
 test('spawn, child nonzero/signal, admission exit and unchanged deadline have distinct closed outcomes', async () => {
@@ -150,6 +242,16 @@ test('first reply binding refusal survives later child error, nonzero close and 
   f.events.emit('close', 1, null);
   f.timing.fire();
   await refused(f, { stage: 'reply', category: 'binding_refused' });
+});
+
+test('decode, binding and deadline refusal is recorded before kill can deliver child close', async () => {
+  for (const category of ['decode_refused', 'binding_refused', 'timeout'] as const) {
+    const f = fixture(1234, true);
+    if (category === 'decode_refused') f.stdout.write(Buffer.alloc(4));
+    else if (category === 'binding_refused') f.stdout.write(encodeBrokerFrame({ ...positive(), role: 'orphan' }));
+    else f.timing.fire();
+    await refused(f, { stage: category === 'timeout' ? 'deadline' : 'reply', category });
+  }
 });
 
 test('helper failure projection augments an existing first failure without replacing it', () => {
