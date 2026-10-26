@@ -1,5 +1,7 @@
 """Explicit build selections cannot silently turn a UI Quick into full pytest."""
+import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -117,3 +119,85 @@ Write-Output 'environment_restored'
     assert result.returncode == 0, 'Desktop preflight environment proof failed'
     assert result.stdout.strip() == 'environment_restored'
     assert result.stderr == ''
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Inherited PowerShell strict-mode offline contract')
+@pytest.mark.parametrize('missing_integrity', [False, True], ids=['valid-minimal-lock', 'missing-integrity'])
+def test_offline_frontend_helper_accepts_optional_lock_fields_under_strict_mode(tmp_path, missing_integrity):
+    powershell = shutil.which('pwsh.exe')
+    assert powershell, 'The common desktop build requires PowerShell 7'
+    (tmp_path / 'tools').mkdir()
+    shutil.copyfile(ROOT / 'tools/build_frontend.ps1', tmp_path / 'tools/build_frontend.ps1')
+    resolved = 'https://registry.npmjs.org/ssearch-fixture/-/ssearch-fixture-1.0.0.tgz'
+    for project in ('frontend', 'desktop'):
+        (tmp_path / project / '.cache').mkdir(parents=True)
+        (tmp_path / f'{project}-cache').mkdir()
+        # The root record has no resolved field; ordinary dependencies need no
+        # os/cpu restriction. Both are valid package-lock v3 shapes.
+        package = {'version': '1.0.0', 'resolved': resolved, 'integrity': 'sha512-fixture'}
+        if project == 'frontend' and missing_integrity:
+            del package['integrity']
+        lock = {'name': 'ssearch-fixture', 'lockfileVersion': 3,
+                'packages': {'': {'name': 'ssearch-fixture', 'version': '0.2.0'},
+                             'node_modules/ssearch-fixture': package}}
+        (tmp_path / project / 'package-lock.json').write_text(json.dumps(lock), encoding='utf-8')
+    driver = tmp_path / 'strict-offline.ps1'
+    driver.write_text(r'''
+param([string]$Root)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+function node {
+    $global:LASTEXITCODE = 0
+    switch ($args -join ' ') {
+        '--version' { return 'v24.22.1' }
+        '-p process.platform' { return 'win32' }
+        '-p process.arch' { return 'x64' }
+        default { throw 'Unexpected Node boundary' }
+    }
+}
+function npm {
+    $global:LASTEXITCODE = 0
+    $arguments = @($args)
+    if (($arguments -join ' ') -eq '--version') { return '11.19.1' }
+    @{project=(Split-Path -Leaf (Get-Location).Path);arguments=$arguments} |
+        ConvertTo-Json -Compress | Add-Content -LiteralPath (Join-Path $Root 'npm-calls.jsonl') -Encoding UTF8
+    if ($arguments[0] -eq 'cache' -and $arguments[1] -eq 'ls') {
+        return 'make-fetch-happen:request-cache:https://registry.npmjs.org/ssearch-fixture/-/ssearch-fixture-1.0.0.tgz'
+    }
+    if (($arguments[0] -eq 'cache' -and $arguments[1] -eq 'verify') -or
+        $arguments[0] -eq 'ci' -or ($arguments[0] -eq 'run' -and $arguments[1] -eq 'build')) { return }
+    throw 'Unexpected npm boundary'
+}
+function git {
+    $global:LASTEXITCODE = 0
+    if ($args[-2] -ne 'rev-parse' -or $args[-1] -ne 'HEAD') { throw 'Unexpected Git boundary' }
+    return ('a' * 40)
+}
+& (Join-Path $Root 'tools/build_frontend.ps1') -CachePath (Join-Path $Root 'frontend-cache') `
+    -DesktopCachePath (Join-Path $Root 'desktop-cache')
+''', encoding='utf-8-sig')
+    result = subprocess.run([powershell, '-NoProfile', '-NonInteractive', '-File', str(driver), str(tmp_path)],
+                            capture_output=True, text=True, encoding='utf-8', timeout=30)
+    calls = [json.loads(line) for line in (tmp_path / 'npm-calls.jsonl').read_text(encoding='utf-8-sig').splitlines()]
+    receipt = tmp_path / 'frontend/.cache/offline-dependencies.json'
+    if missing_integrity:
+        assert result.returncode != 0
+        assert 'Offline locked cache incomplete' in result.stderr
+        assert not any(row['arguments'][0] == 'ci' for row in calls)
+        assert not receipt.exists()
+        return
+    assert result.returncode == 0, 'Strict offline helper rejected a valid minimal lock'
+    installs = [row for row in calls if row['arguments'][0] == 'ci']
+    assert len(installs) == 2
+    for row in installs:
+        assert row['arguments'] == ['ci', '--offline', '--ignore-scripts', '--cache',
+            str(tmp_path / f"{row['project']}-cache"), '--no-audit', '--no-fund']
+    proof = json.loads(receipt.read_text(encoding='utf-8-sig'))
+    assert proof['source_sha'] == 'a' * 40
+    assert proof['node'] == 'v24.22.1' and proof['npm'] == '11.19.1'
+    assert [project['project'] for project in proof['projects']] == ['frontend', 'desktop']
+    for project in proof['projects']:
+        assert project['cache_integrity_verified'] is True
+        assert project['offline_npm_ci'] is True and project['install_scripts'] is False
+        assert project['lock_sha256'] == hashlib.sha256((tmp_path / project['project'] / 'package-lock.json').read_bytes()).hexdigest()
+        assert project['packages'] == [{'package': 'node_modules/ssearch-fixture', 'integrity': 'sha512-fixture'}]
