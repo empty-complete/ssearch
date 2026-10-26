@@ -182,7 +182,12 @@ export function receiveHelper(child: HelperReplyChild, marker: HelperReplyContex
       if (settled) return;
       let frames: unknown[];
       try { frames = decoder.push(chunk); }
-      catch { fail('reply', 'decode_refused'); stop(); return; }
+      catch {
+        const category = decoder.failureCategory;
+        fail('reply', category === 'length' ? 'length_refused' : category === 'utf8' ? 'utf8_refused'
+          : category === 'json' ? 'json_refused' : 'decode_refused');
+        stop(); return;
+      }
       for (const frame of frames) {
         if (seenFrame) { fail('reply', 'duplicate'); stop(); return; }
         seenFrame = true;
