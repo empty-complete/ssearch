@@ -29,7 +29,11 @@ class PackageTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt" and shutil.which("pwsh.exe"), "PowerShell 7 unavailable")
     def test_installer_descendant_completion_under_powershell7(self):
-        self._exercise_installer_tree_wait(15000, False, shutil.which("pwsh.exe"))
+        # Independent samples expose the observed race; any failed subtest keeps
+        # this test failed, even when later samples complete successfully.
+        for sample in range(12):
+            with self.subTest(sample=sample):
+                self._exercise_installer_tree_wait(15000, False, shutil.which("pwsh.exe"))
 
     @unittest.skipUnless(os.name == "nt" and shutil.which("pwsh.exe"), "PowerShell 7 unavailable")
     def test_installer_timeout_under_powershell7(self):
