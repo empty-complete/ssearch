@@ -3,7 +3,7 @@
 import importlib.util
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files, collect_delvewheel_libs_directory
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files, collect_delvewheel_libs_directory, copy_metadata
 from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo, StringFileInfo, StringStruct, StringTable, VarFileInfo,
     VarStruct, VSVersionInfo,
@@ -43,7 +43,8 @@ a = Analysis(
     [str(ROOT / 'packaging/service_launcher.py')],
     pathex=[str(identity_module.parent), str(ROOT / 'src'), str(ROOT / 'packages/atom-search-core/src')],
     binaries=collect_dynamic_libs('onnxruntime') + driver_binaries,
-    datas=support.collect_datas(ROOT) + driver_datas + collect_data_files('tzdata'),
+    datas=(support.collect_datas(ROOT) + driver_datas + collect_data_files('tzdata')
+           + copy_metadata('onnxruntime', recursive=False)),
     hiddenimports=['numpy', 'onnxruntime', 'onnxruntime.capi.onnxruntime_pybind11_state',
                    'tokenizers', 'tokenizers.tokenizers', 'psycopg', 'psycopg_binary',
                    'psycopg_binary.pq', 'psycopg_binary._psycopg', 'tzdata',

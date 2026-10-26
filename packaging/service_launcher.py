@@ -1,8 +1,11 @@
 """Qt-free frozen service entry; authority stays in the existing service APIs."""
 import argparse
+from contextlib import contextmanager
+import importlib.metadata
 import os
 from pathlib import Path
 import sys
+import warnings
 
 
 SCENARIOS = {
@@ -37,6 +40,39 @@ def _offline_environment():
     os.environ['TRANSFORMERS_OFFLINE'] = '1'
     os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
+
+class _ExactUserWarning(type):
+    def __subclasscheck__(cls, category):
+        return category is UserWarning
+
+
+class _OrtServerAdvisory(Warning, metaclass=_ExactUserWarning):
+    """Filter marker: match UserWarning itself, never an unknown subclass."""
+
+
+@contextmanager
+def _packaged_ort_advisory():
+    enabled = False
+    if os.name == 'nt' and getattr(sys, 'frozen', False):
+        try:
+            version = sys.getwindowsversion()
+            enabled = (version.product_type in (2, 3)
+                       and version.platform_version == (10, 0, 26100)
+                       and importlib.metadata.version('onnxruntime') == '1.22.1')
+        except Exception:
+            pass  # Unknown dependency/OS context keeps ordinary warnings visible.
+    if not enabled:
+        yield
+        return
+    with warnings.catch_warnings():
+        # ORT 1.22.1 misclassifies this Server build's release label. This
+        # packaging policy grants no platform acceptance and imports no ORT.
+        warnings.filterwarnings('ignore', category=_OrtServerAdvisory,
+            message=(r'(?-i:\AUnsupported Windows version \(2025server\)\. '
+                     r'ONNX Runtime supports Windows 10 and above, only\.\Z)'),
+            module=r'\Aonnxruntime\.capi\.onnxruntime_validation\Z')
+        yield
 
 
 def _arguments(argv):
@@ -126,7 +162,8 @@ def _entry() -> int:
         sanitize_host_environment()
     except BaseException:
         return 1
-    return launch()
+    with _packaged_ort_advisory():
+        return launch()
 
 
 if __name__ == '__main__':
