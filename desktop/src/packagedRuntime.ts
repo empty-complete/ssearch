@@ -16,6 +16,14 @@ const processes: RuntimeProcesses = {
   profile: (image, args, options) => spawnSync(image, args, options),
 };
 
+export function frozenServiceEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  for (const key of Object.keys(environment)) {
+    if (/^(?:PYTHON|_PYI_|__PYVENV_LAUNCHER__$|NODE_OPTIONS$|ELECTRON_RUN_AS_NODE$)/i.test(key)) delete environment[key];
+  }
+  return { ...environment, PYTHONNOUSERSITE: '1', PYTHONUTF8: '1' };
+}
+
 export class PackagedRuntime implements ServiceRuntime {
   private readonly root: string;
   private readonly image: string;
@@ -42,14 +50,6 @@ export class PackagedRuntime implements ServiceRuntime {
     }
   }
 
-  private environment(): NodeJS.ProcessEnv {
-    const environment = { ...process.env };
-    for (const key of Object.keys(environment)) {
-      if (/^(?:PYTHON|_PYI_|__PYVENV_LAUNCHER__$|NODE_OPTIONS$|ELECTRON_RUN_AS_NODE$)/i.test(key)) delete environment[key];
-    }
-    return { ...environment, PYTHONNOUSERSITE: '1', PYTHONUTF8: '1' };
-  }
-
   private verifyProfile(profile: ProfileIdentity): void {
     this.verifyLayout();
     if (profile.serviceVersion !== this.version
@@ -66,7 +66,7 @@ export class PackagedRuntime implements ServiceRuntime {
     const challenge = randomUUID();
     const result = this.host.profile(this.image,
       ['--profile-info', ...(profilePath ? ['--data-dir', resolve(profilePath)] : [])], {
-        cwd: this.root, env: this.environment(), windowsHide: true, timeout: 20_000, maxBuffer: 65_536,
+        cwd: this.root, env: frozenServiceEnvironment(), windowsHide: true, timeout: 20_000, maxBuffer: 65_536,
         input: encodeBrokerFrame({ schema_version: 1, session_id: session, challenge,
           parent_pid: process.pid, parent_executable: realpathSync(process.execPath) }),
       });
@@ -77,7 +77,7 @@ export class PackagedRuntime implements ServiceRuntime {
   spawnBroker(profile: ProfileIdentity): ReturnType<ServiceRuntime['spawnBroker']> {
     this.verifyProfile(profile);
     return this.host.broker(this.image, ['--desktop-client', '--data-dir', profile.profile], {
-      cwd: this.root, env: this.environment(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: this.root, env: frozenServiceEnvironment(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     });
   }
 
@@ -87,7 +87,7 @@ export class PackagedRuntime implements ServiceRuntime {
       '--model-dir', join(this.root, 'service/_internal/models')], {
       // Retain outer job containment while allowing the verified parent lease to close P2 gracefully.
       detached: process.platform === 'win32',
-      cwd: this.root, env: this.environment(), windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'],
+      cwd: this.root, env: frozenServiceEnvironment(), windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'],
     });
     if (!child.stdin) throw new Error('service_control_pipe_required');
     child.stdin.on('error', () => {});

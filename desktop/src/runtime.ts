@@ -29,7 +29,8 @@ export interface RuntimeProcesses {
 
 /** Same bounded private bootstrap frame for source and frozen service images. */
 export function decodeProfileIdentity(bytes: Buffer, session: string, challenge: string,
-  expected?: { version: string; image: string }): ProfileIdentity {
+  expected?: { version: string; image: string;
+    parent?: ProfileIdentity['parent'] }): ProfileIdentity {
   try {
     const decoder = new BrokerFrameDecoder();
     const frames = decoder.push(bytes);
@@ -45,9 +46,10 @@ export function decodeProfileIdentity(bytes: Buffer, session: string, challenge:
       || typeof reply.python_base !== 'string' || !isAbsolute(reply.python_base)
       || typeof reply.python_venv !== 'string' || !isAbsolute(reply.python_venv)
       || !plainObject(reply.parent) || !exactKeys(reply.parent, ['pid', 'executable', 'created'])
-      || reply.parent.pid !== process.pid || typeof reply.parent.executable !== 'string'
-      || realpathSync(reply.parent.executable).toLowerCase() !== realpathSync(process.execPath).toLowerCase()
-      || typeof reply.parent.created !== 'string' || !/^[1-9][0-9]{0,19}$/.test(reply.parent.created)) throw new Error();
+      || reply.parent.pid !== (expected?.parent?.pid ?? process.pid) || typeof reply.parent.executable !== 'string'
+      || realpathSync(reply.parent.executable).toLowerCase() !== realpathSync(expected?.parent?.executable ?? process.execPath).toLowerCase()
+      || typeof reply.parent.created !== 'string' || !/^[1-9][0-9]{0,19}$/.test(reply.parent.created)
+      || (expected?.parent && reply.parent.created !== expected.parent.created)) throw new Error();
     const pythonBase = realpathSync(reply.python_base);
     const pythonVenv = realpathSync(reply.python_venv);
     if (expected && (reply.service_version !== expected.version
@@ -55,6 +57,6 @@ export function decodeProfileIdentity(bytes: Buffer, session: string, challenge:
       || pythonVenv.toLowerCase() !== expected.image.toLowerCase())) throw new Error();
     return Object.freeze({ profile: reply.profile, key: reply.key, serviceVersion: reply.service_version,
       pythonBase, pythonVenv,
-      parent: Object.freeze({ pid: process.pid, executable: reply.parent.executable, created: reply.parent.created }) });
+      parent: Object.freeze({ pid: reply.parent.pid as number, executable: reply.parent.executable, created: reply.parent.created }) });
   } catch { throw new Error('service_identity_mismatch'); }
 }
