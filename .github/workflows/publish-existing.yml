@@ -1,0 +1,44 @@
+name: Publish an existing verified Full build
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Merged PR whose original successful Full artifact should be published
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ssearch-development-publisher
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: github.ref == 'refs/heads/main' && github.repository == 'empty-complete/ssearch'
+    runs-on: windows-2025
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RECOVERY_PR: ${{ inputs.pr_number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+      - name: Recover the original merge without rebuilding or replacing assets
+        shell: pwsh
+        run: |
+          if ($env:RECOVERY_PR -notmatch '^[1-9][0-9]*$') { throw 'A positive merged PR number is required.' }
+          & python tools/ci_publish.py publish --recovery-pr $env:RECOVERY_PR
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

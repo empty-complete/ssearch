@@ -48,6 +48,14 @@ jobs:
       SOURCE_SHA: ${{ github.sha }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12.10'
+          architecture: x64
       - id: scope
         name: Keep documentation and unpackaged UI candidates out of the binary build
         shell: pwsh
@@ -82,20 +90,13 @@ jobs:
             }
             $testedSha = $pr.head.sha
             $headRepository = $pr.head.repo.full_name
-            if ($pr.changed_files -gt 0 -and $pr.changed_files -le 3000) {
-              $files = @(gh api --paginate "repos/$env:GH_REPO/pulls/$prNumber/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)')
-              if ($LASTEXITCODE -ne 0 -or $files.Count -lt $pr.changed_files) { throw 'Incomplete changed-file inventory.' }
-              $documentation = '^(README\.md|CONTRIBUTING\.md|AGENTS\.md|docs/.*\.md|\.github/(pull_request_template\.md|PULL_REQUEST_TEMPLATE/.*\.md|ISSUE_TEMPLATE/[^/]+\.(md|yml|yaml)))$'
-              # P4 source candidates have their own frontend-checks workflow and
-              # are not inputs to the current Qt installer. Remove this exemption
-              # when P4 Task 3 connects them to the shared package/build contract.
-              # Both sides of renames are classified above; all other paths fail
-              # closed to the binary chain, including shared tools and packaging.
-              $uiCandidate = '^(frontend/.*|desktop/.*|tools/build_frontend\.ps1|\.github/workflows/frontend-checks\.yml)$'
-              $required = @($files | Where-Object {
-                $_ -notmatch $documentation -and $_ -notmatch $uiCandidate
-              }).Count -gt 0
+            # Publisher-only changes must preserve the exact base/head workflow
+            # header and binary build job. Unknown files still require Full.
+            $classification = & python tools/ci_publish.py classify --pr-number $prNumber --head-sha $testedSha
+            if ($LASTEXITCODE -ne 0 -or $classification -notin @('true', 'false')) {
+              throw 'Could not safely classify the exact PR head.'
             }
+            $required = $classification -eq 'true'
           }
           if ($testedSha -notmatch '^[0-9a-f]{40}$' -or $headRepository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
             throw 'Invalid source identity returned by GitHub.'
@@ -200,77 +201,20 @@ jobs:
     permissions:
       contents: write
       actions: read
+      pull-requests: read
     env:
       GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      SOURCE_SHA: ${{ github.sha }}
-      TESTED_SHA: ${{ needs.changes.outputs.tested_sha }}
-      PR_NUMBER: ${{ needs.changes.outputs.pr_number }}
-      PR_HEAD_REPOSITORY: ${{ needs.changes.outputs.pr_head_repository }}
-      RUN_ID: ${{ github.run_id }}
     steps:
-      - name: Publish this successful Full build as a development prerelease
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+      - name: Publish the exact verified Full artifact
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          function Read-GitHubJson([string]$Endpoint) {
-            $response = gh api $Endpoint
-            if ($LASTEXITCODE -ne 0) { throw "GitHub API request failed: $Endpoint" }
-            return $response | ConvertFrom-Json
-          }
-          if ($env:SOURCE_SHA -notmatch '^[0-9a-f]{40}$' -or $env:TESTED_SHA -notmatch '^[0-9a-f]{40}$') {
-            throw 'Publication requires full commit identities.'
-          }
-          $buildRunId = $env:RUN_ID
-          if ([int]$env:PR_NUMBER -gt 0) {
-            $workflow = Read-GitHubJson "repos/$env:GH_REPO/actions/workflows/windows-build.yml"
-            $runs = Read-GitHubJson "repos/$env:GH_REPO/actions/workflows/$($workflow.id)/runs?event=pull_request&head_sha=$env:TESTED_SHA&status=success&per_page=100"
-            $matches = @($runs.workflow_runs | Where-Object {
-              $_.workflow_id -eq $workflow.id -and $_.path -eq '.github/workflows/windows-build.yml' -and
-              $_.event -eq 'pull_request' -and $_.status -eq 'completed' -and $_.conclusion -eq 'success' -and
-              $_.head_sha -eq $env:TESTED_SHA -and $_.head_repository.full_name -eq $env:PR_HEAD_REPOSITORY -and
-              @($_.pull_requests | Where-Object { $_.number -eq [int]$env:PR_NUMBER }).Count -gt 0
-            } | Sort-Object id -Descending)
-            if ($matches.Count -eq 0) { throw 'No successful build of this exact PR head; run Full on main explicitly.' }
-            $buildRunId = [string]$matches[0].id
-          }
-          $artifacts = Read-GitHubJson "repos/$env:GH_REPO/actions/runs/$buildRunId/artifacts"
-          $expectedName = "windows-${env:TESTED_SHA}-full"
-          $artifact = @($artifacts.artifacts | Where-Object { $_.name -eq $expectedName -and -not $_.expired })
-          if ($artifact.Count -ne 1) { throw 'Missing or ambiguous Full build artifact.' }
-          gh run download $buildRunId --name $expectedName --dir package
-          if ($LASTEXITCODE -ne 0) { throw 'Could not retrieve this run artifact.' }
-          $manifest = Get-Content -LiteralPath package/build-manifest.json -Raw | ConvertFrom-Json
-          if ($manifest.source_commit -ne $env:TESTED_SHA -or $manifest.full_suite_passed -ne $true -or $manifest.test_scope -ne 'full' -or
-              $manifest.app_version -notmatch '^\d+\.\d+\.\d+$') {
-            throw 'Publication requires the matching successful Full build.'
-          }
-          $testedCommit = Read-GitHubJson "repos/$env:GH_REPO/git/commits/$env:TESTED_SHA"
-          $mergedCommit = Read-GitHubJson "repos/$env:GH_REPO/git/commits/$env:SOURCE_SHA"
-          if ($testedCommit.tree.sha -notmatch '^[0-9a-f]{40}$' -or $testedCommit.tree.sha -ne $mergedCommit.tree.sha) {
-            throw 'Merged tree differs from the tested tree; run Full on main explicitly. No automatic rebuild or proof transfer.'
-          }
-          $installerName = "ssearch-Setup-$($manifest.app_version).exe"
-          $installer = Join-Path package $installerName
-          if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.installer.sha256) {
-            throw 'Installer checksum mismatch.'
-          }
-          $files = @($installer, 'package/build-manifest.json', 'package/test-receipt.json', 'package/ci-evidence.json', 'package/SHA256SUMS.txt')
-          $tag = "dev-${env:SOURCE_SHA}"
-          $notes = @"
-          Development build tested at commit $env:TESTED_SHA and published after integration at $env:SOURCE_SHA.
-          The exact Git tree hashes match: $($testedCommit.tree.sha). Attached receipts retain the original tested commit.
-
-          Full tests and frozen PostgreSQL/application proofs passed on Windows Server 2025 x64.
-          Windows 10/11 native and visual acceptance remains open. This is not a Stable release or a signed update feed.
-
-          Source, installer checksums and public receipts are attached. Build workflow: https://github.com/$env:GH_REPO/actions/runs/$buildRunId
-          "@
-          Set-Content -LiteralPath release-notes.md -Value $notes -Encoding utf8
-          gh release view $tag --json tagName *> $null
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host 'A prerelease already exists for this exact commit; preserving its assets.'
-            exit 0
-          }
-          gh release create $tag @files --target $env:SOURCE_SHA --prerelease --title "ssearch development $($env:SOURCE_SHA.Substring(0, 8))" --notes-file release-notes.md
-          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the development prerelease.' }
+          & python tools/ci_publish.py publish
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
