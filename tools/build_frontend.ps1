@@ -27,13 +27,13 @@ function Install-LockedOffline([string]$Project, [string]$Cache) {
     $packages = @()
     foreach ($entry in $lock.packages.GetEnumerator()) {
       $package = $entry.Value
-      if (!$package.resolved) { continue }
-      if ($package.os -and $platform -notin $package.os) { continue }
-      if ($package.cpu -and $architecture -notin $package.cpu) { continue }
-      if (!$package.integrity -or !$cacheKeys.Contains($package.resolved)) {
+      if (!$package.ContainsKey('resolved') -or !$package['resolved']) { continue }
+      if ($package.ContainsKey('os') -and $package['os'] -and $platform -notin $package['os']) { continue }
+      if ($package.ContainsKey('cpu') -and $package['cpu'] -and $architecture -notin $package['cpu']) { continue }
+      if (!$package.ContainsKey('integrity') -or !$package['integrity'] -or !$cacheKeys.Contains($package['resolved'])) {
         throw "Offline locked cache incomplete: $($entry.Key). No download attempted."
       }
-      $packages += @{ package=$entry.Key; integrity=$package.integrity }
+      $packages += @{ package=$entry.Key; integrity=$package['integrity'] }
     }
     & npm cache verify --cache $resolvedCache | Out-Host
     if ($LASTEXITCODE) { throw 'Offline cache integrity verification failed.' }
