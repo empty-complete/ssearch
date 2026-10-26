@@ -1,7 +1,11 @@
 """Execute the real installed-report validator with controlled JSON, no install."""
+import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
+
+import pytest
 
 
 def test_installed_report_rejects_sqlite_or_wrong_build(tmp_path):
@@ -85,3 +89,271 @@ if ((Get-PreservedProfileSnapshot -ProfilePath $appData) -ceq $before) {
     result = subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(harness),str(source),str(tmp_path)],
                             capture_output=True,timeout=20)
     assert result.returncode == 0, result.stderr.decode(errors='replace')
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PAYLOAD = '99c53a141c4864072e8a357d2a0cc5423c1c810b'
+HARNESS = 'b' * 40
+
+
+@pytest.mark.parametrize('reference', [False, True], ids=['installed', 'post-uninstall-reference'])
+def test_existing_installer_self_test_uses_service_and_same_application_profile(tmp_path, reference):
+    """Actual existing controller body, valid frozen report; no application runs."""
+    script = tmp_path / 'route.ps1'
+    script.write_text(r'''
+param([string]$Controller, [string]$Root, [string]$Reference)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($Controller,[ref]$tokens,[ref]$errors)
+if ($errors.Count) { throw 'controller_syntax_invalid' }
+$node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq 'Invoke-InstalledSelfTest'},$true)
+. ([scriptblock]::Create($node.Extent.Text))
+$sourceCommit='99c53a141c4864072e8a357d2a0cc5423c1c810b'
+$buildManifest=@{payload_kind='electron-service';app_version='0.2.0';core_version='0.2.0';
+    catalog=@{backend='postgresql';schema_version=5}}
+$isElectron=$true
+$testPath=$Root
+$appExecutable=Join-Path $Root 'installed/ssearch.exe'
+$serviceExecutable=Join-Path $Root 'installed/service/ssearch-service.exe'
+$referenceExecutable=Join-Path $Root 'reference/ssearch.exe'
+$referenceServiceExecutable=Join-Path $Root 'reference/service/ssearch-service.exe'
+$dataPath=Join-Path $Root 'actual application profile Кириллица with spaces'
+$null=New-Item -ItemType Directory -Path $dataPath
+$settings=Join-Path $dataPath 'settings.json'
+[IO.File]::WriteAllText($settings,'{"retained":true}')
+$script:ownedChecks=0; $script:markerChecks=0; $script:called=$null
+function Assert-OwnedInstallation { $script:ownedChecks++ }
+function Assert-Marker { $script:markerChecks++ }
+function Start-HiddenAndWait {
+    param([string]$Program,[string[]]$Arguments,[string]$Label,[int]$TimeoutMilliseconds)
+    $script:called=@{program=$Program;arguments=$Arguments}
+    $report=@{ok=$true;model_ready=$true;scan_status='complete';files=3;vector_count=3;dimension=384;
+        literal_result='КМ-101 узлы фасада.dwg';semantic_result='Контракт монтажных работ.docx';
+        backend='postgresql';factory='open_search_service';schema_version=5;prior_schema_version=5;
+        clean_stop=$true;public_identity_preserved=$true;source_clean=$true;execution_mode='frozen';
+        source_commit=$sourceCommit;app_version='0.2.0';core_version='0.2.0';server_version='18.6';
+        extension_version='0.8.7';catalog_id=1;installation_id='11111111-1111-4111-8111-111111111111';
+        model_manifest_digest=('c'*64);index_fingerprint=('d'*64);model_key='model|filename-path-root-project-v2';
+        public_source_id='22222222-2222-4222-8222-222222222222';public_file_ids=@{drawing='33333333-3333-4333-8333-333333333333'}}
+    $path=$Arguments[[Array]::IndexOf($Arguments,'--self-test')+1]
+    [IO.File]::WriteAllText($path,($report|ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))
+    $script:processCompletionConfirmed=$true
+}
+$fromReference=$Reference -eq 'true'
+if($fromReference) { $result=Invoke-InstalledSelfTest 'proof.json' -FromBundle }
+else { $result=Invoke-InstalledSelfTest 'proof.json' }
+$expected=if($fromReference){$referenceServiceExecutable}else{$serviceExecutable}
+$argsSeen=$script:called.arguments
+@{service_selected=($script:called.program -ceq $expected);
+    same_profile=($argsSeen[[Array]::IndexOf($argsSeen,'--data-dir')+1] -ceq $dataPath);
+    registration_boundary=($script:ownedChecks -eq $(if($fromReference){0}else{1}));
+    real_settings_unchanged=([IO.File]::ReadAllText($settings) -ceq '{"retained":true}');
+    marker_checked=($script:markerChecks -eq 1);cleanup_confirmed=($script:runtimeCleanupConfirmed -eq $true);
+    public_identity_retained=($result.public_source_id -ceq '22222222-2222-4222-8222-222222222222')}|
+    ConvertTo-Json -Compress
+''', encoding='utf-8-sig')
+    try:
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+            '-File', str(script), str(ROOT / 'tools/check_installer.ps1'), str(tmp_path), str(reference).lower()],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pytest.fail('installer_controller_probe_unavailable', pytrace=False)
+    clean_exit = result.returncode == 0
+    assert clean_exit, 'actual_installer_controller_probe_failed'
+    try:
+        observed = json.loads(result.stdout)
+    except (ValueError, UnicodeError):
+        pytest.fail('installer_controller_probe_result_invalid', pytrace=False)
+    assert observed['service_selected'] is True
+    assert all(value is True for value in observed.values())
+
+
+@pytest.fixture
+def controller():
+    path = ROOT / 'tools/ci_installer.py'
+    assert path.is_file(), 'Installer artifact/receipt controller contract is required'
+    spec = importlib.util.spec_from_file_location('ssearch_ci_installer', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def inventory_fixture(tmp_path):
+    payload = tmp_path / 'installed Кириллица with spaces'
+    payload.mkdir()
+    files = {'ssearch.exe': b'desktop fixture', 'service/ssearch-service.exe': b'service fixture',
+             'service/_internal/resources/help.html': b'offline help'}
+    inventory = {}
+    for name, content in files.items():
+        path = payload / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        inventory[name] = {'size': len(content), 'sha256': sha(path)}
+    canonical = tmp_path / 'published-inventory.json'
+    # This is the original Windows text writer, including its CRLF translation.
+    with canonical.open('x', encoding='utf-8') as stream:
+        json.dump({'schema_version': 1, 'source_commit': PAYLOAD, 'app_version': '0.2.0',
+            'core_version': '0.2.0', 'files': dict(sorted(inventory.items())), 'inventory_only': True}, stream, indent=2)
+        stream.write('\n')
+    manifest = {'source_commit': PAYLOAD, 'payload_kind': 'electron-service', 'app_version': '0.2.0',
+        'core_version': '0.2.0', 'desktop': {'inventory_sha256': sha(canonical)},
+        'executable': {'sha256': inventory['ssearch.exe']['sha256'], 'size': inventory['ssearch.exe']['size']},
+        'service_executable': {'sha256': inventory['service/ssearch-service.exe']['sha256'],
+                               'size': inventory['service/ssearch-service.exe']['size']}}
+    owned = {}
+    for name in ('unins000.exe', 'unins000.dat'):
+        path = payload / name
+        path.write_bytes(b'owned Inno fixture ' + name.encode())
+        owned[name] = {'size': path.stat().st_size, 'sha256': sha(path)}
+    return payload, manifest, owned, inventory, canonical
+
+
+def test_owned_installed_inventory_matches_published_windows_writer_without_dist(controller, tmp_path):
+    payload, manifest, owned, inventory, canonical = inventory_fixture(tmp_path)
+    output = tmp_path / 'observed-inventory.json'
+    result = controller.verify_installed_payload(payload, manifest, owned_inno_files=owned, inventory_output=output)
+    assert result == inventory
+    assert output.read_bytes() == canonical.read_bytes()
+    assert b'\r\n' in output.read_bytes(), 'Original Windows inventory serialization must be preserved'
+
+
+@pytest.mark.parametrize('fault', ['desktop', 'service', 'extra', 'inno-replaced', 'inno-unowned', 'published-digest', 'reused-output'])
+def test_installed_inventory_never_self_accepts_changed_or_unknown_files(controller, tmp_path, fault):
+    payload, manifest, owned, _, _ = inventory_fixture(tmp_path)
+    output = tmp_path / 'observed-inventory.json'
+    if fault == 'desktop':
+        (payload / 'ssearch.exe').write_bytes(b'changed')
+    elif fault == 'service':
+        (payload / 'service/ssearch-service.exe').write_bytes(b'changed')
+    elif fault == 'extra':
+        (payload / 'unins001.exe').write_bytes(b'unknown owned status')
+    elif fault == 'inno-replaced':
+        (payload / 'unins000.exe').write_bytes(b'foreign replacement')
+    elif fault == 'inno-unowned':
+        owned.pop('unins000.dat')
+    elif fault == 'published-digest':
+        manifest['desktop']['inventory_sha256'] = '0' * 64
+    else:
+        output.write_bytes(b'preserve existing output')
+    with pytest.raises(ValueError):
+        controller.verify_installed_payload(payload, manifest, owned_inno_files=owned, inventory_output=output)
+    if fault == 'reused-output':
+        assert output.read_bytes() == b'preserve existing output'
+    assert (payload / 'unins000.exe').exists(), 'Validation must never delete installed files'
+
+
+@pytest.mark.parametrize('field', ['public_source_id', 'public_file_ids', 'catalog_id', 'installation_id',
+                                  'model_manifest_digest', 'index_fingerprint'])
+def test_reinstall_and_post_uninstall_application_proof_preserve_real_public_identity(controller, field):
+    first = {'public_source_id': 'source', 'public_file_ids': {'drawing': 'file'}, 'catalog_id': 1,
+             'installation_id': 'installation', 'model_manifest_digest': 'c' * 64, 'index_fingerprint': 'd' * 64}
+    restored = {**first, 'prior_index_verified': True, 'prior_files': 3,
+                'prior_index_fingerprint': first['index_fingerprint']}
+    controller.validate_application_preservation(first, restored)
+    changed = {**restored, field: 'changed'}
+    with pytest.raises(ValueError):
+        controller.validate_application_preservation(first, changed)
+
+
+def input_metadata():
+    pins = {'repository': 'empty-complete/ssearch', 'source_commit': PAYLOAD, 'run_id': 40409747788,
+            'artifact_id': 12693783261, 'workflow_id': 395933832,
+            'workflow_path': '.github/workflows/windows-build.yml', 'head_branch': 'codex/p4-shared-package',
+            'artifact_name': f'windows-{PAYLOAD}-quick', 'archive_size': 340593598,
+            'archive_sha256': '18776ed172a240791304ad9b3e9e26ee6da87696d4cf3d9ae3dd26f849108ac7',
+            'installer_name': 'ssearch-Setup-0.2.0.exe', 'installer_size': 340587240,
+            'installer_sha256': 'f9d485776ab3e667d3e4365fdae7c91660a0b8dacb4d17afa2a065c50d49380c'}
+    run = {'id': pins['run_id'], 'workflow_id': pins['workflow_id'], 'path': pins['workflow_path'],
+           'event': 'workflow_dispatch', 'status': 'completed', 'conclusion': 'success',
+           'head_sha': PAYLOAD, 'head_branch': pins['head_branch'],
+           'head_repository': {'full_name': pins['repository']}}
+    artifact = {'id': pins['artifact_id'], 'name': pins['artifact_name'], 'expired': False,
+                'size_in_bytes': pins['archive_size'], 'digest': 'sha256:' + pins['archive_sha256'],
+                'workflow_run': {'id': pins['run_id'], 'head_sha': PAYLOAD}}
+    return pins, run, artifact
+
+
+def test_exact_original_quick_artifact_metadata_is_not_the_new_harness_identity(controller):
+    pins, run, artifact = input_metadata()
+    assert PAYLOAD != HARNESS
+    controller.validate_input_metadata(run, artifact, pins)
+
+
+@pytest.mark.parametrize('fault', ['run', 'workflow', 'path', 'event', 'status', 'conclusion',
+                                  'source', 'branch', 'repository', 'artifact', 'name', 'expired',
+                                  'archive-size', 'archive-digest', 'artifact-run', 'artifact-source'])
+def test_immutable_artifact_metadata_rejects_other_or_unfinished_inputs(controller, fault):
+    pins, run, artifact = input_metadata()
+    if fault in ('run', 'workflow'):
+        run['id' if fault == 'run' else 'workflow_id'] += 1
+    elif fault in ('path', 'event', 'status', 'conclusion', 'source', 'branch'):
+        key = {'path': 'path', 'event': 'event', 'status': 'status', 'conclusion': 'conclusion',
+               'source': 'head_sha', 'branch': 'head_branch'}[fault]
+        run[key] = 'other'
+    elif fault == 'repository':
+        run['head_repository'] = {'full_name': 'foreign/repository'}
+    elif fault == 'artifact':
+        artifact['id'] += 1
+    elif fault == 'name':
+        artifact['name'] = 'other'
+    elif fault == 'expired':
+        artifact['expired'] = True
+    elif fault == 'archive-size':
+        artifact['size_in_bytes'] += 1
+    elif fault == 'archive-digest':
+        artifact['digest'] = 'sha256:' + '0' * 64
+    else:
+        artifact['workflow_run']['id' if fault == 'artifact-run' else 'head_sha'] = 0
+    with pytest.raises(ValueError):
+        controller.validate_input_metadata(run, artifact, pins)
+
+
+INSTALL_CHECKS = ('fresh_install_verified', 'same_version_reinstall_verified', 'owned_uninstall_verified',
+    'payload_inventory_verified', 'shortcut_ownership_verified', 'application_bytes_preserved',
+    'application_index_preserved', 'postgres_bytes_preserved', 'postgres_restart_verified',
+    'installed_proofs_passed', 'runtime_cleanup_confirmed', 'process_completion_confirmed',
+    'registered_installation_removed', 'owned_shortcuts_removed', 'standard_user_profile_verified', 'parent_job_drained')
+
+
+def test_public_installation_receipt_contains_no_private_qa_or_platform_claims(controller):
+    pins, _, _ = input_metadata()
+    raw = {'ok': True, 'source_commit': PAYLOAD, 'installer_sha256': pins['installer_sha256'],
+           'installer_bytes': pins['installer_size'], 'inventory_sha256': 'c' * 64,
+           'os_product_type': 3, 'os_build': 26100, 'checks': dict.fromkeys(INSTALL_CHECKS, True),
+           'os_family': 'Windows 11', 'win10_verified': True, 'path': 'PRIVATE_SENTINEL',
+           'run_id': 'PRIVATE_SENTINEL', 'error': 'PRIVATE_SENTINEL', 'pid': 12345,
+           'first_self_test': {'credential': 'PRIVATE_SENTINEL'}, 'raw_stderr': 'PRIVATE_SENTINEL'}
+    receipt = controller.sanitize_installation_receipt(raw, pins=pins, harness_commit=HARNESS, exit_code=0)
+    assert set(receipt) == {'schema_version', 'ok', 'payload_source_commit', 'harness_source_commit',
+        'installer_sha256', 'installer_size', 'artifact_run_id', 'artifact_id', 'payload_inventory_sha256',
+        'runner_platform', 'windows_validation', 'full_suite_passed', 'checks', 'open_gates'}
+    assert receipt['ok'] is True and receipt['payload_source_commit'] == PAYLOAD
+    assert receipt['harness_source_commit'] == HARNESS and receipt['full_suite_passed'] is False
+    assert receipt['runner_platform'] == 'Windows Server 2025 x64' and receipt['windows_validation'] == []
+    assert receipt['checks'] == dict.fromkeys(INSTALL_CHECKS, True)
+    assert {'qt_upgrade', 'native_windows_11', 'windows_10', 'full_p4_acceptance'} <= set(receipt['open_gates'])
+    assert 'PRIVATE_SENTINEL' not in json.dumps(receipt) and '12345' not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize('fault', ['nonzero', 'runtime', 'descendants', 'job', 'ownership', 'wrong-installer', 'wrong-source'])
+def test_uncertain_cleanup_or_identity_never_produces_success_receipt(controller, fault):
+    pins, _, _ = input_metadata()
+    raw = {'ok': True, 'source_commit': PAYLOAD, 'installer_sha256': pins['installer_sha256'],
+           'installer_bytes': pins['installer_size'], 'inventory_sha256': 'c' * 64,
+           'os_product_type': 3, 'os_build': 26100, 'checks': dict.fromkeys(INSTALL_CHECKS, True)}
+    if fault in ('runtime', 'descendants', 'job', 'ownership'):
+        raw['checks'][{'runtime': 'runtime_cleanup_confirmed', 'descendants': 'process_completion_confirmed',
+                       'job': 'parent_job_drained', 'ownership': 'shortcut_ownership_verified'}[fault]] = False
+    elif fault == 'wrong-installer':
+        raw['installer_sha256'] = '0' * 64
+    elif fault == 'wrong-source':
+        raw['source_commit'] = HARNESS
+    receipt = controller.sanitize_installation_receipt(raw, pins=pins, harness_commit=HARNESS,
+                                                      exit_code=1 if fault == 'nonzero' else 0)
+    assert receipt['ok'] is False
