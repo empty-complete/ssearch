@@ -1,5 +1,6 @@
 import { auditFailureCategories, type AuditFailureCategory } from './diagnosticsWire.js';
 import { requiredUiChecks } from './diagnosticsPolicy.js';
+import { helperStages, helperCategories, type HelperStage, type HelperCategory } from './diagnosticsHelpers.js';
 
 export type ProofFailurePhase = 'bootstrap' | 'action' | 'audit_before_action' | 'audit_after_action'
   | 'cleanup' | 'final_report' | 'unhandled' | 'deadline';
@@ -10,6 +11,8 @@ export interface FailureDiagnostics {
   primary_category: ProofFailureCategory;
   wire_audit_category: AuditFailureCategory | null;
   cleanup_category: ProofFailureCategory | null;
+  helper_stage?: HelperStage;
+  helper_category?: HelperCategory;
 }
 export interface ProofOutcome {
   ok: boolean;
@@ -21,6 +24,8 @@ export interface FailureObservation {
   category: ProofFailureCategory;
   wireCategory?: AuditFailureCategory;
   cleanupCategory?: ProofFailureCategory;
+  helperStage?: HelperStage;
+  helperCategory?: HelperCategory;
 }
 
 const reasons = new Set<string>([...Object.values(requiredUiChecks).flat(), 'ui_proof_runtime_failed',
@@ -55,4 +60,9 @@ export function recordProofFailure(report: ProofOutcome, reason: string, observa
   if (details.wire_audit_category === null && observation?.wireCategory
     && auditFailureCategories.includes(observation.wireCategory)) details.wire_audit_category = observation.wireCategory;
   if (details.cleanup_category === null && observation?.cleanupCategory) details.cleanup_category = observation.cleanupCategory;
+  if (details.helper_stage === undefined && observation?.helperStage && observation.helperCategory
+    && helperStages.includes(observation.helperStage) && helperCategories.includes(observation.helperCategory)) {
+    details.helper_stage = observation.helperStage;
+    details.helper_category = observation.helperCategory;
+  }
 }

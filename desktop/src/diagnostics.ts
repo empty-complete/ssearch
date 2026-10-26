@@ -14,7 +14,7 @@ import { createWindow } from './windowHost.js';
 import { registerDesktopIpc, type ServicePort } from './ipc.js';
 import { inspectUiProof, reserveUiProof } from './diagnosticsReport.js';
 import { canonicalDirectory, uiProofBudgets, proofChecksPassed, type UiProofRequest } from './diagnosticsPolicy.js';
-import { authenticateUiHelper, startUiHelper, writeHelperReply } from './diagnosticsHelpers.js';
+import { authenticateUiHelper, startUiHelper, writeHelperReply, writeHelperFailure, helperFailureDetails } from './diagnosticsHelpers.js';
 import { BrokerStdinAudit, type BrokerFrameCounts } from './diagnosticsWire.js';
 import { classifyProofError, recordProofFailure, type ProofFailureCategory, type ProofFailurePhase } from './diagnosticsOutcome.js';
 import type { ProfileIdentity } from './runtime.js';
@@ -52,6 +52,10 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
     runtime = new MeasuredRuntime({ installationRoot: inspected.root, expectedServiceVersion: app.getVersion() });
     prepared = reserveUiProof(inspected);
   } catch (error) {
+    if (request.helper) {
+      try { await writeHelperFailure(error); }
+      catch { return 1; } // No successful admission/report after a negative handoff write failure.
+    }
     return error instanceof Error && ['ui_proof_arguments_invalid', 'ui_proof_paths_invalid',
       'ui_proof_helper_context_invalid', 'ui_proof_packaged_required'].includes(error.message) ? 2 : 1;
   }
@@ -76,6 +80,10 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
   let bridge: ReturnType<typeof registerDesktopIpc>;
   const pause = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
   const guard = () => { if (controller.signal.aborted) throw new Error('ui_proof_cancelled'); };
+  const helperObservation = (error: unknown) => {
+    const details = helperFailureDetails(error);
+    return details ? { helperStage: details.stage, helperCategory: details.category } : {};
+  };
   const update = (phase: ProofFailurePhase = 'bootstrap') => {
     report.measured_counts.owner_starts = runtime.owners.length;
     report.measured_counts.broker_starts = runtime.brokers.length;
@@ -112,7 +120,7 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
       update('audit_after_action');
     } catch (error) {
       check.status = 'fail';
-      recordProofFailure(report, name, { phase: 'action', category: classifyProofError(error) });
+      recordProofFailure(report, name, { phase: 'action', category: classifyProofError(error), ...helperObservation(error) });
       update('audit_after_action');
       throw new Error('ui_proof_check_failed');
     }
@@ -182,7 +190,7 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
   const emergency = (error: unknown) => {
     fatal = true;
     failure = 'unhandled_runtime_failure';
-    recordProofFailure(report, 'unhandled_runtime_failure', { phase: 'unhandled', category: classifyProofError(error) });
+    recordProofFailure(report, 'unhandled_runtime_failure', { phase: 'unhandled', category: classifyProofError(error), ...helperObservation(error) });
     controller.abort();
     interrupt(new Error('ui_proof_runtime_failed'));
   };
@@ -255,7 +263,7 @@ export async function runUiProof(request: UiProofRequest): Promise<number> {
     }
   } catch (error) {
     recordProofFailure(report, failure === 'pending' ? 'ui_proof_runtime_failed' : failure,
-      { phase: failure === 'pending' ? 'bootstrap' : 'action', category: classifyProofError(error) });
+      { phase: failure === 'pending' ? 'bootstrap' : 'action', category: classifyProofError(error), ...helperObservation(error) });
   }
   finally {
     if (deadline) clearTimeout(deadline);
