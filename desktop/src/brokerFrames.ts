@@ -1,5 +1,7 @@
 export const MAX_REQUEST_FRAME = 65_536 + 4096;
 export const MAX_RESPONSE_FRAME = 2_097_152 + 4096;
+export const decoderFailureCategories = ['length', 'utf8', 'json', 'truncated'] as const;
+export type DecoderFailureCategory = typeof decoderFailureCategories[number];
 
 /** Incremental, allocation-bounded four-byte BE/UTF-8 JSON framing. */
 export class BrokerFrameDecoder {
@@ -8,6 +10,8 @@ export class BrokerFrameDecoder {
   private body: Buffer | null = null;
   private bodyBytes = 0;
   constructor(private maximum = MAX_RESPONSE_FRAME) {}
+  // Existing decoder has no closed failure metadata yet; behavior remains unchanged for RED.
+  get failureCategory(): DecoderFailureCategory | null { return null; }
   get partial(): boolean { return this.headerBytes > 0 || this.body !== null; }
   push(chunk: Uint8Array): unknown[] {
     const results: unknown[] = [];

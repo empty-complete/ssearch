@@ -12,7 +12,8 @@ import { exactKeys, plainObject, publicUuid } from './validation.js';
 type Role = NonNullable<UiProofRequest['helperRole']>;
 export const helperStages = ['admission', 'native_profile', 'spawn', 'reply', 'child_exit', 'deadline'] as const;
 export const helperCategories = ['refused', 'spawn_error', 'identity_refused', 'decode_refused', 'binding_refused',
-  'missing', 'truncated', 'duplicate', 'nonzero', 'signal', 'timeout', 'write_error'] as const;
+  'missing', 'truncated', 'duplicate', 'nonzero', 'signal', 'timeout', 'write_error',
+  'length_refused', 'utf8_refused', 'json_refused'] as const;
 export type HelperStage = typeof helperStages[number];
 export type HelperCategory = typeof helperCategories[number];
 export interface HelperFailureDetails { stage: HelperStage; category: HelperCategory }

@@ -12,6 +12,7 @@
     "tests/diagnostics-policy.test.ts",
     "tests/diagnostics-wire.test.ts",
     "tests/diagnostics-outcome.test.ts",
-    "tests/diagnostics-helpers.test.ts"
+    "tests/diagnostics-helpers.test.ts",
+    "tests/diagnostics-framing.test.ts"
   ]
 }
