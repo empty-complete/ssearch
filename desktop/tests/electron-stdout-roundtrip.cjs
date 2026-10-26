@@ -13,6 +13,7 @@ const EXIT_RUNTIME = 91;
 const EXIT_DEADLINE = 92;
 const EXIT_HELPER = 100;
 const EXIT_NO_WRITE = 89;
+const EXIT_NATIVE_FAILURE = 200;
 // Windows-only finite domain: outcome index plus nine closed predicate bits.
 const EXIT_OBSERVATION = 1000;
 const OBSERVATION_WIDTH = 512;
@@ -22,6 +23,10 @@ const replyFailures = [
   ['reply', 'binding_refused'], ['reply', 'decode_refused'], ['reply', 'length_refused'],
   ['reply', 'utf8_refused'], ['reply', 'json_refused'], ['reply', 'write_error'],
 ];
+const OUTCOME_WIDTH = (replyFailures.length + 2) * OBSERVATION_WIDTH;
+// Native observations are harness-only: zero means unmeasured, 1..16 encode
+// guard/inspect/FIFO/writer-called bits on refusal, 17 is completed production IO.
+const NATIVE_COMPLETED = 17;
 function summary(ok, status, details = null, pinned = false, memory = null) {
   return { scope: 'source_private_helper_roundtrip', ok, status, electron_pinned: pinned,
     helper_stage: details?.stage ?? null, helper_category: details?.category ?? null,
@@ -35,7 +40,8 @@ function finish(result, code = result.ok ? 0 : 1) {
   if (process.versions.electron) {
     const index = replyFailures.findIndex(([stage, category]) => stage === result.helper_stage && category === result.helper_category);
     code = result.memory_predicates
-      ? EXIT_OBSERVATION + result.memory_predicates.outcome * OBSERVATION_WIDTH + result.memory_predicates.mask
+      ? EXIT_OBSERVATION + result.memory_predicates.native * OUTCOME_WIDTH
+        + result.memory_predicates.outcome * OBSERVATION_WIDTH + result.memory_predicates.mask
       : result.ok ? EXIT_PASS : index >= 0 ? EXIT_HELPER + index : result.status === 'deadline' ? EXIT_DEADLINE : EXIT_RUNTIME;
   }
   const exit = () => app ? app.exit(code) : process.versions.electron ? process.exit(code) : (process.exitCode = code);
@@ -76,15 +82,24 @@ try {
     child.once('close', (code, signal) => {
       if (signal) { failed(); return; }
       const observation = code - EXIT_OBSERVATION;
-      if (observation >= 0 && observation < (replyFailures.length + 2) * OBSERVATION_WIDTH) {
-        const outcome = Math.floor(observation / OBSERVATION_WIDTH);
+      if (observation >= 0 && observation < (NATIVE_COMPLETED + 1) * OUTCOME_WIDTH) {
+        const native = Math.floor(observation / OUTCOME_WIDTH);
+        const outcome = Math.floor((observation % OUTCOME_WIDTH) / OBSERVATION_WIDTH);
         const mask = observation % OBSERVATION_WIDTH;
+        const nativeMask = native === NATIVE_COMPLETED ? 15 : native - 1;
+        const guard = native > 0 ? !!(nativeMask & 1) : null;
+        const inspected = native > 0 ? !!(nativeMask & 2) : null;
+        const fifo = native > 0 ? !!(nativeMask & 4) : null;
         const accepted = outcome === replyFailures.length;
         const memory = { receiver_accepted: accepted, child_exited_zero: !!(mask & 1),
           writer_callback_completed: accepted && (mask & 1) ? true : null, bytes_equal_expected: !!(mask & 2),
           stdout_noise_seen: !!(mask & 4), capture_complete: !!(mask & 8),
           no_write_completed: !!(mask & 16), no_write_private_empty: !!(mask & 32),
-          private_junk_refused: !!(mask & 64), capture_overflow: !!(mask & 128), missing_private_pipe_refused: !!(mask & 256) };
+          private_junk_refused: !!(mask & 64), capture_overflow: !!(mask & 128), missing_private_pipe_refused: !!(mask & 256),
+          native_guard_passed: guard, fd3_inspect_available: inspected, fd3_is_fifo: fifo,
+          production_writer_called: native > 0 ? !!(nativeMask & 8) : null,
+          writer_native_category: native === 0 ? 'unmeasured' : native === NATIVE_COMPLETED ? null
+            : !guard ? 'guard_refused' : !inspected ? 'inspect_unavailable' : !fifo ? 'not_fifo' : 'write_refused' };
         const ok = accepted && memory.child_exited_zero && memory.bytes_equal_expected && memory.capture_complete
           && memory.stdout_noise_seen && memory.no_write_completed && memory.no_write_private_empty
           && memory.private_junk_refused && memory.missing_private_pipe_refused && !memory.capture_overflow;
@@ -120,10 +135,25 @@ try {
         error => error ? reject(new Error()) : resolve()));
       void noise.then(async () => {
         if (mode === 'no') { finish(summary(true, 'passed', null, true), EXIT_NO_WRITE); return; }
-        if (mode === 'junk') await new Promise((resolve, reject) => writeNativeHelperPipe(Buffer.alloc(4),
-          error => error ? reject(new Error()) : resolve()));
-        else await helpers.writeHelperReply(context,
-          { kind: 'second_instance', owner_starts: 0, broker_starts: 0, profile_invocations: 0 });
+        let nativeMask = process.platform === 'win32' && !!process.versions.electron && process.type === 'browser' ? 1 : 0;
+        if (nativeMask & 1) {
+          try {
+            const stat = require('node:fs').fstatSync(3);
+            nativeMask |= 2;
+            if (stat.isFIFO()) nativeMask |= 4;
+          } catch { /* Closed inspect-unavailable observation, no raw native data. */ }
+        }
+        nativeMask |= 8;
+        try {
+          // The read-only observation never bypasses or substitutes this writer.
+          if (mode === 'junk') await new Promise((resolve, reject) => writeNativeHelperPipe(Buffer.alloc(4),
+            error => error ? reject(new Error()) : resolve()));
+          else await helpers.writeHelperReply(context,
+            { kind: 'second_instance', owner_starts: 0, broker_starts: 0, profile_invocations: 0 });
+        } catch {
+          finish(summary(false, 'roundtrip_failed', null, true), EXIT_NATIVE_FAILURE + nativeMask);
+          return;
+        }
         finish(summary(true, 'passed', null, true));
       }).catch(failed);
     } else {
@@ -190,10 +220,14 @@ try {
         if (noWrite.bytes().length === 0) mask |= 32;
         if (junkRefused) mask |= 64;
         if (writing.overflow() || noWrite.overflow() || junk.overflow() || missing.overflow()) mask |= 128;
-        if (missingEnd.code === 1 && missingEnd.signal === null) mask |= 256;
+        if (missingEnd.signal === null && missingEnd.code >= EXIT_NATIVE_FAILURE
+          && missingEnd.code < EXIT_NATIVE_FAILURE + 16) mask |= 256;
         const index = replyFailures.findIndex(([stage, category]) => stage === result.details?.stage && category === result.details?.category);
         const outcome = result.accepted ? replyFailures.length : index >= 0 ? index : replyFailures.length + 1;
-        finish(summary(false, 'roundtrip_failed', result.details, true, { outcome, mask }));
+        const native = childZero ? NATIVE_COMPLETED : writerEnd.signal === null
+          && writerEnd.code >= EXIT_NATIVE_FAILURE && writerEnd.code < EXIT_NATIVE_FAILURE + 16
+          ? writerEnd.code - EXIT_NATIVE_FAILURE + 1 : 0;
+        finish(summary(false, 'roundtrip_failed', result.details, true, { outcome, mask, native }));
       })().catch(failed);
     }
   }
