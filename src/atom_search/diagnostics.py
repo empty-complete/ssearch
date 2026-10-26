@@ -124,9 +124,9 @@ def run_service_self_test(report_path: Path, *, data_dir: Path, model_dir: Path 
         report['phase'] = 'settings_apply'
         owner.coordinator.owner_apply(candidate, snapshot.revision)
         load_model, start_runtime, stop_runtime = search_runtime._load_model, PostgresRuntime.start, PostgresRuntime.stop
-        def load(*args):
+        def load(*args, **kwargs):
             report['model_constructions'] += 1
-            return load_model(*args)
+            return load_model(*args, **kwargs)
         def start(instance):
             report['runtime_starts'] += 1
             return start_runtime(instance)
