@@ -9,10 +9,16 @@ export interface HelperPipeIO {
 }
 export type HelperPipeClock = (callback: () => void, milliseconds: number) => () => void;
 
-/** Native descriptor classification boundary; current Stats predicate retained
- * until the Windows st_mode contract's assertion RED has been observed. */
+// Pinned libuv Windows fs__fstat_handle marks UV_NAMED_PIPE with CRT _S_IFIFO.
+// Node v24 Stats.isFIFO() deliberately returns false on Windows, and its public
+// S_IFIFO constant may be absent. Use the exact CRT type field, never a fallback
+// that accepts a file/device or attempts a write to discover the descriptor type.
+const WINDOWS_FILE_TYPE_MASK = 0xf000;
+const WINDOWS_PIPE_TYPE = 0x1000;
 export function helperDescriptorIsPipe(stat: { readonly mode?: unknown; isFIFO(): boolean }): boolean {
-  return stat.isFIFO();
+  const mode = stat.mode;
+  return typeof mode === 'number' && Number.isInteger(mode) && mode >= 0 && mode <= 0xffffffff
+    && (mode & WINDOWS_FILE_TYPE_MASK) === WINDOWS_PIPE_TYPE;
 }
 
 const pipeClock: HelperPipeClock = (callback, milliseconds) => {

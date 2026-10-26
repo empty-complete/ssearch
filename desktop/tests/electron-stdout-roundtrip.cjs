@@ -5,6 +5,7 @@ let app;
 let finished = false;
 let watchdog;
 let helpers;
+let helperPipe;
 const owned = new Set();
 // Only the Node outer driver prints. A verified parent success has a dedicated
 // nonzero code, so premature/default Electron exit 0 can never be mistaken for PASS.
@@ -30,7 +31,7 @@ const NATIVE_FAILURE_WIDTH = 16 * descriptorTypes.length ** 2;
 // closed virtual/physical descriptor-type pair. No native Stats are exported.
 const NATIVE_COMPLETED = NATIVE_FAILURE_WIDTH + 1;
 function descriptorType(stat) {
-  return stat.isFIFO() ? 1 : stat.isFile() ? 2 : stat.isCharacterDevice() ? 3 : stat.isSocket() ? 4 : 5;
+  return helperPipe.helperDescriptorIsPipe(stat) ? 1 : stat.isFile() ? 2 : stat.isCharacterDevice() ? 3 : stat.isSocket() ? 4 : 5;
 }
 function summary(ok, status, details = null, pinned = false, memory = null) {
   return { scope: 'source_private_helper_roundtrip', ok, status, electron_pinned: pinned,
@@ -72,7 +73,8 @@ try {
   const { randomUUID } = require('node:crypto');
   const { publicUuid } = require('../dist/validation.js');
   const { encodeBrokerFrame } = require('../dist/brokerFrames.js');
-  const { writeNativeHelperPipe } = require('../dist/diagnosticsHelperPipe.js');
+  helperPipe = require('../dist/diagnosticsHelperPipe.js');
+  const { writeNativeHelperPipe } = helperPipe;
   const { frozenServiceEnvironment } = require('../dist/packagedRuntime.js');
   helpers = require('../dist/diagnosticsHelpers.js');
   if (!process.versions.electron) {
@@ -149,7 +151,7 @@ try {
           try {
             const stat = require('node:fs').fstatSync(3);
             nativeMask |= 2;
-            if (stat.isFIFO()) nativeMask |= 4;
+            if (helperPipe.helperDescriptorIsPipe(stat)) nativeMask |= 4;
             nativeMask += descriptorType(stat) * 16;
           } catch { /* Closed inspect-unavailable observation, no raw native data. */ }
           try {
