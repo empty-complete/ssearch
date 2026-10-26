@@ -73,6 +73,36 @@ def ui_checks(report, role):
     return result
 
 
+def ui_failure_diagnostics(value):
+    """Four field-specific domains from their authoritative TS declarations."""
+    if type(value) is not dict:
+        return {}
+    outcome = (ROOT / 'desktop/src/diagnosticsOutcome.ts').read_text(encoding='utf-8')
+    domains = {}
+    for name in ('ProofFailurePhase', 'ProofFailureCategory'):
+        block, = re.findall(r'export type ' + name + r'\s*=\s*(.*?);', outcome, re.S)
+        if not re.fullmatch(r"\s*'[a-z][a-z0-9_]{0,79}'(?:\s*\|\s*'[a-z][a-z0-9_]{0,79}')*\s*", block):
+            raise ValueError('invalid_ui_failure_domain')
+        domains[name] = frozenset(re.findall(r"'([a-z][a-z0-9_]{0,79})'", block))
+    wire = (ROOT / 'desktop/src/diagnosticsWire.ts').read_text(encoding='utf-8')
+    block, = re.findall(r'export const auditFailureCategories\s*=\s*(\[[^\]]*\])\s*as const;', wire, re.S)
+    audit = ast.literal_eval(block)
+    if (type(audit) is not list or not audit
+            or any(type(item) is not str or not re.fullmatch('[a-z][a-z0-9_]{0,79}', item) for item in audit)):
+        raise ValueError('invalid_ui_failure_domain')
+    allowed = {'primary_phase': domains['ProofFailurePhase'],
+               'primary_category': domains['ProofFailureCategory'],
+               'wire_audit_category': frozenset(audit),
+               'cleanup_category': domains['ProofFailureCategory']}
+    result = {}
+    for name, domain in allowed.items():
+        item = value.get(name)
+        if ((type(item) is str and item in domain)
+                or (name in ('wire_audit_category', 'cleanup_category') and name in value and item is None)):
+            result[name] = item
+    return result
+
+
 def summarize_report(path, role, exit_code, *, not_before_ms):
     if role not in ROLES or type(exit_code) is not int or exit_code not in (0, 1) or type(not_before_ms) is not int or not_before_ms < 0:
         raise ValueError('invalid_summary_request')
@@ -108,6 +138,10 @@ def summarize_report(path, role, exit_code, *, not_before_ms):
                 fields[name] = failure_detail(report[name], modules, types)
         if role.startswith('ui-'):
             fields['required_checks'] = ui_checks(report, role)
+            if exit_code == 1 and report.get('ok') is False:
+                details = ui_failure_diagnostics(report.get('failure_diagnostics'))
+                if details:
+                    fields['failure_diagnostics'] = details
         result.update(report_state='read', fields=fields)
     except (OSError, ValueError, TypeError, KeyError, SyntaxError, AttributeError):
         pass
