@@ -322,7 +322,18 @@ foreach ($case in $cases) {
         options = dict(quick=True, desktop_stack=True,
                        frontend_test_targets=['tests/candidate.test.tsx'])
         layout = self.module.prepare_development_build(self.root, **options)
-        layout['qa'].mkdir()
+        # Electron creates its shell directories before the service performs
+        # its own strict profile check. Every such child must inherit the
+        # actual private Windows DACL, not Node's unsupported mode0700 hint.
+        from atom_search.runtime import _windows
+        self.assertTrue(layout['qa'].is_dir())
+        _windows.assert_private(layout['qa'])
+        profile = layout['qa'] / 'UI profile Кириллица with spaces'
+        profile.mkdir()
+        capture = layout['qa'] / 'private-native.stdout'
+        capture.write_bytes(b'private QA fixture')
+        _windows.assert_private(profile)
+        _windows.assert_private(capture)
         receipt = self.module.write_test_receipt(self.root, commit, exit_code=0, **options)
         data = json.loads(receipt.read_text(encoding='utf-8'))
         self.assertEqual(data['test_targets'], [])
