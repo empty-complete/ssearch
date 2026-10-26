@@ -156,10 +156,10 @@ begin
        'Software\Microsoft\Windows\CurrentVersion\Uninstall\{1EAB882B-9360-4FC5-9538-E86CB53AA2A1}_is1',
        'InstallLocation', PreviousDirectory);
 #ifdef ElectronBundle
-  ; Qt-to-Electron cleanup needs a verified old-file/hash inventory and a real
-  ; upgrade gate. Until then fail closed instead of deleting unknown files or
-  ; accepting a mixed payload. User profiles are never installation payload.
-  ; Selecting a different /DIR must not bypass the registered old Qt payload.
+  // Qt-to-Electron cleanup needs a verified old-file/hash inventory and a real
+  // upgrade gate. Until then fail closed instead of deleting unknown files or
+  // accepting a mixed payload. User profiles are never installation payload.
+  // Selecting a different /DIR must not bypass the registered old Qt payload.
   if DirExists(ExpandConstant('{app}\_internal')) or
      (RegisteredInstallation and DirExists(AddBackslash(PreviousDirectory) + '_internal')) then
   begin
