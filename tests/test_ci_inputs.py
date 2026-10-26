@@ -250,13 +250,13 @@ def test_export_rejects_installer_changed_after_proof(tmp_path):
     assert not (tmp_path / 'artifacts/ci-export').exists()
 
 
-@pytest.mark.parametrize('fault', [None, 'index_hash', 'source', 'model_count', 'missing_ui', 'proof_hash'])
+@pytest.mark.parametrize('fault', [None, 'index_hash', 'source', 'version', 'model_count', 'missing_ui', 'proof_hash'])
 def test_desktop_export_requires_bound_proofs_and_keeps_private_reports_out(tmp_path, fault):
     commit, _ = fixture_build(tmp_path)
     base = tmp_path / 'artifacts/development' / commit
     manifest_path = base / 'build-manifest.json'
     manifest = json.loads(manifest_path.read_text())
-    manifest.update(payload_kind='electron-service', frontend_test_targets=[], desktop_test_targets=[],
+    manifest.update(payload_kind='electron-service', core_version='0.2.0', frontend_test_targets=[], desktop_test_targets=[],
                     executable={'sha256': 'b' * 64}, service_executable={'sha256': 'c' * 64})
     receipt_path = base / 'qa/test-receipt.json'
     receipt = json.loads(receipt_path.read_text())
@@ -267,7 +267,7 @@ def test_desktop_export_requires_bound_proofs_and_keeps_private_reports_out(tmp_
                    *[f'ui-{name}.json' for name in ('load', 'security', 'lifecycle', 'empty-profile')]]
     for name in proof_files[3:]:
         (base / 'qa' / name).write_text('{"private_path":"PRIVATE_SENTINEL"}')
-    index = dict(schema_version=1, source_commit=commit, payload_kind='electron-service',
+    index = dict(schema_version=1, source_commit=commit, app_version='0.2.0', core_version='0.2.0', payload_kind='electron-service',
                  test_scope='full', full_suite_passed=True, required_frozen_proofs_passed=True,
                  stage_accepted=False, windows_validation=[],
                  hashes=dict(desktop_sha256='b' * 64, service_sha256='c' * 64),
@@ -277,6 +277,7 @@ def test_desktop_export_requires_bound_proofs_and_keeps_private_reports_out(tmp_
                      for name in ('load', 'security', 'lifecycle', 'empty-profile')},
                  proof_sha256={name: exporter.digest(base / 'qa' / name) for name in proof_files})
     if fault == 'source': index['source_commit'] = 'f' * 40
+    if fault == 'version': index['core_version'] = '0.1.0'
     if fault == 'model_count': index['scoped_backend_counts']['model_constructions'] = 0
     if fault == 'missing_ui': index['ui'].pop('security')
     if fault == 'proof_hash': index['proof_sha256']['service-owner-proof.json'] = 'f' * 64

@@ -155,6 +155,10 @@ def test_combined_gate_requires_same_payload_and_every_independent_proof(contrac
             report['owner'] = dict(pid=123, created='1234', generation='00000000-0000-0000-0000-000000000001',
                                    installation_id='00000000-0000-0000-0000-000000000002')
             report['measured_counts']['verified_authority_pids'] = [123]
+            for name in ('owner_starts', 'broker_starts', 'read_only_profile_invocations'):
+                report['measured_counts'][name] = 1
+            report['measured_counts']['service_method_calls']['status'] = 1
+            report['measured_counts']['broker_stdin_frame_counts']['status'] = 1
             report['versions']['service'] = '0.2.0'
         if fault == 'ui_missing' and scenario == 'security': continue
         write(qa / f'ui-{scenario}.json', report)
