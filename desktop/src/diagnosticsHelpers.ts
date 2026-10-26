@@ -26,7 +26,7 @@ interface HelperMarker {
 }
 export type HelperReplyContext = Pick<HelperMarker, 'source_commit' | 'role' | 'session_id' | 'challenge'>;
 export interface HelperReplyChild {
-  readonly pid: number | undefined;
+  readonly pid?: number;
   readonly stdout: Readable;
   once(event: string, listener: (...arguments_: unknown[]) => void): unknown;
   kill(): boolean;
