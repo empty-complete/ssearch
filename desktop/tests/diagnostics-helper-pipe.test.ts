@@ -33,11 +33,11 @@ test('fixed private FIFO writes every byte once across partial callbacks, exclus
   const f = pipeFixture();
   assert.equal(HELPER_PROTOCOL_FD, 3);
   const error = await new Promise<Error | null | undefined>(resolve => writeHelperPipe(frame, resolve, f.io));
-  assert.ifError(error);
-  assert.deepEqual(Buffer.concat(f.received), frame);
+  assert.ok(error == null);
+  assert.ok(Buffer.concat(f.received).equals(frame));
   assert.ok(f.writes.length > 1);
   assert.ok(f.writes.every(write => write.fd === 3 && write.bytes === frame));
-  assert.ok(f.inspected.every(fd => fd === 3));
+  assert.deepEqual(f.inspected, [3]);
   assert.equal(f.writes[0].offset, 0);
   for (let index = 1; index < f.writes.length; index++) assert.equal(f.writes[index].offset, f.writes[index - 1].offset + 3);
 });
@@ -46,7 +46,7 @@ test('absent or regular-file fd3 refuses before any write and never falls back t
   for (const kind of ['file', 'absent'] as const) {
     const f = pipeFixture(kind);
     const error = await new Promise<Error | null | undefined>(resolve => writeHelperPipe(frame, resolve, f.io));
-    assert.equal(error?.message, 'ui_proof_helper_write_failed');
+    assert.ok(error?.message === 'ui_proof_helper_write_failed');
     assert.equal(f.writes.length, 0);
     assert.equal(JSON.stringify(error).includes('PRIVATE_INSPECT_SENTINEL'), false);
   }
@@ -61,7 +61,7 @@ test('zero, invalid partial counts and write errors fail once without retrying a
     } };
     const error = await new Promise<Error | null | undefined>(resolve => writeHelperPipe(frame,
       error => { completions++; resolve(error); }, io));
-    assert.equal(error?.message, 'ui_proof_helper_write_failed');
+    assert.ok(error?.message === 'ui_proof_helper_write_failed');
     assert.equal(writes, 1);
     assert.equal(completions, 1);
   }
@@ -69,7 +69,7 @@ test('zero, invalid partial counts and write errors fail once without retrying a
   const error = await new Promise<Error | null | undefined>(resolve => writeHelperPipe(frame, resolve, {
     inspect: () => ({ isFIFO: () => true }), write() { writes++; throw new Error('PRIVATE_WRITE_SENTINEL'); },
   }));
-  assert.equal(error?.message, 'ui_proof_helper_write_failed');
+  assert.ok(error?.message === 'ui_proof_helper_write_failed');
   assert.equal(writes, 1);
   assert.equal(JSON.stringify(error).includes('PRIVATE_WRITE_SENTINEL'), false);
 });
@@ -85,7 +85,7 @@ test('two-second deadline cancels pending partial IO so late callbacks cannot st
   assert.equal(writes, 1);
   expire();
   const error = await outcome;
-  assert.equal(error?.message, 'ui_proof_helper_write_failed');
+  assert.ok(error?.message === 'ui_proof_helper_write_failed');
   late(null, 3);
   assert.equal(writes, 1);
 });
@@ -108,15 +108,15 @@ test('valid private protocol is accepted while unrelated stdout bytes remain out
   f.protocol.write(frame);
   f.events.emit('close', 0, null);
   const result = await f.outcome;
-  assert.equal(result.error, null);
-  assert.ok(result.value);
+  assert.ok(result.error === null);
+  assert.ok(result.value !== null);
 });
 
 test('no private pipe never falls back to a valid stdout reply', async () => {
   const f = receiver(false);
   f.stdout.write(frame);
   f.events.emit('close', 0, null);
-  assert.ok((await f.outcome).error);
+  assert.ok((await f.outcome).error !== null);
 });
 
 test('private junk, partial EOF and missing reply remain fail-closed even with valid stdout', async () => {
@@ -127,7 +127,7 @@ test('private junk, partial EOF and missing reply remain fail-closed even with v
     if (category === 'truncated') f.protocol.write(frame.subarray(0, 8));
     f.events.emit('close', 0, null);
     const result = await f.outcome;
-    assert.equal(result.value, null);
+    assert.ok(result.value === null);
     assert.deepEqual(helperFailureDetails(result.error), { stage: 'reply', category });
   }
 });

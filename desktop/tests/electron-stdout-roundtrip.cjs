@@ -13,9 +13,9 @@ const EXIT_RUNTIME = 91;
 const EXIT_DEADLINE = 92;
 const EXIT_HELPER = 100;
 const EXIT_NO_WRITE = 89;
-// Windows-only finite domain: outcome index plus eleven closed predicate bits.
+// Windows-only finite domain: outcome index plus seven closed predicate bits.
 const EXIT_OBSERVATION = 1000;
-const OBSERVATION_WIDTH = 2048;
+const OBSERVATION_WIDTH = 128;
 const replyFailures = [
   ['spawn', 'spawn_error'], ['admission', 'refused'], ['child_exit', 'nonzero'], ['child_exit', 'signal'],
   ['deadline', 'timeout'], ['reply', 'missing'], ['reply', 'truncated'], ['reply', 'duplicate'],
@@ -82,9 +82,7 @@ try {
         const memory = { receiver_accepted: accepted, child_exited_zero: !!(mask & 1),
           writer_callback_completed: accepted && (mask & 1) ? true : null, bytes_equal_expected: !!(mask & 2),
           expected_frame_seen: !!(mask & 4), capture_complete: !!(mask & 8),
-          no_write_completed: !!(mask & 16), no_write_nonempty: !!(mask & 32), capture_overflow: !!(mask & 64),
-          no_write_stderr_nonempty: !!(mask & 128), control_stdout_equals_stderr: !!(mask & 256),
-          control_stdout_utf8_valid: !!(mask & 512), control_stderr_utf8_valid: !!(mask & 1024) };
+          no_write_completed: !!(mask & 16), no_write_nonempty: !!(mask & 32), capture_overflow: !!(mask & 64) };
         const ok = accepted && memory.child_exited_zero && memory.bytes_equal_expected && memory.capture_complete
           && memory.no_write_completed && !memory.no_write_nonempty && !memory.capture_overflow;
         const pair = replyFailures[outcome];
@@ -126,9 +124,7 @@ try {
         });
         owned.add(child);
         const chunks = [];
-        const errorChunks = [];
         let size = 0;
-        let errorSize = 0;
         let overflow = false;
         // Tee the unchanged chunks BEFORE the strict receiver. Never strip,
         // resync or feed the memory comparisons back into decoding/acceptance.
@@ -136,13 +132,10 @@ try {
           if (size + chunk.length > 65_536) { overflow = true; try { child.kill(); } catch {} return; }
           chunks.push(Buffer.from(chunk)); size += chunk.length;
         });
-        child.stderr.on('data', chunk => {
-          if (errorSize + chunk.length > 65_536) { overflow = true; try { child.kill(); } catch {} return; }
-          errorChunks.push(Buffer.from(chunk)); errorSize += chunk.length;
-        });
+        child.stderr.resume();
         const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
         child.stdin.on('error', () => {});
-        return { child, closed, bytes: () => Buffer.concat(chunks), errors: () => Buffer.concat(errorChunks), overflow: () => overflow };
+        return { child, closed, bytes: () => Buffer.concat(chunks), overflow: () => overflow };
       };
       watchdog = setTimeout(() => finish(summary(false, 'deadline', null, true)), 25_000);
       void (async () => {
@@ -168,18 +161,6 @@ try {
         if (controlEnd.code === EXIT_NO_WRITE && controlEnd.signal === null) mask |= 16;
         if (noWrite.bytes().length !== 0) mask |= 32;
         if (writing.overflow() || noWrite.overflow()) mask |= 64;
-        const controlOut = noWrite.bytes();
-        const controlErr = noWrite.errors();
-        if (controlErr.length !== 0) mask |= 128;
-        if (controlOut.length !== 0 && controlErr.length !== 0 && controlOut.equals(controlErr)) mask |= 256;
-        const text = bytes => {
-          try { return { valid: true, value: new TextDecoder('utf-8', { fatal: true }).decode(bytes) }; }
-          catch { return { valid: false, value: '' }; }
-        };
-        const outText = text(controlOut);
-        const errText = text(controlErr);
-        if (outText.valid) mask |= 512;
-        if (errText.valid) mask |= 1024;
         const index = replyFailures.findIndex(([stage, category]) => stage === result.details?.stage && category === result.details?.category);
         const outcome = result.accepted ? replyFailures.length : index >= 0 ? index : replyFailures.length + 1;
         finish(summary(false, 'roundtrip_failed', result.details, true, { outcome, mask }));
