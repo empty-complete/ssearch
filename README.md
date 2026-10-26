@@ -33,13 +33,13 @@ Current search uses file metadata and project context. Document-content indexing
 
 ## Try it
 
-**The first public development installer is being prepared.** There is no Stable release yet. Windows 10/11 are the target platforms; final native acceptance is still pending. The `build-inputs-v1` and `build-inputs-v2` releases contain build dependencies, not application installers.
+**[Download the development installer 0.2.0 for Windows x64](https://github.com/empty-complete/ssearch/releases/download/dev-d81779abb78465a437c603f6f1496ef60d8be35f/ssearch-Setup-0.2.0.exe)** · [Build notes and checksums](https://github.com/empty-complete/ssearch/releases/tag/dev-d81779abb78465a437c603f6f1496ef60d8be35f).
 
-Once an application prerelease is available:
+The [Full suite and frozen PostgreSQL/application checks passed](https://github.com/empty-complete/ssearch/actions/runs/40236468725) in GitHub Actions on Windows Server 2025. This is a development preview; native Windows 10/11 acceptance is still pending and there is no Stable release yet. The `build-inputs-v1` and `build-inputs-v2` releases contain build dependencies, not application installers.
 
-1. Open [Releases](https://github.com/empty-complete/ssearch/releases) and read that build's notes.
-2. Download `ssearch-Setup-<version>.exe` from its assets and install it.
-3. Choose the folders to index, let the initial scan finish, then search and open a result in Explorer.
+1. Read the build notes, download the installer above and run it.
+2. Choose the folders to index and let the initial scan finish.
+3. Search for a document and open its location in Windows Explorer.
 
 Development installers come from reviewed source and GitHub Actions. Updates are currently manual; the planned automatic updater is not available yet.
 
