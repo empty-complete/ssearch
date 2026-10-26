@@ -1,5 +1,4 @@
 """Publisher contracts use synthetic public receipts; no native build or release calls."""
-import copy
 import hashlib
 import importlib.util
 import json
@@ -214,3 +213,157 @@ def test_existing_release_requires_exact_target_and_all_asset_hashes(publisher, 
     release['assets'][0]['digest'] = 'sha256:' + '0' * 64
     with pytest.raises(publisher.PublishError):
         publisher.validate_existing_release(release, MERGE, directory)
+
+
+def manual():
+    candidate = run()
+    candidate.update(id=99, event='workflow_dispatch', head_sha=MERGE, head_branch='main',
+                     status='in_progress', conclusion=None)
+    environment = {'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_REF': 'refs/heads/main',
+                   'GITHUB_REPOSITORY': REPO, 'GITHUB_SHA': MERGE, 'GITHUB_RUN_ID': '99'}
+    event = {'repository': {'full_name': REPO}, 'inputs': {'mode': 'full', 'publish': 'true'}}
+    jobs = [{'name': name, 'status': 'completed', 'conclusion': 'success'}
+            for name in ('changes', 'build')]
+    return candidate, environment, event, jobs
+
+
+def test_only_same_trusted_manual_full_may_publish_before_overall_completion(publisher):
+    candidate, environment, event, jobs = manual()
+    publisher.validate_manual_run(candidate, jobs, event, environment, 34)
+
+
+@pytest.mark.parametrize('mutation', ['older_run', 'source', 'branch', 'repository', 'event',
+    'quick', 'source_mode', 'not_publish', 'build_failed', 'changes_pending', 'duplicate_build'])
+def test_manual_full_exception_cannot_accept_other_run_or_failed_build(publisher, mutation):
+    candidate, environment, event, jobs = manual()
+    if mutation == 'older_run':
+        candidate['id'] = 98
+    elif mutation == 'source':
+        candidate['head_sha'] = HEAD
+    elif mutation == 'branch':
+        environment['GITHUB_REF'] = 'refs/heads/codex/test'
+    elif mutation == 'repository':
+        event['repository']['full_name'] = 'foreign/repo'
+    elif mutation == 'event':
+        environment['GITHUB_EVENT_NAME'] = 'push'
+    elif mutation in ('quick', 'source_mode'):
+        event['inputs']['mode'] = 'quick' if mutation == 'quick' else 'source'
+    elif mutation == 'not_publish':
+        event['inputs']['publish'] = 'false'
+    elif mutation == 'build_failed':
+        jobs[1]['conclusion'] = 'failure'
+    elif mutation == 'changes_pending':
+        jobs[0]['status'] = 'in_progress'
+    else:
+        jobs.append(dict(jobs[1]))
+    with pytest.raises(publisher.PublishError):
+        publisher.validate_manual_run(candidate, jobs, event, environment, 34)
+
+
+class ProofAPI:
+    """Only public GitHub metadata; never calls an application or release API."""
+    def __init__(self):
+        self.pr = pull()
+        self.candidate = run()
+        self.associations = [pull()]
+        self.artifacts = [{'id': 56, 'name': 'windows-' + HEAD + '-full', 'expired': False}]
+        self.target_tree = TREE
+        self.ancestor = True
+
+    def get(self, endpoint):
+        if endpoint == 'commits/main':
+            return {'sha': 'd' * 40}
+        if endpoint == 'pulls/1':
+            return self.pr
+        if endpoint.startswith('compare/'):
+            return {'status': 'ahead' if self.ancestor else 'diverged',
+                    'merge_base_commit': {'sha': endpoint.split('/')[1].split('...')[0]}}
+        if endpoint == 'actions/workflows/windows-build.yml':
+            return {'id': 34, 'path': '.github/workflows/windows-build.yml', 'state': 'active'}
+        if endpoint == 'git/commits/' + HEAD:
+            return {'tree': {'sha': TREE}}
+        if endpoint == 'git/commits/' + MERGE:
+            return {'tree': {'sha': self.target_tree}}
+        raise AssertionError('Unexpected metadata request')
+
+    def pages(self, endpoint, key=None):
+        if endpoint == 'commits/' + MERGE + '/pulls':
+            return [pull()]
+        if endpoint == 'commits/' + HEAD + '/pulls':
+            return self.associations
+        if endpoint.startswith('actions/workflows/34/runs?'):
+            return [self.candidate]
+        if endpoint == 'actions/runs/12/artifacts':
+            return self.artifacts
+        raise AssertionError('Unexpected metadata inventory')
+
+
+def test_recovery_derives_original_merge_and_original_successful_run(publisher):
+    api = ProofAPI()
+    environment = {'GITHUB_REPOSITORY': REPO, 'GITHUB_EVENT_NAME': 'workflow_dispatch',
+                   'GITHUB_REF': 'refs/heads/main', 'GITHUB_SHA': 'd' * 40}
+    plan = publisher.publication_plan(api, environment, recovery_pr=1)
+    assert plan['target'] == MERGE
+    assert plan['source'] == HEAD
+    assert plan['publisher_execution_sha'] == 'd' * 40
+    assert plan['run']['id'] == 12 and plan['artifact']['id'] == 56
+    assert publisher.verify_pr_selection(api, 1)['target_commit'] == MERGE
+
+
+def test_normal_main_push_requires_its_exact_merge(publisher):
+    api = ProofAPI()
+    environment = {'GITHUB_REPOSITORY': REPO, 'GITHUB_EVENT_NAME': 'push',
+                   'GITHUB_REF': 'refs/heads/main', 'GITHUB_SHA': MERGE}
+    assert publisher.publication_plan(api, environment)['target'] == MERGE
+    api.pr['merge_commit_sha'] = 'f' * 40
+    with pytest.raises(publisher.PublishError):
+        publisher.publication_plan(api, environment)
+
+
+@pytest.mark.parametrize('mutation', ['tree', 'ancestor', 'expired', 'duplicate', 'unassociated'])
+def test_recovery_rejects_proof_transfer_and_artifact_ambiguity(publisher, mutation):
+    api = ProofAPI()
+    if mutation == 'tree':
+        api.target_tree = 'f' * 40
+    elif mutation == 'ancestor':
+        api.ancestor = False
+    elif mutation == 'expired':
+        api.artifacts[0]['expired'] = True
+    elif mutation == 'duplicate':
+        api.artifacts.append(dict(api.artifacts[0]))
+    else:
+        api.associations = []
+    with pytest.raises(publisher.PublishError):
+        publisher.verify_pr_selection(api, 1)
+
+
+def test_archive_extracts_exact_verified_flat_inventory(publisher, tmp_path):
+    directory = package(tmp_path)
+    archive = tmp_path / 'artifact.zip'
+    with zipfile.ZipFile(archive, 'w') as output:
+        for path in directory.iterdir():
+            output.write(path, path.name)
+    metadata = {'size_in_bytes': archive.stat().st_size,
+                'digest': 'sha256:' + hashlib.sha256(archive.read_bytes()).hexdigest()}
+    destination = tmp_path / 'extracted'
+    publisher.extract_artifact(archive, metadata, destination)
+    publisher.validate_package(destination, HEAD)
+
+
+def test_archive_symlinks_never_extract(publisher, tmp_path):
+    directory = package(tmp_path)
+    archive = tmp_path / 'artifact.zip'
+    with zipfile.ZipFile(archive, 'w') as output:
+        for path in directory.iterdir():
+            if path.name == 'build-manifest.json':
+                entry = zipfile.ZipInfo(path.name)
+                entry.create_system = 3
+                entry.external_attr = 0o120777 << 16
+                output.writestr(entry, 'elsewhere')
+            else:
+                output.write(path, path.name)
+    metadata = {'size_in_bytes': archive.stat().st_size,
+                'digest': 'sha256:' + hashlib.sha256(archive.read_bytes()).hexdigest()}
+    with pytest.raises(publisher.PublishError):
+        publisher.extract_artifact(archive, metadata, tmp_path / 'extracted')
+    assert not (tmp_path / 'extracted').exists()
