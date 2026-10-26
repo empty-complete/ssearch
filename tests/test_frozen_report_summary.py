@@ -138,7 +138,8 @@ def test_failure_diagnostics_are_only_for_failed_ui_process_and_report(formatter
 HELPER_DOMAINS = {
     'helper_stage': ('admission', 'native_profile', 'spawn', 'reply', 'child_exit', 'deadline'),
     'helper_category': ('refused', 'spawn_error', 'identity_refused', 'decode_refused', 'binding_refused',
-                        'missing', 'truncated', 'duplicate', 'nonzero', 'signal', 'timeout', 'write_error'),
+                        'missing', 'truncated', 'duplicate', 'nonzero', 'signal', 'timeout', 'write_error',
+                        'length_refused', 'utf8_refused', 'json_refused'),
 }
 HELPER_FAILURE = {'helper_stage': 'native_profile', 'helper_category': 'identity_refused'}
 
@@ -149,6 +150,7 @@ def test_failed_ui_summary_retains_optional_helper_facts_but_no_native_internals
     expected = {**UI_FAILURE, **HELPER_FAILURE}
     report.write_text(json.dumps({'ok': False, 'failure_diagnostics': {
         **expected, 'native_failure_category': 'spawn_error', 'nativeFailureCategories': ['nonzero'],
+        'decoder_failure_category': 'truncated',
         'raw_frame': PRIVATE, 'message': PRIVATE, 'pid': 12345, 'path': PRIVATE}}), encoding='utf-8')
     summary = formatter.summarize_report(report, role, 1, not_before_ms=0)
     assert summary['diagnostic_only'] is True and summary['process_exit_code'] == 1
@@ -169,6 +171,7 @@ def test_failed_ui_summary_accepts_each_optional_helper_domain_member(formatter,
 @pytest.mark.parametrize('field,value', [
     ('helper_stage', 'identity_refused'), ('helper_category', 'native_profile'),
     ('helper_stage', 'bootstrap'), ('helper_category', 'runtime_failure'),
+    ('helper_category', 'length'), ('helper_category', 'utf8'), ('helper_category', 'json'),
     *[(field, value) for field in HELPER_DOMAINS for value in (None, PRIVATE, 'unknown_public_code',
                                                              True, 1, [PRIVATE], {'message': PRIVATE})],
 ])
