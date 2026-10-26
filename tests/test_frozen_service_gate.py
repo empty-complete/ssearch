@@ -193,3 +193,141 @@ def test_child_output_cannot_become_a_clean_stop_or_leak_into_diagnostics(gate, 
     finally:
         child.cleanup()
     assert capsys.readouterr() == ('', '')
+
+
+@pytest.fixture
+def output_failure(gate, prepared, monkeypatch, capsys):
+    """Real controller/stop/cleanup, with only the retained OS child faked."""
+    from contextlib import nullcontext
+    import io
+
+    def exercise(label, stream, payload, *, during_exit=False, unsafe=None):
+        cleaned = []
+        process = SimpleNamespace(exited=False)
+        original_open = Path.open
+
+        def checked_open(path, mode='r', *args, **kwargs):
+            if 'r' in mode and path.suffix in ('.stdout', '.stderr'):
+                assert process.exited, 'capture content was read before child exit'
+                assert cleaned, 'diagnostics preceded retained child cleanup'
+            return original_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, 'open', checked_open)
+        windows = gate._windows
+
+        def reject(path):
+            if cleaned and unsafe == 'reparse' and Path(path).suffix == '.' + stream:
+                raise RuntimeError('PRIVATE_SENTINEL unsafe capture')
+            return Path(path)
+
+        def private(path):
+            if cleaned and unsafe == 'parent' and Path(path) == prepared.qa:
+                raise RuntimeError('PRIVATE_SENTINEL unsafe parent')
+
+        monkeypatch.setattr(gate, '_windows', SimpleNamespace(
+            private_directory=windows.private_directory, reject_reparse=reject,
+            assert_private=private, verified_process=lambda identity: nullcontext()))
+
+        class Process:
+            pid = 123
+
+            def __init__(self, **kwargs):
+                self.stdin = io.BytesIO()
+                self.output = kwargs[stream]
+                if not during_exit:
+                    self.output.write(payload)
+
+            def poll(self):
+                return 0 if process.exited else None
+
+            def wait(self, timeout):
+                if not process.exited and during_exit:
+                    self.output.write(payload)
+                process.exited = True
+                return 0
+
+        monkeypatch.setattr(gate.subprocess, 'Popen', lambda *args, **kwargs: Process(**kwargs))
+
+        def scenario(executable, profile, qa, scenario_label, environment, version, children):
+            child = gate._Child(executable, profile, qa, label, environment)
+            children.append(child)
+            original_cleanup = child.cleanup
+
+            def cleanup():
+                result = original_cleanup()
+                cleaned.append(True)
+                path = child.logs[stream == 'stderr']
+                if unsafe == 'missing':
+                    path.unlink()
+                elif unsafe == 'replaced':
+                    replacement = path.with_suffix('.replacement')
+                    replacement.write_bytes(b'PRIVATE_SENTINEL replacement')
+                    path.unlink()
+                    replacement.rename(path)
+                return result
+
+            child.cleanup = cleanup
+            child.stop()
+            pytest.fail('nonempty output became a passing scenario')
+
+        monkeypatch.setattr(gate, '_scenario', scenario)
+        assert gate.main(prepared.arguments) == 1
+        assert cleaned == [True] and not prepared.report.exists()
+        output, error = capsys.readouterr()
+        assert output == ''
+        lines = error.splitlines()
+        assert len(lines) == 2 and lines[-1] == 'child_output_leak'
+        diagnostic = json.loads(lines[0])
+        assert set(diagnostic) == {'diagnostic_only', 'code', 'child', 'checkpoints', 'streams'}
+        assert diagnostic['diagnostic_only'] is True and diagnostic['code'] == 'child_output_leak'
+        assert 'PRIVATE_SENTINEL' not in error and str(prepared.qa) not in error
+        return diagnostic
+
+    return exercise
+
+
+@pytest.mark.parametrize('stream', ['stdout', 'stderr'])
+@pytest.mark.parametrize('label,category,marker', [
+    ('ascii-primary', 'traceback', b'Traceback (most recent call last):'),
+    ('ascii-attached', 'thread', b'Exception in thread PRIVATE_SENTINEL:'),
+    ('ascii-restart', 'unraisable', b'Exception ignored in: PRIVATE_SENTINEL'),
+    ('unicode-primary', 'warning', b'UserWarning: PRIVATE_SENTINEL'),
+    ('unicode-attached', 'onnxruntime', b'[W:onnxruntime:PRIVATE_SENTINEL]'),
+    ('unicode-restart', 'pyinstaller', b'[PYI-123:WARNING] PRIVATE_SENTINEL'),
+    ('ascii-primary', 'unknown', b'PRIVATE_SENTINEL unrecognized output'),
+])
+def test_output_failure_classifies_both_streams_without_exporting_payload(output_failure, stream, label, category, marker):
+    payload = marker + b' PRIVATE_SENTINEL C:\\private\\credentials.json\n'
+    diagnostic = output_failure(label, stream, payload)
+    assert diagnostic['child'] == label
+    for checkpoint in ('beforeEOF', 'afterExit'):
+        assert diagnostic['checkpoints'][checkpoint][stream] == {'bytes': len(payload), 'oversize': False}
+    observed = diagnostic['streams'][stream]
+    assert observed['state'] == 'read' and observed['bytes'] == len(payload)
+    assert observed['oversize'] is observed['truncated'] is False
+    assert observed['categories'] == {name: name == category for name in (
+        'traceback', 'thread', 'unraisable', 'warning', 'onnxruntime', 'pyinstaller', 'unknown')}
+    other = diagnostic['streams']['stderr' if stream == 'stdout' else 'stdout']
+    assert other['bytes'] == 0 and not any(other['categories'].values())
+
+
+def test_output_failure_separates_eof_output_and_bounds_capture_inspection(output_failure):
+    # A recognisable marker beyond 64 KiB must not be inspected/classified.
+    payload = b'UserWarning: PRIVATE_SENTINEL\n'.ljust(65536, b'x') + b'[PYI-123:WARNING]'
+    diagnostic = output_failure('unicode-restart', 'stderr', payload, during_exit=True)
+    assert diagnostic['checkpoints']['beforeEOF']['stderr'] == {'bytes': 0, 'oversize': False}
+    assert diagnostic['checkpoints']['afterExit']['stderr'] == {'bytes': 65537, 'oversize': True}
+    observed = diagnostic['streams']['stderr']
+    assert observed['bytes'] == 65537 and observed['oversize'] is observed['truncated'] is True
+    assert observed['categories']['warning'] is True and observed['categories']['pyinstaller'] is False
+
+
+@pytest.mark.parametrize('unsafe', ['missing', 'replaced', 'reparse', 'parent'])
+def test_output_failure_unsafe_capture_is_unavailable_and_still_fails(output_failure, unsafe):
+    diagnostic = output_failure('ascii-attached', 'stdout', b'PRIVATE_SENTINEL', unsafe=unsafe)
+    assert diagnostic['streams']['stdout'] == {'state': 'unavailable'}
+
+
+def test_output_failure_unknown_child_label_is_fixed_and_redacted(output_failure):
+    diagnostic = output_failure('PRIVATE_SENTINEL', 'stderr', b'PRIVATE_SENTINEL')
+    assert diagnostic['child'] == 'unknown'
