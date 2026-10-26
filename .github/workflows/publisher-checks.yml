@@ -1,0 +1,48 @@
+name: Publisher contracts
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows-build.yml
+      - .github/workflows/publish-existing.yml
+      - .github/workflows/publisher-checks.yml
+      - tools/ci_publish.py
+      - tests/test_ci_publish.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  publisher:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+      - name: Install the locked test runner
+        shell: pwsh
+        run: |
+          & python -m pip install --disable-pip-version-check pytest==8.4.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check publisher contracts without native execution or publication
+        shell: pwsh
+        run: |
+          & python -m pytest -q tests/test_ci_publish.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify selection of the original merged PR Full run (read only)
+        if: github.repository == 'empty-complete/ssearch'
+        shell: pwsh
+        run: |
+          & python tools/ci_publish.py verify-pr --pr-number 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
