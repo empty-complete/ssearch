@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
 import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import type { Readable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 import { BrokerFrameDecoder, encodeBrokerFrame } from './brokerFrames.js';
 import { decodeProfileIdentity, type ProfileIdentity, type RuntimeProcesses } from './runtime.js';
 import { frozenServiceEnvironment } from './packagedRuntime.js';
@@ -41,9 +41,13 @@ export type HelperReplyContext = Pick<HelperMarker, 'source_commit' | 'role' | '
 export interface HelperReplyChild {
   readonly pid?: number;
   readonly stdout: Readable;
+  readonly stdio?: readonly (Readable | Writable | null | undefined)[];
   once(event: string, listener: (...arguments_: unknown[]) => void): unknown;
   kill(): boolean;
 }
+/** Current stdout selection extracted without changing the pre-FD3 baseline. */
+export function helperProtocolStream(child: HelperReplyChild): Readable | null { return child.stdout; }
+export function helperEnvironment(): NodeJS.ProcessEnv { return frozenServiceEnvironment(); }
 export type HelperClock = (callback: () => void, milliseconds: number) => () => void;
 const helperClock: HelperClock = (callback, milliseconds) => {
   const timer = setTimeout(callback, milliseconds);
@@ -178,7 +182,9 @@ export function receiveHelper(child: HelperReplyChild, marker: HelperReplyContex
     };
     cancel = clock(() => { if (!settled) { fail('deadline', 'timeout'); stop(); } }, 180_000);
     child.once('error', () => fail('spawn', 'spawn_error'));
-    child.stdout.on('data', chunk => {
+    const protocol = helperProtocolStream(child);
+    if (!protocol) { fail('spawn', 'spawn_error'); return; }
+    protocol.on('data', chunk => {
       if (settled) return;
       let frames: unknown[];
       try { frames = decoder.push(chunk); }
