@@ -1,7 +1,8 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
 import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import type { Readable } from 'node:stream';
 import { BrokerFrameDecoder, encodeBrokerFrame } from './brokerFrames.js';
 import { decodeProfileIdentity, type ProfileIdentity } from './runtime.js';
 import { frozenServiceEnvironment } from './packagedRuntime.js';
@@ -9,10 +10,32 @@ import { canonicalDirectory, type UiProofRequest } from './diagnosticsPolicy.js'
 import { exactKeys, plainObject, publicUuid } from './validation.js';
 
 type Role = NonNullable<UiProofRequest['helperRole']>;
+export const helperStages = ['admission', 'native_profile', 'spawn', 'reply', 'child_exit', 'deadline'] as const;
+export const helperCategories = ['refused', 'spawn_error', 'identity_refused', 'decode_refused', 'binding_refused',
+  'missing', 'truncated', 'duplicate', 'nonzero', 'signal', 'timeout', 'write_error'] as const;
+export type HelperStage = typeof helperStages[number];
+export type HelperCategory = typeof helperCategories[number];
+export interface HelperFailureDetails { stage: HelperStage; category: HelperCategory }
+
+/** Current exceptions carry no stage information. Closed projection awaits RED. */
+export function helperFailureDetails(_error: unknown): HelperFailureDetails | null { return null; }
+
 interface HelperMarker {
   schema_version: 1; source_commit: string; role: Role; session_id: string; challenge: string;
   profile_key: string; parent: ProfileIdentity['parent'];
 }
+export type HelperReplyContext = Pick<HelperMarker, 'source_commit' | 'role' | 'session_id' | 'challenge'>;
+export interface HelperReplyChild {
+  readonly pid: number | undefined;
+  readonly stdout: Readable;
+  once(event: string, listener: (...arguments_: unknown[]) => void): unknown;
+  kill(): boolean;
+}
+export type HelperClock = (callback: () => void, milliseconds: number) => () => void;
+const helperClock: HelperClock = (callback, milliseconds) => {
+  const timer = setTimeout(callback, milliseconds);
+  return () => clearTimeout(timer);
+};
 
 /** Read-only native SDK admission before ready/writes; the existing service frame is unchanged. */
 export function authenticateUiHelper(request: UiProofRequest, root: string, sourceCommit: string, version: string) {
@@ -79,12 +102,13 @@ export function startUiHelper(root: string, reportSource: string, role: Role, pr
   return { child, helperRoot, reply };
 }
 
-function receiveHelper(child: ChildProcessWithoutNullStreams, marker: HelperMarker): Promise<Record<string, unknown>> {
+export function receiveHelper(child: HelperReplyChild, marker: HelperReplyContext,
+  clock: HelperClock = helperClock): Promise<Record<string, unknown>> {
   return new Promise((accept, reject) => {
     const decoder = new BrokerFrameDecoder(65_536);
     let result: Record<string, unknown> | null = null;
-    const timer = setTimeout(() => { child.kill(); reject(new Error('ui_proof_helper_deadline')); }, 180_000);
-    const fail = () => { clearTimeout(timer); reject(new Error('ui_proof_helper_failed')); };
+    const cancel = clock(() => { child.kill(); reject(new Error('ui_proof_helper_deadline')); }, 180_000);
+    const fail = () => { cancel(); reject(new Error('ui_proof_helper_failed')); };
     child.once('error', fail);
     child.stdout.on('data', chunk => {
       try {
@@ -98,7 +122,7 @@ function receiveHelper(child: ChildProcessWithoutNullStreams, marker: HelperMark
       } catch { child.kill(); fail(); }
     });
     child.once('close', code => {
-      clearTimeout(timer);
+      cancel();
       try { decoder.end(); } catch { fail(); return; }
       if (code !== 0 || !result) fail();
       else accept(result);
