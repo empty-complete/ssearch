@@ -960,6 +960,14 @@ foreach ($name in $before.Keys) {
         inventory = self.module.validate_desktop_bundle(bundle, **options)
         assert inventory['ssearch.exe']['sha256'] == hashlib.sha256(b'local Electron fixture').hexdigest()
         assert 'service/ssearch-service.exe' in inventory
+        inventory_path = self.root / 'payload-inventory.json'
+        document = dict(schema_version=1, **options, files=inventory, inventory_only=True)
+        inventory_path.write_text(json.dumps(document), encoding='utf-8')
+        self.module.verify_desktop_inventory(bundle, inventory_path, **options)
+        document['files']['ssearch.exe']['sha256'] = '0' * 64
+        inventory_path.write_text(json.dumps(document), encoding='utf-8')
+        with self.assertRaisesRegex(self.module.BuildError, 'inventory'):
+            self.module.verify_desktop_inventory(bundle, inventory_path, **options)
         metadata['source_commit'] = 'b' * 40
         target.write_text(json.dumps(metadata), encoding='utf-8')
         with self.assertRaises(self.module.BuildError):

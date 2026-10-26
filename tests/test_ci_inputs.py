@@ -248,3 +248,52 @@ def test_export_rejects_installer_changed_after_proof(tmp_path):
     with pytest.raises(ValueError, match='Installer'):
         exporter.export_artifacts(tmp_path, commit)
     assert not (tmp_path / 'artifacts/ci-export').exists()
+
+
+@pytest.mark.parametrize('fault', [None, 'index_hash', 'source', 'model_count', 'missing_ui', 'proof_hash'])
+def test_desktop_export_requires_bound_proofs_and_keeps_private_reports_out(tmp_path, fault):
+    commit, _ = fixture_build(tmp_path)
+    base = tmp_path / 'artifacts/development' / commit
+    manifest_path = base / 'build-manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    manifest.update(payload_kind='electron-service', frontend_test_targets=[], desktop_test_targets=[],
+                    executable={'sha256': 'b' * 64}, service_executable={'sha256': 'c' * 64})
+    receipt_path = base / 'qa/test-receipt.json'
+    receipt = json.loads(receipt_path.read_text())
+    receipt.update(frontend_test_targets=[], desktop_test_targets=[])
+    receipt_path.write_text(json.dumps(receipt))
+    proof_files = ['frozen-self-test.json', 'postgres-runtime-proof.json', 'test-receipt.json',
+                   'service-owner-proof.json', 'frozen-service-proof.json',
+                   *[f'ui-{name}.json' for name in ('load', 'security', 'lifecycle', 'empty-profile')]]
+    for name in proof_files[3:]:
+        (base / 'qa' / name).write_text('{"private_path":"PRIVATE_SENTINEL"}')
+    index = dict(schema_version=1, source_commit=commit, payload_kind='electron-service',
+                 test_scope='full', full_suite_passed=True, required_frozen_proofs_passed=True,
+                 stage_accepted=False, windows_validation=[],
+                 hashes=dict(desktop_sha256='b' * 64, service_sha256='c' * 64),
+                 scoped_backend_counts=dict.fromkeys(('model_constructions', 'runtime_starts',
+                                                      'runtime_stops', 'core_closes'), 1),
+                 ui={name: dict(scenario=name, proof_scope='packaged_hidden_offscreen')
+                     for name in ('load', 'security', 'lifecycle', 'empty-profile')},
+                 proof_sha256={name: exporter.digest(base / 'qa' / name) for name in proof_files})
+    if fault == 'source': index['source_commit'] = 'f' * 40
+    if fault == 'model_count': index['scoped_backend_counts']['model_constructions'] = 0
+    if fault == 'missing_ui': index['ui'].pop('security')
+    if fault == 'proof_hash': index['proof_sha256']['service-owner-proof.json'] = 'f' * 64
+    index_path = base / 'qa/desktop-proof-index.json'
+    index_path.write_text(json.dumps(index))
+    manifest['desktop'] = dict(required_frozen_proofs_passed=True, stage_accepted=False,
+                              proof_index_sha256=exporter.digest(index_path),
+                              open_gates=['qt_upgrade', 'native_windows_11', 'windows_10', 'full_p4_acceptance'])
+    if fault == 'index_hash': manifest['desktop']['proof_index_sha256'] = 'f' * 64
+    manifest_path.write_text(json.dumps(manifest))
+    if fault:
+        with pytest.raises(ValueError): exporter.export_artifacts(tmp_path, commit, desktop_stack=True)
+        assert not (tmp_path / 'artifacts/ci-export').exists()
+    else:
+        output = exporter.export_artifacts(tmp_path, commit, desktop_stack=True)
+        assert len(list(output.iterdir())) == 5
+        assert all(b'PRIVATE_SENTINEL' not in path.read_bytes() for path in output.iterdir())
+        evidence = json.loads((output / 'ci-evidence.json').read_text())
+        assert evidence['desktop']['stage_accepted'] is False
+        assert evidence['desktop']['scoped_backend_counts']['model_constructions'] == 1
