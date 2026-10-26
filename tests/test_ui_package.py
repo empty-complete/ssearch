@@ -201,3 +201,84 @@ function git {
         assert project['offline_npm_ci'] is True and project['install_scripts'] is False
         assert project['lock_sha256'] == hashlib.sha256((tmp_path / project['project'] / 'package-lock.json').read_bytes()).hexdigest()
         assert project['packages'] == [{'package': 'node_modules/ssearch-fixture', 'integrity': 'sha512-fixture'}]
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Real offline negative producer uses PowerShell 7')
+@pytest.mark.parametrize('state', ['warm', 'cold', 'stale'])
+def test_cache_negative_gate_runs_real_refusals_and_preserves_owned_boundaries(tmp_path, state):
+    powershell = shutil.which('pwsh.exe')
+    assert powershell, 'The common desktop build requires PowerShell 7'
+    producer = ROOT / 'tools/check_offline_caches.ps1'
+    assert producer.is_file(), 'Reusable actual cache-negative gate is required'
+    (tmp_path / 'tools').mkdir()
+    for name in ('build_frontend.ps1', 'check_offline_caches.ps1'):
+        shutil.copyfile(ROOT / 'tools' / name, tmp_path / 'tools' / name)
+    for project in ('frontend', 'desktop'):
+        (tmp_path / project / '.cache').mkdir(parents=True)
+        lock = {'lockfileVersion': 3, 'packages': {'': {'name': 'ssearch-fixture'},
+            'node_modules/ssearch-fixture': {'version': '1.0.0', 'integrity': 'sha512-fixture',
+                'resolved': 'https://registry.npmjs.org/ssearch-fixture/-/ssearch-fixture-1.0.0.tgz'}}}
+        (tmp_path / project / 'package-lock.json').write_text(json.dumps(lock), encoding='utf-8')
+    node_modules = tmp_path / 'frontend/node_modules'
+    retained = {'keep.bin': b'unknown owned file', '.offline-negative-proof': b'previous marker'}
+    if state != 'cold':
+        node_modules.mkdir()
+        for name, value in retained.items():
+            (node_modules / name).write_bytes(value)
+    receipt = tmp_path / 'frontend/.cache/offline-negative.json'
+    if state == 'stale':
+        receipt.write_bytes(b'previous receipt must survive')
+    driver = tmp_path / 'negative-gate.ps1'
+    driver.write_text(r'''
+param([string]$Root)
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+function node {
+    $global:LASTEXITCODE=0
+    @{program='node';arguments=@($args)} | ConvertTo-Json -Compress |
+        Add-Content -LiteralPath (Join-Path $Root 'boundary-calls.jsonl') -Encoding UTF8
+    switch ($args -join ' ') {
+        '--version' { return 'v24.22.1' }
+        '-p process.platform' { return 'win32' }
+        '-p process.arch' { return 'x64' }
+        default { throw 'Unexpected Node boundary' }
+    }
+}
+function npm {
+    $global:LASTEXITCODE=0
+    @{program='npm';arguments=@($args)} | ConvertTo-Json -Compress |
+        Add-Content -LiteralPath (Join-Path $Root 'boundary-calls.jsonl') -Encoding UTF8
+    if (($args -join ' ') -eq '--version') { return '11.19.1' }
+    if ($args[0] -eq 'cache' -and $args[1] -eq 'ls') { return }
+    throw 'Unexpected npm command after cache refusal'
+}
+function git { throw 'Rejected cache must never reach source receipt generation' }
+& (Join-Path $Root 'tools/check_offline_caches.ps1') -DesktopCachePath (Join-Path $Root 'desktop/.cache')
+''', encoding='utf-8-sig')
+    result = subprocess.run([powershell, '-NoProfile', '-NonInteractive', '-File', str(driver), str(tmp_path)],
+                            capture_output=True, text=True, encoding='utf-8', timeout=30)
+    boundary = tmp_path / 'boundary-calls.jsonl'
+    calls = [json.loads(line) for line in boundary.read_text(encoding='utf-8-sig').splitlines()] if boundary.exists() else []
+    if state == 'stale':
+        assert result.returncode != 0
+        assert receipt.read_bytes() == b'previous receipt must survive'
+        assert calls == []
+    else:
+        assert result.returncode == 0, 'Real cache-negative producer failed'
+        data = receipt.read_bytes()
+        assert not data.startswith(b'\xef\xbb\xbf')
+        proof = json.loads(data.decode('utf-8'))
+        assert proof == [
+            {'scenario': 'missing', 'rejected_before_npm_ci': True, 'package_downloads': False,
+             'error': 'Offline npm cache is missing.'},
+            {'scenario': 'empty', 'rejected_before_npm_ci': True, 'package_downloads': False,
+             'error': 'Offline locked cache incomplete:'}]
+        assert len([row for row in calls if row['program'] == 'node' and row['arguments'] == ['--version']]) == 2
+        assert len([row for row in calls if row['program'] == 'npm' and row['arguments'][:2] == ['cache', 'ls']]) == 1
+        assert not any(row['program'] == 'npm' and row['arguments'][0] in ('ci', 'run') for row in calls)
+        assert not (tmp_path / 'frontend/.cache/offline-dependencies.json').exists()
+        assert not list((tmp_path / 'frontend/.cache').glob('**/_cacache/content-v2'))
+    if state == 'cold':
+        assert not node_modules.exists()
+    else:
+        assert {path.name: path.read_bytes() for path in node_modules.iterdir()} == retained
