@@ -306,7 +306,8 @@ def test_output_failure_classifies_both_streams_without_exporting_payload(output
     assert observed['state'] == 'read' and observed['bytes'] == len(payload)
     assert observed['oversize'] is observed['truncated'] is False
     assert observed['categories'] == {name: name == category for name in (
-        'traceback', 'thread', 'unraisable', 'warning', 'onnxruntime', 'pyinstaller', 'unknown')}
+        'traceback', 'thread', 'unraisable', 'warning', 'onnxruntime', 'pyinstaller', 'unknown',
+        'ort_windows_release_check')}
     other = diagnostic['streams']['stderr' if stream == 'stdout' else 'stdout']
     assert other['bytes'] == 0 and not any(other['categories'].values())
 
@@ -331,3 +332,75 @@ def test_output_failure_unsafe_capture_is_unavailable_and_still_fails(output_fai
 def test_output_failure_unknown_child_label_is_fixed_and_redacted(output_failure):
     diagnostic = output_failure('PRIVATE_SENTINEL', 'stderr', b'PRIVATE_SENTINEL')
     assert diagnostic['child'] == 'unknown'
+
+
+@pytest.mark.parametrize('change,expected', [
+    ('exact', True), ('filename', False), ('category', False),
+    ('template', False), ('extra', False), ('release', False),
+])
+def test_output_failure_identifies_only_complete_public_ort_windows_warning(output_failure, change, expected):
+    # ORT v1.22.1 onnxruntime/python/onnxruntime_validation.py, blob
+    # 9f290da51fe8a757136898a35cc9795f93ec958d: check_distro_info().
+    payload = (b'onnxruntime\\capi\\onnxruntime_validation.py:27: UserWarning: '
+               b'Unsupported Windows version (2025server). ONNX Runtime supports Windows 10 and above, only.\r\n')
+    if change == 'filename':
+        payload = payload.replace(b'onnxruntime_validation.py', b'PRIVATE_SENTINEL.py')
+    elif change == 'category':
+        payload = payload.replace(b'UserWarning', b'RuntimeWarning')
+    elif change == 'template':
+        payload = payload.replace(b'Windows 10 and above', b'PRIVATE_SENTINEL')
+    elif change == 'extra':
+        payload += b'PRIVATE_SENTINEL C:\\private\\credentials.json\r\n'
+    elif change == 'release':
+        payload = payload.replace(b'2025server', b'2022server')
+    diagnostic = output_failure('ascii-primary', 'stderr', payload)
+    assert diagnostic['streams']['stderr']['categories']['ort_windows_release_check'] is expected
+
+
+def test_pinned_ort_fresh_import_classifies_public_windows_warning_without_model():
+    """A producer check only; it never qualifies the frozen capture or model/PG."""
+    import subprocess
+    import sys
+
+    script = r'''
+import json, platform, warnings
+result = dict(version_matches=False, release_family='other', warning_matches=False,
+              warning_count=0, probe_ok=False)
+try:
+    release = platform.release().lower()
+    result['release_family'] = ('client' if release in ('10', '11') else
+                                'server' if release.endswith('server') else 'other')
+    with warnings.catch_warnings(record=True) as observed:
+        import onnxruntime
+    result['version_matches'] = onnxruntime.__version__ == '1.22.1'
+    expected = ('Unsupported Windows version (' + release + '). '
+                'ONNX Runtime supports Windows 10 and above, only.')
+    result['warning_count'] = min(len(observed), 2)
+    result['warning_matches'] = bool(observed) and all(
+        item.category is UserWarning
+        and item.filename.replace('\\', '/').endswith('/onnxruntime/capi/onnxruntime_validation.py')
+        and str(item.message) == expected for item in observed)
+    result['probe_ok'] = platform.system() == 'Windows'
+except BaseException:
+    pass
+print(json.dumps(result, ensure_ascii=True))
+'''
+    try:
+        result = subprocess.run([sys.executable, '-I', '-c', script], capture_output=True,
+                                stdin=subprocess.DEVNULL, timeout=60, shell=False)
+    except (OSError, subprocess.SubprocessError):
+        pytest.fail('ort_warning_producer_unavailable', pytrace=False)
+    streams_clean = result.returncode == 0 and result.stderr == b''
+    assert streams_clean, 'ort_warning_producer_failed'
+    try:
+        observed = json.loads(result.stdout)
+    except (ValueError, UnicodeError):
+        pytest.fail('ort_warning_producer_result_unavailable', pytrace=False)
+    valid_contract = (type(observed) is dict
+        and set(observed) == {'version_matches', 'release_family', 'warning_matches', 'warning_count', 'probe_ok'}
+        and observed['probe_ok'] is observed['version_matches'] is True
+        and observed['release_family'] in ('server', 'client', 'other')
+        and observed['warning_matches'] is (observed['release_family'] != 'client')
+        and type(observed['warning_count']) is int
+        and observed['warning_count'] == (0 if observed['release_family'] == 'client' else 1))
+    assert valid_contract, 'ort_warning_producer_contract_failed'
