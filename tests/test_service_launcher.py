@@ -205,3 +205,142 @@ runpy.run_path(entry, run_name='__main__')
                             capture_output=True, timeout=10)
     assert result.returncode == 2
     assert result.stdout == result.stderr == b''
+
+
+@pytest.mark.parametrize('case', [
+    'known', 'delegate-error', 'category', 'category-subclass', 'module', 'message', 'message-newline',
+    'metadata-version', 'metadata-missing', 'client', 'older-server', 'future-server',
+    'missing-os-fields', 'not-windows', 'not-frozen', 'library',
+])
+def test_entry_scopes_only_proven_ort_server_advisory_and_restores_warning_policy(
+        launcher, monkeypatch, capsys, case):
+    import importlib.metadata
+    import warnings
+
+    monkeypatch.setattr(sys, 'argv', ['ssearch-service', '--serve', '--data-dir', 'chosen profile'])
+    monkeypatch.setattr(sys, 'frozen', case != 'not-frozen', raising=False)
+    version = types.SimpleNamespace(product_type=3, platform_version=(10, 0, 26100))
+    if case == 'client':
+        version.product_type = 1
+    elif case == 'older-server':
+        version.platform_version = (10, 0, 20348)
+    elif case == 'future-server':
+        version.platform_version = (10, 0, 26200)
+    elif case == 'missing-os-fields':
+        version = types.SimpleNamespace()
+    monkeypatch.setattr(sys, 'getwindowsversion', lambda: version, raising=False)
+    if case == 'not-windows':
+        monkeypatch.setattr(launcher, 'os', types.SimpleNamespace(name='posix', environ=os.environ))
+
+    def metadata(name):
+        assert name == 'onnxruntime'
+        if case == 'metadata-missing':
+            raise importlib.metadata.PackageNotFoundError(name)
+        return '1.22.2' if case == 'metadata-version' else '1.22.1'
+
+    monkeypatch.setattr(importlib.metadata, 'version', metadata)
+    original_import = builtins.__import__
+
+    def no_eager_ort(name, *args, **kwargs):
+        if name == 'onnxruntime' or name.startswith('onnxruntime.'):
+            pytest.fail('entry imported native ORT before delegation')
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, '__import__', no_eager_ort)
+    calls = []
+    route(monkeypatch, 'atom_search.runtime.postgres', 'sanitize_host_environment',
+          lambda: calls.append('sanitize'))
+    message = ('Unsupported Windows version (2025server). '
+               'ONNX Runtime supports Windows 10 and above, only.')
+    if case == 'message':
+        message += ' PRIVATE_SENTINEL'
+    elif case == 'message-newline':
+        message += '\n'
+
+    def delegate(argv):
+        calls.append('delegate')
+        class OtherUserWarning(UserWarning):
+            pass
+        category = (RuntimeWarning if case == 'category' else OtherUserWarning
+                    if case == 'category-subclass' else UserWarning)
+        warnings.warn_explicit(message, category,
+            'onnxruntime/capi/onnxruntime_validation.py', 27,
+            module='private_module' if case == 'module' else 'onnxruntime.capi.onnxruntime_validation')
+        if case == 'delegate-error':
+            raise RuntimeError('PRIVATE_SENTINEL')
+        return 0
+
+    route(monkeypatch, 'atom_search.service.headless', 'main', delegate)
+    with warnings.catch_warnings(record=True) as observed:
+        warnings.simplefilter('always')
+        filters_before, show_before = warnings.filters[:], warnings.showwarning
+        result = launcher.launch() if case == 'library' else launcher._entry()
+        restored = warnings.filters == filters_before and warnings.showwarning is show_before
+        warning_count = len(observed)
+        # The same advisory outside the process boundary must remain visible.
+        warnings.warn_explicit(message, UserWarning, 'onnxruntime/capi/onnxruntime_validation.py', 27,
+                               module='onnxruntime.capi.onnxruntime_validation')
+        outside_visible = len(observed) == warning_count + 1
+    assert result == (1 if case == 'delegate-error' else 0)
+    assert calls == (['delegate'] if case == 'library' else ['sanitize', 'delegate'])
+    assert warning_count == (0 if case in ('known', 'delegate-error') else 1)
+    assert restored and outside_visible
+    assert capsys.readouterr() == ('', '')
+
+
+def test_fresh_entry_handles_real_pinned_ort_advisory_without_starting_service(tmp_path):
+    """Real dependency producer, simulated frozen boundary; no model/PG proof."""
+    import json
+
+    script = r'''
+import importlib.util, json, platform, sys, types, warnings
+result = dict(entry_ok=False, delegated=False, pinned=False, quiet=False, restored=False)
+try:
+    # Cache actual runner classification before simulating only the cheap entry context.
+    platform.release()
+    sys.frozen = True
+    sys.getwindowsversion = lambda: types.SimpleNamespace(product_type=3, platform_version=(10, 0, 26100))
+    for name in ('atom_search', 'atom_search.runtime', 'atom_search.service'):
+        package = types.ModuleType(name)
+        package.__path__ = []
+        sys.modules[name] = package
+    postgres = types.ModuleType('atom_search.runtime.postgres')
+    postgres.sanitize_host_environment = lambda: None
+    sys.modules[postgres.__name__] = postgres
+    headless = types.ModuleType('atom_search.service.headless')
+    def delegate(argv):
+        result['delegated'] = True
+        import onnxruntime
+        result['pinned'] = onnxruntime.__version__ == '1.22.1'
+        return 0
+    headless.main = delegate
+    sys.modules[headless.__name__] = headless
+    spec = importlib.util.spec_from_file_location('ssearch_service_launcher_probe', sys.argv[1])
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+    sys.argv = ['ssearch-service', '--serve', '--data-dir', 'synthetic-profile']
+    with warnings.catch_warnings(record=True) as observed:
+        warnings.simplefilter('always')
+        before, show = warnings.filters[:], warnings.showwarning
+        result['entry_ok'] = launcher._entry() == 0
+        result['quiet'] = not observed
+        result['restored'] = warnings.filters == before and warnings.showwarning is show
+except BaseException:
+    pass
+print(json.dumps(result, ensure_ascii=True))
+'''
+    try:
+        result = subprocess.run([sys.executable, '-I', '-c', script, str(ENTRY)], cwd=tmp_path,
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=60, shell=False)
+    except (OSError, subprocess.SubprocessError):
+        pytest.fail('ort_entry_probe_unavailable', pytrace=False)
+    streams_clean = result.returncode == 0 and result.stderr == b''
+    assert streams_clean, 'ort_entry_probe_failed'
+    try:
+        observed = json.loads(result.stdout)
+    except (ValueError, UnicodeError):
+        pytest.fail('ort_entry_probe_result_unavailable', pytrace=False)
+    valid_contract = (type(observed) is dict
+        and set(observed) == {'entry_ok', 'delegated', 'pinned', 'quiet', 'restored'}
+        and all(value is True for value in observed.values()))
+    assert valid_contract, 'ort_entry_probe_contract_failed'
