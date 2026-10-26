@@ -111,6 +111,10 @@ def _capture_categories(content):
         warning=re.search(rb'\b[a-z]*warning:', lower) is not None,
         onnxruntime=b'onnxruntime:' in lower,
         pyinstaller=re.search(rb'\[pyi-[0-9]+:', lower) is not None)
+    categories['ort_windows_release_check'] = re.fullmatch(
+        rb'onnxruntime[\\/]capi[\\/]onnxruntime_validation\.py:[1-9][0-9]{0,3}: UserWarning: '
+        rb'Unsupported Windows version \(2025server\)\. '
+        rb'ONNX Runtime supports Windows 10 and above, only\.\r?\n', content) is not None
     categories['unknown'] = bool(content) and not any(categories.values())
     return categories
 
