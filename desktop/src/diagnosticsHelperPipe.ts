@@ -9,6 +9,12 @@ export interface HelperPipeIO {
 }
 export type HelperPipeClock = (callback: () => void, milliseconds: number) => () => void;
 
+/** Native descriptor classification boundary; current Stats predicate retained
+ * until the Windows st_mode contract's assertion RED has been observed. */
+export function helperDescriptorIsPipe(stat: { readonly mode?: unknown; isFIFO(): boolean }): boolean {
+  return stat.isFIFO();
+}
+
 const pipeClock: HelperPipeClock = (callback, milliseconds) => {
   const timer = setTimeout(callback, milliseconds);
   return () => clearTimeout(timer);
@@ -61,7 +67,10 @@ export function writeNativeHelperPipe(bytes: Buffer, callback: (error?: Error | 
     return () => {};
   }
   return writeHelperPipe(bytes, callback, {
-    inspect: fd => fstatSync(fd),
+    inspect: fd => {
+      const stat = fstatSync(fd);
+      return { isFIFO: () => helperDescriptorIsPipe(stat) };
+    },
     write: (fd, buffer, offset, length, done) => { write(fd, buffer, offset, length, null, done); },
   });
 }

@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { constants } from 'node:fs';
 import { encodeBrokerFrame } from '../src/brokerFrames.js';
-import { HELPER_PROTOCOL_FD, writeHelperPipe, writeNativeHelperPipe, type HelperPipeIO, type HelperPipeClock } from '../src/diagnosticsHelperPipe.js';
+import { HELPER_PROTOCOL_FD, helperDescriptorIsPipe, writeHelperPipe, writeNativeHelperPipe, type HelperPipeIO, type HelperPipeClock } from '../src/diagnosticsHelperPipe.js';
 import { helperEnvironment, helperFailureDetails, receiveHelper, type HelperReplyChild } from '../src/diagnosticsHelpers.js';
 import { frozenServiceEnvironment } from '../src/packagedRuntime.js';
 
@@ -11,6 +12,22 @@ const context = { source_commit: 'a'.repeat(40), role: 'second-instance' as cons
   session_id: '00000000-0000-0000-0000-000000000001', challenge: '00000000-0000-0000-0000-000000000002' };
 const frame = encodeBrokerFrame({ schema_version: 1, session_id: context.session_id, challenge: context.challenge,
   role: context.role, helper_pid: 1234, kind: 'second_instance', owner_starts: 0, broker_starts: 0, profile_invocations: 0 });
+
+test('Windows native pipe mode remains a pipe when Node Stats.isFIFO always returns false', () => {
+  // Pinned libuv Windows fstat uses CRT _S_IFIFO (0x1000). Node intentionally
+  // hides isFIFO on Windows and may omit fs.constants.S_IFIFO entirely.
+  for (const mode of [0x1000, 0x1000 | 0o600]) {
+    assert.ok(helperDescriptorIsPipe({ mode, isFIFO: () => false }));
+  }
+});
+
+test('native pipe classification refuses files, devices, socket, absent and invalid mode without Stats fallback', () => {
+  for (const mode of [constants.S_IFREG, constants.S_IFDIR, constants.S_IFCHR, 0xc000,
+    0, undefined, null, NaN, Infinity, -1, 0x1000 + 0.5, 2 ** 32 + 0x1000, '4096', 0x1000 | constants.S_IFREG]) {
+    assert.ok(!helperDescriptorIsPipe({ mode, isFIFO: () => true }));
+  }
+  assert.ok(!helperDescriptorIsPipe({ isFIFO: () => true }));
+});
 
 // All descriptors below are synthetic adapters. Never inspect/write this test runner's fd3.
 function pipeFixture(kind: 'fifo' | 'file' | 'absent' = 'fifo') {
