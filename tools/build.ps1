@@ -393,6 +393,11 @@ try {
         Invoke-Checked $Python @($helper, 'verify-desktop-bundle', '--root', $repository,
             '--commit', $sourceCommit, '--directory', $qaRuntime, '--inventory', $payloadInventory)
         Invoke-Checked $Python @($helper, 'verify-service-bundle', '--directory', (Join-Path $qaRuntime 'service'))
+        foreach ($scenario in @('security', 'load', 'lifecycle', 'empty-profile')) {
+            $proofSeconds = [int][Math]::Ceiling($uiPolicy.budgets_ms.$scenario / 1000.0) + 120
+            Invoke-FrozenChecked $desktopExecutable @('--ui-self-test', (Join-Path $qaFolder "ui-$scenario.json"),
+                '--ui-scenario', $scenario, '--data-dir', (Join-Path $qaFolder "UI $scenario Кириллица with spaces")) $proofSeconds
+        }
         Invoke-Checked $Python @((Join-Path $repository 'tools/check_frozen_service.py'),
             '--service-executable', $serviceExecutable,
             '--qa-directory', (Join-Path $qaFolder 'Serve profiles Кириллица with spaces'),
@@ -407,11 +412,6 @@ try {
         Invoke-FrozenChecked $serviceExecutable @(
             '--self-test', (Join-Path $qaFolder 'frozen-self-test.json'),
             '--data-dir', (Join-Path $qaFolder 'Application profile Кириллица with spaces'))
-        foreach ($scenario in @('load', 'security', 'lifecycle', 'empty-profile')) {
-            $proofSeconds = [int][Math]::Ceiling($uiPolicy.budgets_ms.$scenario / 1000.0) + 120
-            Invoke-FrozenChecked $desktopExecutable @('--ui-self-test', (Join-Path $qaFolder "ui-$scenario.json"),
-                '--ui-scenario', $scenario, '--data-dir', (Join-Path $qaFolder "UI $scenario Кириллица with spaces")) $proofSeconds
-        }
         if ((Get-BuildFileSha256 $serviceExecutable) -cne $serviceHash -or
             (Get-BuildFileSha256 (Join-Path $distFolder 'service/ssearch-service.exe')) -cne $serviceHash -or
             (Get-BuildFileSha256 (Join-Path $serviceStage 'ssearch-service.exe')) -cne $serviceHash -or

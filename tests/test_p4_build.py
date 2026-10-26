@@ -229,7 +229,7 @@ def test_electron_selection_routes_python_once_and_forge_once(build_fixture, mod
     executable = Path(serve['arguments'][serve['arguments'].index('--service-executable')+1])
     assert ' ' in str(executable) and not str(executable).isascii()
     ui = [row for row in records if '--ui-self-test' in row['arguments']]
-    assert [row['arguments'][row['arguments'].index('--ui-scenario')+1] for row in ui] == ['load', 'security', 'lifecycle', 'empty-profile']
+    assert [row['arguments'][row['arguments'].index('--ui-scenario')+1] for row in ui] == ['security', 'load', 'lifecycle', 'empty-profile']
     compiler = next(row for row in records if row['program'] == str(root/'compiler.exe'))
     assert '/DElectronBundle=1' in compiler['arguments']
     assert '/DSourceDir=' + str(Path(desktop['OutputDirectory'])/'ssearch-win32-x64') in compiler['arguments']
