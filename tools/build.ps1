@@ -167,6 +167,23 @@ function Invoke-OwnedProof {
 function Invoke-FrozenChecked {
     param([string]$Program, [string[]]$Arguments,
           [ValidateRange(1, 19800)][int]$TimeoutSeconds = 600)
+    $role = switch ($Arguments[0]) {
+        '--service-test' { 'service-owner' }
+        '--postgres-self-test' { 'postgres' }
+        '--self-test' { 'application' }
+        '--ui-self-test' {
+            $scenario = $Arguments[([array]::IndexOf($Arguments, '--ui-scenario') + 1)]
+            if ($scenario -notin @('load', 'security', 'lifecycle', 'empty-profile')) { throw 'FROZEN_PROOF_ROLE_INVALID' }
+            'ui-' + $scenario
+        }
+        default { throw 'FROZEN_PROOF_ROLE_INVALID' }
+    }
+    $reportPath = $Arguments[1]
+    if (Test-Path -LiteralPath $reportPath) { throw 'FROZEN_PROOF_REPORT_ALREADY_EXISTS' }
+    $notBeforeMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    Write-Host "Frozen proof role=$role budget_seconds=$TimeoutSeconds"
+    $nativeFailure = $null
+    $observedExit = $null
     # Frozen children must resolve no prepared Python/Node or source bootstrap.
     # Keep the real standard-user profile and KnownFolders authoritative.
     $saved = @{}
@@ -180,9 +197,22 @@ function Invoke-FrozenChecked {
         foreach ($name in $saved.Keys) { Remove-Item -LiteralPath "Env:\$name" -ErrorAction Stop }
         $env:PATH = Join-Path $env:SystemRoot 'System32'
         Invoke-OwnedProof $Program $Arguments $TimeoutSeconds
+        $observedExit = 0
+    } catch {
+        $nativeFailure = $_
+        if ($_.Exception.Message -ceq 'FROZEN_NATIVE_EXIT_1') { $observedExit = 1 }
     } finally {
         foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
     }
+    if ($null -ne $observedExit) {
+        try {
+            Invoke-Checked $Python @((Join-Path $repository 'tools/summarize_frozen_report.py'),
+                '--report', $reportPath, '--role', $role, '--exit-code', [string]$observedExit,
+                '--not-before-ms', [string]$notBeforeMs)
+        } catch { Write-Host "Frozen proof role=$role diagnostic_summary_unavailable" }
+    }
+    # Diagnostics never override the retained child's failure or qualify a gate.
+    if ($null -ne $nativeFailure) { throw $nativeFailure }
 }
 
 Push-Location -LiteralPath $repository
@@ -364,14 +394,14 @@ try {
             '--commit', $sourceCommit, '--directory', $qaRuntime, '--inventory', $payloadInventory)
         Invoke-Checked $Python @($helper, 'verify-service-bundle', '--directory', (Join-Path $qaRuntime 'service'))
         Invoke-FrozenChecked $serviceExecutable @(
+            '--service-test', (Join-Path $qaFolder 'service-owner-proof.json'),
+            '--data-dir', (Join-Path $qaFolder 'Service owner profile Кириллица with spaces'))
+        Invoke-FrozenChecked $serviceExecutable @(
             '--postgres-self-test', (Join-Path $qaFolder 'postgres-runtime-proof.json'),
             '--data-dir', (Join-Path $qaFolder 'Postgres profile Кириллица with spaces'))
         Invoke-FrozenChecked $serviceExecutable @(
             '--self-test', (Join-Path $qaFolder 'frozen-self-test.json'),
             '--data-dir', (Join-Path $qaFolder 'Application profile Кириллица with spaces'))
-        Invoke-FrozenChecked $serviceExecutable @(
-            '--service-test', (Join-Path $qaFolder 'service-owner-proof.json'),
-            '--data-dir', (Join-Path $qaFolder 'Service owner profile Кириллица with spaces'))
         Invoke-Checked $Python @((Join-Path $repository 'tools/check_frozen_service.py'),
             '--service-executable', $serviceExecutable,
             '--qa-directory', (Join-Path $qaFolder 'Serve profiles Кириллица with spaces'),

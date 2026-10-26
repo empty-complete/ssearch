@@ -71,25 +71,42 @@ def owned_loopback_only(endpoint):
 
 def run_service_self_test(report_path: Path, *, data_dir: Path, model_dir: Path | None = None) -> int:
     """Actual packaged owner/two-client proof, without importing or showing Qt."""
-    from dataclasses import asdict
-    import http.client
-    import os
-    import subprocess
-    from types import SimpleNamespace
-    from urllib.parse import urlsplit
-    from atom_search import search_runtime
-    from atom_search.paths import model_path
-    from atom_search.runtime.postgres import PostgresRuntime
-    from atom_search.runtime import _windows
-    from atom_search.service.owner import open_service_owner
-    from atom_search.service.client import ServiceClient
-    from atom_search.service.contracts import AccessContext, SearchRequest, ServiceError
     base, destination = Path(data_dir).absolute(), Path(report_path).absolute()
     report = dict(ok=False, execution_mode='frozen' if getattr(sys, 'frozen', False) else 'source',
                   scenario='two-clients', clean_stop=False, model_constructions=0, runtime_starts=0,
-                  runtime_stops=0, core_closes=0)
+                  runtime_stops=0, core_closes=0, phase='imports')
     owner = None
+    def failure_detail(error):
+        # Observed module/type/line only: never format exception values, source,
+        # filenames, arguments or locals. Include suppressed exception context.
+        errors, seen, frames = [], set(), 0
+        while error is not None and len(errors) < 8 and id(error) not in seen:
+            seen.add(id(error))
+            locations, trace = [], error.__traceback__
+            while trace is not None and frames < 12:
+                module = trace.tb_frame.f_globals.get('__name__', '')
+                if isinstance(module, str) and module.startswith((__package__ + '.', __package__ + '_core.')):
+                    locations.append(dict(module=module, line=trace.tb_lineno))
+                    frames += 1
+                trace = trace.tb_next
+            errors.append(dict(type=type(error).__name__, locations=locations))
+            error = error.__cause__ or error.__context__
+        return dict(exceptions=errors)
     try:
+        from dataclasses import asdict
+        import http.client
+        import os
+        import subprocess
+        from types import SimpleNamespace
+        from urllib.parse import urlsplit
+        from atom_search import search_runtime
+        from atom_search.paths import model_path
+        from atom_search.runtime.postgres import PostgresRuntime
+        from atom_search.runtime import _windows
+        from atom_search.service.owner import open_service_owner
+        from atom_search.service.client import ServiceClient
+        from atom_search.service.contracts import AccessContext, SearchRequest, ServiceError
+        report['phase'] = 'prepare'
         if base.exists() or destination.exists() or destination.is_relative_to(base):
             raise RuntimeError('disposable_profile_must_be_new')
         base.mkdir(parents=True)
@@ -99,10 +116,12 @@ def run_service_self_test(report_path: Path, *, data_dir: Path, model_dir: Path 
             directory.mkdir()
             (directory / (label + '-drawing.pdf')).write_text('private body never returned')
             sources.append(dict(id=str(uuid.uuid4()), path=str(directory), label=label, enabled=True))
+        report['phase'] = 'owner_open'
         owner = open_service_owner(base / 'profile', model_dir or model_path(), automatic_catalog=False)
         snapshot = owner.repository.snapshot()
         candidate = snapshot.settings
         candidate['sources'] = sources
+        report['phase'] = 'settings_apply'
         owner.coordinator.owner_apply(candidate, snapshot.revision)
         load_model, start_runtime, stop_runtime = search_runtime._load_model, PostgresRuntime.start, PostgresRuntime.stop
         def load(*args):
@@ -121,6 +140,7 @@ def run_service_self_test(report_path: Path, *, data_dir: Path, model_dir: Path 
             return pg, http
         with patch.object(search_runtime, '_load_model', load), patch.object(PostgresRuntime, 'start', start), \
                 patch.object(PostgresRuntime, 'stop', stop), owned_loopback_only(endpoints):
+            report['phase'] = 'owner_start'
             owner.start()
             close = owner.core.close
             def closing():
@@ -131,9 +151,12 @@ def run_service_self_test(report_path: Path, *, data_dir: Path, model_dir: Path 
             report['owner_pid'] = os.getpid()
             report['pg_pid'] = owner.runtime._record['server']['pid']
             report['installation_id'], report['generation'] = owner.installation_id, owner.generation
+            report['phase'] = 'scan'
             for source in sources:
                 assert owner.core.scan(source['path'])['status'] == 'complete'
+            report['phase'] = 'embed'
             owner.core.index_embeddings()
+            report['phase'] = 'clients'
             owner_client = ServiceClient(owner.endpoint_file, owner.credential_ref)
             reference = owner.issue_credential(AccessContext('qa-reader', frozenset({'search', 'fetch', 'status', 'settings_get'}), (sources[0]['id'],)))
             reader = ServiceClient(owner.endpoint_file, reference)
@@ -143,6 +166,7 @@ def run_service_self_test(report_path: Path, *, data_dir: Path, model_dir: Path 
             metadata = reader.fetch(allowed_results[0].result_id)
             assert metadata.score is None and metadata.match_kind == 'metadata'
             assert not {'content', 'snippets', 'text'} & asdict(metadata).keys()
+            report['phase'] = 'authorization'
             private_result = next(item for item in all_results if item.source_id == sources[1]['id'])
             checks = []
             for operation, expected in ((lambda: reader.fetch(private_result.result_id), 'result_not_found'),
@@ -165,10 +189,12 @@ def run_service_self_test(report_path: Path, *, data_dir: Path, model_dir: Path 
                     response.read()
                 finally:
                     connection.close()
+            report['phase'] = 'attach'
             attached = open_service_owner(owner.profile_dir, owner.model_dir)
             attached.start()
             assert attached.attached and attached.core is None
             attached.close()
+            report['phase'] = 'second_launch'
             child_report = base / 'second-launch.json'
             command = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, '-m', 'atom_search']
             child = subprocess.run(command + ['--service-attach-test', str(child_report), '--data-dir',
@@ -184,6 +210,7 @@ def run_service_self_test(report_path: Path, *, data_dir: Path, model_dir: Path 
             assert len(reader.search(SearchRequest('drawing')).results) == 1
             snapshot = ServiceClient(owner.endpoint_file, owner.credential_ref).settings_get()
             assert ServiceClient(owner.endpoint_file, owner.credential_ref).settings_validate(snapshot.settings, snapshot.revision).valid
+            report['phase'] = 'token_audit'
             secret = owner.credentials.resolve(owner.credential_ref).encode()
             assert secret not in repr(sys.argv).encode()
             for path in owner.profile_dir.rglob('*'):
@@ -192,12 +219,18 @@ def run_service_self_test(report_path: Path, *, data_dir: Path, model_dir: Path 
             _windows.assert_private(owner.endpoint_file)
             report.update(two_clients=True, scoped_fetch=True, metadata_only=True, auth=True,
                           access_checks=checks, attach=True, second_launch=True, token_absent=True)
+            report['phase'] = 'shutdown'
             owner.close()
             report['clean_stop'] = owner.runtime.status().state == 'stopped' and owner.runtime._claimed_process() is None
+        report['phase'] = 'assertions'
         report['ok'] = (report['clean_stop'] and report['model_ready'] and report['model_constructions'] == 1
                         and report['runtime_starts'] == report['runtime_stops'] == report['core_closes'] == 1)
+        if report['ok']:
+            report['phase'] = 'complete'
     except Exception as failure:
         report['error_code'] = getattr(failure, 'code', type(failure).__name__)
+        report['error_type'] = type(failure).__name__
+        report['failure_detail'] = failure_detail(failure)
     finally:
         if owner is not None:
             try:
@@ -205,6 +238,8 @@ def run_service_self_test(report_path: Path, *, data_dir: Path, model_dir: Path 
                 report['clean_stop'] = owner.runtime is not None and owner.runtime.status().state == 'stopped'
             except Exception as failure:
                 report['cleanup_error'] = getattr(failure, 'code', type(failure).__name__)
+                report['cleanup_error_type'] = type(failure).__name__
+                report['cleanup_failure_detail'] = failure_detail(failure)
                 report['ok'] = False
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open('x', encoding='utf-8') as stream:
