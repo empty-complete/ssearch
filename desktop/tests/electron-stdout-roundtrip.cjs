@@ -24,9 +24,14 @@ const replyFailures = [
   ['reply', 'utf8_refused'], ['reply', 'json_refused'], ['reply', 'write_error'],
 ];
 const OUTCOME_WIDTH = (replyFailures.length + 2) * OBSERVATION_WIDTH;
-// Native observations are harness-only: zero means unmeasured, 1..16 encode
-// guard/inspect/FIFO/writer-called bits on refusal, 17 is completed production IO.
-const NATIVE_COMPLETED = 17;
+const descriptorTypes = ['unavailable', 'fifo', 'regular_file', 'character', 'socket', 'other'];
+const NATIVE_FAILURE_WIDTH = 16 * descriptorTypes.length ** 2;
+// Harness-only refusal domain: guard/inspect/FIFO/writer-called bits plus a
+// closed virtual/physical descriptor-type pair. No native Stats are exported.
+const NATIVE_COMPLETED = NATIVE_FAILURE_WIDTH + 1;
+function descriptorType(stat) {
+  return stat.isFIFO() ? 1 : stat.isFile() ? 2 : stat.isCharacterDevice() ? 3 : stat.isSocket() ? 4 : 5;
+}
 function summary(ok, status, details = null, pinned = false, memory = null) {
   return { scope: 'source_private_helper_roundtrip', ok, status, electron_pinned: pinned,
     helper_stage: details?.stage ?? null, helper_category: details?.category ?? null,
@@ -98,6 +103,10 @@ try {
           private_junk_refused: !!(mask & 64), capture_overflow: !!(mask & 128), missing_private_pipe_refused: !!(mask & 256),
           native_guard_passed: guard, fd3_inspect_available: inspected, fd3_is_fifo: fifo,
           production_writer_called: native > 0 ? !!(nativeMask & 8) : null,
+          fd3_type: native > 0 && native !== NATIVE_COMPLETED
+            ? descriptorTypes[Math.floor(nativeMask / 16) % descriptorTypes.length] : null,
+          fd3_physical_type: native > 0 && native !== NATIVE_COMPLETED
+            ? descriptorTypes[Math.floor(nativeMask / (16 * descriptorTypes.length))] : null,
           writer_native_category: native === 0 ? 'unmeasured' : native === NATIVE_COMPLETED ? null
             : !guard ? 'guard_refused' : !inspected ? 'inspect_unavailable' : !fifo ? 'not_fifo' : 'write_refused' };
         const ok = accepted && memory.child_exited_zero && memory.bytes_equal_expected && memory.capture_complete
@@ -141,7 +150,13 @@ try {
             const stat = require('node:fs').fstatSync(3);
             nativeMask |= 2;
             if (stat.isFIFO()) nativeMask |= 4;
+            nativeMask += descriptorType(stat) * 16;
           } catch { /* Closed inspect-unavailable observation, no raw native data. */ }
+          try {
+            // Compare Electron's ASAR-aware fs mapping with physical CRT fd3.
+            // This is read-only and does not select/replace production IO.
+            nativeMask += descriptorType(require('original-fs').fstatSync(3)) * 16 * descriptorTypes.length;
+          } catch { /* Physical descriptor unavailable; no values or errors leave this child. */ }
         }
         nativeMask |= 8;
         try {
@@ -221,11 +236,11 @@ try {
         if (junkRefused) mask |= 64;
         if (writing.overflow() || noWrite.overflow() || junk.overflow() || missing.overflow()) mask |= 128;
         if (missingEnd.signal === null && missingEnd.code >= EXIT_NATIVE_FAILURE
-          && missingEnd.code < EXIT_NATIVE_FAILURE + 16) mask |= 256;
+          && missingEnd.code < EXIT_NATIVE_FAILURE + NATIVE_FAILURE_WIDTH) mask |= 256;
         const index = replyFailures.findIndex(([stage, category]) => stage === result.details?.stage && category === result.details?.category);
         const outcome = result.accepted ? replyFailures.length : index >= 0 ? index : replyFailures.length + 1;
         const native = childZero ? NATIVE_COMPLETED : writerEnd.signal === null
-          && writerEnd.code >= EXIT_NATIVE_FAILURE && writerEnd.code < EXIT_NATIVE_FAILURE + 16
+          && writerEnd.code >= EXIT_NATIVE_FAILURE && writerEnd.code < EXIT_NATIVE_FAILURE + NATIVE_FAILURE_WIDTH
           ? writerEnd.code - EXIT_NATIVE_FAILURE + 1 : 0;
         finish(summary(false, 'roundtrip_failed', result.details, true, { outcome, mask, native }));
       })().catch(failed);
