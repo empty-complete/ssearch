@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import struct
 import subprocess
 import sys
@@ -122,9 +123,23 @@ def validate_desktop_test_selection(repository: Path, *, development=False, quic
             'desktop_test_targets': validate_typescript('desktop', desktop, ('.test.ts',))}
 
 
-def write_test_receipt(repository: Path, commit: str, *, quick=False, test_targets=(), exit_code: int):
+def _build_test_selection(repository: Path, *, development=False, quick=False, test_targets=(),
+                          desktop_stack=False, frontend_test_targets=(), desktop_test_targets=()):
+    if desktop_stack:
+        return validate_desktop_test_selection(
+            repository, development=development, quick=quick, test_targets=test_targets,
+            frontend_test_targets=frontend_test_targets, desktop_test_targets=desktop_test_targets)
+    if frontend_test_targets or desktop_test_targets:
+        raise BuildError('Frontend and desktop targets require the desktop stack.')
+    return validate_test_selection(repository, development=development, quick=quick, test_targets=test_targets)
+
+
+def write_test_receipt(repository: Path, commit: str, *, quick=False, test_targets=(), exit_code: int,
+                       desktop_stack=False, frontend_test_targets=(), desktop_test_targets=()):
     """Called by build.ps1 only after its checked pytest process has returned zero."""
-    selection = validate_test_selection(repository, development=True, quick=quick, test_targets=test_targets)
+    selection = _build_test_selection(repository, development=True, quick=quick, test_targets=test_targets,
+                                      desktop_stack=desktop_stack, frontend_test_targets=frontend_test_targets,
+                                      desktop_test_targets=desktop_test_targets)
     if type(exit_code) is not int or exit_code != 0:
         raise BuildError("A failed pytest run cannot create a successful test receipt.")
     verify_source_commit(repository, commit)
@@ -171,9 +186,12 @@ def verify_source_commit(repository: Path, commit: str | None = None) -> str:
     return actual
 
 
-def prepare_development_build(repository: Path, *, quick=False, test_targets=()) -> dict[str, Path]:
+def prepare_development_build(repository: Path, *, quick=False, test_targets=(), desktop_stack=False,
+                              frontend_test_targets=(), desktop_test_targets=()) -> dict[str, Path]:
     """Reserve a new commit directory; never overwrite a previous attempt."""
-    validate_test_selection(repository, development=True, quick=quick, test_targets=test_targets)
+    _build_test_selection(repository, development=True, quick=quick, test_targets=test_targets,
+                          desktop_stack=desktop_stack, frontend_test_targets=frontend_test_targets,
+                          desktop_test_targets=desktop_test_targets)
     layout = development_layout(repository, verify_source_commit(repository), quick=quick)
     try:
         layout["base"].mkdir(parents=True, exist_ok=False)
@@ -318,9 +336,10 @@ def export_product_metadata(repository: Path, destination: Path) -> Path:
         product = ast.literal_eval(definitions[0])
         required = {'product_name', 'product_name_ru', 'support_email', 'author_name',
                     'author_title', 'organization_group', 'copyright_holder'}
-        if (type(product) is not dict or not required.issubset(product)
+        if (type(product) is not dict or set(product) != required
                 or any(type(key) is not str or not key or type(value) is not str
-                       or not value.strip() or any(ord(char) < 32 for char in value)
+                       or not value.strip() or len(value) > 512
+                       or any(ord(char) < 32 or ord(char) == 127 for char in value)
                        for key, value in product.items())):
             raise ValueError('invalid product catalog')
     except (OSError, SyntaxError, ValueError, TypeError) as error:
@@ -496,6 +515,17 @@ def build_core_wheel(root: Path = ROOT, output_directory: Path | None = None) ->
     return wheel
 
 
+def _reject_private_payload(item: Path) -> None:
+    name = item.name.lower()
+    if item.is_file() and (name in {'settings.json', 'pg_version', 'pg_control', 'owner.json',
+                                  'pgpass', '.pgpass', 'pgpass.conf', 'qa-owner.json',
+                                  'postmaster.pid', 'postmaster.opts'}
+                          or '.sqlite' in name or item.suffix.lower() in {'.db', '.dpapi'}
+                          or (name.startswith('bootstrap-') and name.endswith('.pw'))
+                          or name.startswith('pgpass-')):
+        raise BuildError(f'В поставку попали персональные данные: {item.name}')
+
+
 def validate_bundle(directory: Path, *, service_only=False) -> None:
     """Check real onedir output before it is handed to the installer compiler."""
     _require_file(directory / ('ssearch-service.exe' if service_only else 'ssearch.exe'))
@@ -529,13 +559,66 @@ def validate_bundle(directory: Path, *, service_only=False) -> None:
                               and parts[1] in {'pyside6', 'shiboken6', 'pyqt5', 'pyqt6', 'qtpy'})
                              or (item.suffix.lower() in {'.dll', '.pyd'} and name.startswith(('qt5', 'qt6')))):
             raise BuildError('GUI toolkit found in service-only bundle.')
-        if item.is_file() and (name in {"settings.json", "pg_version", "pg_control", "owner.json",
-                                       "pgpass", ".pgpass", "pgpass.conf", "qa-owner.json",
-                                       "postmaster.pid", "postmaster.opts"}
-                               or ".sqlite" in name or item.suffix.lower() in {".db", ".dpapi"}
-                               or (name.startswith("bootstrap-") and name.endswith(".pw"))
-                               or name.startswith("pgpass-")):
-            raise BuildError(f"В поставку попали персональные данные: {item.name}")
+        _reject_private_payload(item)
+
+
+def validate_desktop_bundle(directory: Path, *, source_commit, app_version, core_version) -> dict:
+    """Inventory the common payload; execution proofs remain separate gates."""
+    directory = Path(directory).absolute()
+    inventory = {}
+    folded = set()
+    pending = [directory]
+    while pending:
+        item = pending.pop()
+        attributes = getattr(item.lstat(), 'st_file_attributes', 0)
+        if (attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                or item.is_symlink() or (hasattr(item, 'is_junction') and item.is_junction())
+                or os.path.normcase(str(item.resolve())) != os.path.normcase(str(item.absolute()))):
+            raise BuildError('Desktop payload contains a linked or reparse path.')
+        if item.is_dir():
+            pending.extend(item.iterdir())
+            continue
+        if not item.is_file():
+            raise BuildError('Desktop payload contains a non-file entry.')
+        _reject_private_payload(item)
+        relative = item.relative_to(directory).as_posix()
+        if relative.casefold() in folded:
+            raise BuildError('Desktop payload contains duplicate names.')
+        folded.add(relative.casefold())
+        with item.open('rb') as stream:
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        inventory[relative] = {'size': item.stat().st_size, 'sha256': digest}
+    for relative in ('ssearch.exe', 'resources/app.asar', 'resources/product-metadata.json',
+                     'LICENSE', 'LICENSES.chromium.html', 'locales/en-US.pak'):
+        _require_file(directory / relative)
+    metadata_path = directory / 'resources/product-metadata.json'
+    try:
+        if metadata_path.stat().st_size > 65536:
+            raise ValueError('oversized metadata')
+        metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+        keys = {'product_name', 'product_name_ru', 'support_email', 'author_name',
+                'author_title', 'organization_group', 'copyright_holder'}
+        if (not re.fullmatch('[0-9a-f]{40}', source_commit)
+                or not re.fullmatch(r'\d+\.\d+\.\d+', app_version)
+                or not re.fullmatch(r'\d+\.\d+\.\d+', core_version)
+                or type(metadata) is not dict
+                or set(metadata) != {'schema_version', 'source_commit', 'app_version', 'core_version', 'product'}
+                or type(metadata['schema_version']) is not int or metadata['schema_version'] != 1
+                or metadata['source_commit'] != source_commit or metadata['app_version'] != app_version
+                or metadata['core_version'] != core_version
+                or type(metadata['product']) is not dict or set(metadata['product']) != keys
+                or any(type(value) is not str or not value.strip() or len(value) > 512
+                       or any(ord(char) < 32 or ord(char) == 127 for char in value)
+                       for value in metadata['product'].values())):
+            raise ValueError('mismatched metadata')
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise BuildError('Desktop product identity does not match this build.') from error
+    validate_bundle(directory / 'service', service_only=True)
+    for name in MODEL_FILES:
+        copies = [item for item in inventory if Path(item).name.casefold() == name.casefold()]
+        if copies != [f'service/_internal/models/{name}']:
+            raise BuildError(f'Ожидается одна копия {name} в service/_internal/models.')
+    return dict(sorted(inventory.items()))
 
 
 def main(argv=None) -> int:
@@ -543,7 +626,8 @@ def main(argv=None) -> int:
     parser.add_argument("command", choices=("version", "core-wheel", "preflight", "verify-bundle",
                                              "development-start", "development-manifest", "verify-source",
                                              "test-selection", "test-receipt", "export-product",
-                                             "desktop-test-selection", "verify-service-bundle"))
+                                             "desktop-test-selection", "verify-service-bundle",
+                                             "verify-desktop-bundle"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--directory", type=Path)
     parser.add_argument("--output", type=Path)
@@ -554,13 +638,35 @@ def main(argv=None) -> int:
     parser.add_argument("--test-target", action="append", default=[])
     parser.add_argument("--frontend-test-target", action="append", default=[])
     parser.add_argument("--desktop-test-target", action="append", default=[])
+    parser.add_argument('--desktop-stack', action='store_true')
     parser.add_argument("--exit-code", type=int)
     args = parser.parse_args(argv)
     try:
-        if args.command != 'desktop-test-selection' and (args.frontend_test_target or args.desktop_test_target):
+        if args.desktop_stack and args.command not in {'development-start', 'test-receipt'}:
+            raise BuildError('This command does not support the desktop stack.')
+        if (args.command != 'desktop-test-selection' and not args.desktop_stack
+                and (args.frontend_test_target or args.desktop_test_target)):
             raise BuildError('This command does not accept frontend or desktop targets.')
         options = {"quick": args.quick, "test_targets": args.test_target}
-        if args.command == "desktop-test-selection":
+        if args.desktop_stack:
+            options.update(desktop_stack=True, frontend_test_targets=args.frontend_test_target,
+                           desktop_test_targets=args.desktop_test_target)
+        if args.command == 'verify-desktop-bundle':
+            if args.directory is None or args.commit is None or args.output is None:
+                raise BuildError('Desktop bundle verification requires --directory, --commit and --output.')
+            if args.output.resolve().is_relative_to(args.directory.resolve()):
+                raise BuildError('Inventory output must be outside the packaged payload.')
+            commit = verify_source_commit(args.root, args.commit)
+            version, core = project_version(args.root), project_version(args.root / 'packages/atom-search-core')
+            inventory = validate_desktop_bundle(args.directory, source_commit=commit,
+                                                app_version=version, core_version=core)
+            verify_source_commit(args.root, commit)
+            with args.output.open('x', encoding='utf-8') as output:
+                json.dump({'schema_version': 1, 'source_commit': commit, 'app_version': version,
+                           'core_version': core, 'files': inventory, 'inventory_only': True}, output, indent=2)
+                output.write('\n')
+            print(args.output)
+        elif args.command == "desktop-test-selection":
             print(json.dumps(validate_desktop_test_selection(
                 args.root, development=args.development, **options,
                 frontend_test_targets=args.frontend_test_target, desktop_test_targets=args.desktop_test_target)))
