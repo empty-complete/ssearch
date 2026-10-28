@@ -10,7 +10,7 @@ on:
       mode:
         description: Scope; source runs selected tests without packaging
         type: choice
-        options: [full, quick, source]
+        options: [full, quick, source, installer]
         default: full
       test_targets:
         description: 'Python targets: JSON array of existing test files/nodeids'
@@ -123,6 +123,9 @@ jobs:
     if: needs.changes.outputs.build == 'true' && github.event_name != 'push'
     runs-on: windows-2025
     timeout-minutes: 355
+    permissions:
+      contents: read
+      actions: read
     env:
       PYTHONUTF8: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
@@ -160,7 +163,11 @@ jobs:
           }
           if ($env:BUILD_MODE -eq 'full' -and $count -ne 0) { throw 'Full does not accept test targets.' }
           if ($env:BUILD_MODE -in @('quick', 'source') -and $count -eq 0) { throw 'Quick/source requires explicit targets.' }
-          if ($env:BUILD_MODE -notin @('full', 'quick', 'source')) { throw 'Unknown build mode.' }
+          if ($env:BUILD_MODE -notin @('full', 'quick', 'source', 'installer')) { throw 'Unknown build mode.' }
+          if ($env:BUILD_MODE -eq 'installer' -and ('${{ github.event_name }}' -ne 'workflow_dispatch' -or
+              $env:DESKTOP_STACK -ne 'false' -or $count -ne 0 -or '${{ inputs.publish }}' -eq 'true')) {
+            throw 'Installer proof is manual only, without packaging, publication or test targets.'
+          }
           if ($env:BUILD_MODE -eq 'source' -and '${{ inputs.publish }}' -eq 'true') { throw 'Source tests cannot publish a build.' }
           if ($env:BUILD_MODE -eq 'source' -and $env:DESKTOP_STACK -eq 'true') { throw 'Source mode cannot package the desktop stack.' }
       - name: Pinned Node for the explicit desktop candidate
@@ -186,12 +193,24 @@ jobs:
           }
           & ./tools/prepare_desktop_ci.ps1
       - name: Prepare verified public inputs
+        if: env.BUILD_MODE != 'installer'
         shell: pwsh
         run: |
           $arguments = @('tools/prepare_ci.py')
           if ($env:BUILD_MODE -eq 'source') { $arguments += '--source' }
           if ($env:DESKTOP_STACK -eq 'true') { $arguments += '--desktop' }
           & python @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Admit the exact existing installer without rebuilding
+        if: env.BUILD_MODE == 'installer'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python tools/ci_installer.py fetch --harness-commit $env:SOURCE_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & python -m venv .venv
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run selected scope under the verified standard user
         shell: pwsh
@@ -200,7 +219,7 @@ jobs:
           & ./tools/run_ci_build.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain reviewed build outputs
-        if: env.BUILD_MODE != 'source'
+        if: env.BUILD_MODE != 'source' && env.BUILD_MODE != 'installer'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-${{ env.SOURCE_SHA }}-${{ inputs.mode || 'full' }}
@@ -212,6 +231,14 @@ jobs:
             artifacts/ci-export/SHA256SUMS.txt
           if-no-files-found: error
           compression-level: 0
+          retention-days: 7
+      - name: Retain the closed installation receipt only
+        if: always() && env.BUILD_MODE == 'installer'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: electron-service-installer-proof-${{ env.SOURCE_SHA }}
+          path: artifacts/ci-installer/installation-receipt.json
+          if-no-files-found: warn
           retention-days: 7
       - name: Retain source test receipt only
         if: always() && env.BUILD_MODE == 'source'

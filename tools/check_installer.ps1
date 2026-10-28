@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory = $true)][string]$Installer,
     [Parameter(Mandatory = $true)][string]$TestDir,
     [string]$DesktopEvidenceDirectory,
-    [string]$DesktopEvidenceNonce
+    [string]$DesktopEvidenceNonce,
+    [switch]$Electron,
+    [string]$Python
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,16 +69,38 @@ function Start-HiddenAndWait {
     # semantics while the coordinator bounds the wait without killing anything.
     $waitId = [Guid]::NewGuid().ToString('N')
     $completionPath = Join-Path $testPath ("process-completion-$waitId.json")
-    $request = @{ program = $Program; arguments = ($quoted -join ' ');
+    $requestValue = @{ program = $Program; arguments = ($quoted -join ' ');
         directory = $testPath; completion = $completionPath; id = $waitId } | ConvertTo-Json -Compress
+    $request = $requestValue
+    if (Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue) {
+        $request = @{program=$Program; arguments=($quoted -join ' '); directory=$testPath;
+            completion=$completionPath; id=$waitId; stdout=(Join-Path $testPath "$waitId.stdout");
+            stderr=(Join-Path $testPath "$waitId.stderr");
+            frozen=($Program -ine $Python -and $Program -in @($appExecutable,$serviceExecutable,
+                $referenceExecutable,$referenceServiceExecutable))} | ConvertTo-Json -Compress
+    }
     $encodedRequest = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($request))
     $waiterScript = @'
 $ErrorActionPreference = 'Stop'
 try {
     $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REQUEST__')) |
         ConvertFrom-Json
-    $child = Start-Process -FilePath $request.program -ArgumentList $request.arguments `
-        -WorkingDirectory $request.directory -WindowStyle Hidden -Wait -PassThru
+    $parameters = @{FilePath=$request.program; ArgumentList=$request.arguments;
+        WorkingDirectory=$request.directory; WindowStyle='Hidden'; Wait=$true; PassThru=$true}
+    if ($request.PSObject.Properties['stdout']) {
+        $parameters.RedirectStandardOutput=$request.stdout
+        $parameters.RedirectStandardError=$request.stderr
+    }
+    if ($request.PSObject.Properties['frozen'] -and $request.frozen) {
+        foreach ($name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+            if ($name -match '^(PYTHON|PYTEST|PYI_|_PYI_|NODE|ELECTRON|NPM_|CONDA_|PG|SSEARCH_)' -or
+                $name -in @('PATH','VIRTUAL_ENV','__PYVENV_LAUNCHER__','SOURCE_SHA','BUILD_MODE')) {
+                Remove-Item -LiteralPath ('Env:\' + $name)
+            }
+        }
+        $env:PATH=Join-Path $env:SystemRoot 'System32'
+    }
+    $child = Start-Process @parameters
     $value = @{ id = $request.id; completed = $true; exit_code = $child.ExitCode } |
         ConvertTo-Json -Compress
     $stream = [IO.File]::Open($request.completion, [IO.FileMode]::CreateNew,
@@ -96,7 +120,21 @@ try {
         '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedScript) `
         -WorkingDirectory $testPath -WindowStyle Hidden -PassThru
     $script:processCompletionReason = 'waiting'
-    if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+    $finished = $false
+    if (Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue) {
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        do {
+            $finished = $process.WaitForExit(100)
+            foreach ($name in @("$waitId.stdout", "$waitId.stderr")) {
+                $capture = Join-Path $testPath $name
+                if ((Test-Path -LiteralPath $capture) -and (Get-Item -LiteralPath $capture).Length -gt 1048576) {
+                    $script:processCompletionReason='capture_limit'
+                    throw 'INSTALLER_CHILD_CAPTURE_LIMIT'
+                }
+            }
+        } while (-not $finished -and $clock.ElapsedMilliseconds -lt $TimeoutMilliseconds)
+    } else { $finished = $process.WaitForExit($TimeoutMilliseconds) }
+    if (-not $finished) {
         $script:processCompletionReason = 'waiter_timeout'
         throw "$Label timed out; descendant completion unknown, files preserved."
     }
@@ -173,21 +211,34 @@ function Assert-OwnedInstallation {
 function Invoke-OwnedUninstall {
     param([string]$LogName)
     Assert-OwnedInstallation
-    Start-HiddenAndWait -Program $uninstallerPath -Arguments @(
+    $parameters=@{Program=$uninstallerPath; Arguments=@(
         '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
-        ('/LOG=' + (Join-Path $testPath $LogName))) -Label 'Удаление QA'
+        ('/LOG=' + (Join-Path $testPath $LogName))); Label='Удаление QA'}
+    if (Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue) { $parameters.TimeoutMilliseconds=600000 }
+    Start-HiddenAndWait @parameters
 }
 
 function Invoke-InstalledSelfTest {
-    param([string]$ReportName)
-    Assert-OwnedInstallation
+    param([string]$ReportName, [switch]$FromBundle)
+    $electronMode = [bool](Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue)
+    if (-not $FromBundle) { Assert-OwnedInstallation }
+    $program = $appExecutable
+    if ($electronMode) {
+        $program = if ($FromBundle) { $referenceServiceExecutable } else { $serviceExecutable }
+    } elseif ($FromBundle) { $program = $referenceExecutable }
     $reportPath = Join-Path $testPath $ReportName
     if (Test-Path -LiteralPath $reportPath) { throw "Отчёт QA уже существует: $reportPath" }
     $script:runtimeCleanupConfirmed = $false
-    Start-HiddenAndWait -Program $appExecutable -Arguments @(
-        '--self-test', $reportPath, '--data-dir', $dataPath) -Label 'Самопроверка установленного приложения'
+    $parameters = @{Program=$program; Arguments=@('--self-test', $reportPath, '--data-dir', $dataPath);
+        Label='Самопроверка установленного приложения'}
+    if ($electronMode) { $parameters.TimeoutMilliseconds=600000 }
+    Start-HiddenAndWait @parameters
     if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
         throw "Процесс завершился, но не создал JSON самопроверки: $reportPath"
+    }
+    if ($electronMode) {
+        $item=Get-Item -LiteralPath $reportPath -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -gt 2097152) { throw 'INSTALLER_REPORT_UNSAFE' }
     }
     $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($report.ok -ne $true -or $report.model_ready -ne $true -or
@@ -281,12 +332,23 @@ function Invoke-PostgresProof {
     param([string]$ReportName, [string]$Mode, [switch]$FromBundle)
     $program = $appExecutable
     if ($FromBundle) { $program = $referenceExecutable } else { Assert-OwnedInstallation }
+    $electronMode = [bool](Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue)
+    if ($electronMode) {
+        $program = if ($FromBundle) { $referenceServiceExecutable } else { $serviceExecutable }
+    }
     $reportPath = Join-Path $testPath $ReportName
     if (Test-Path -LiteralPath $reportPath) { throw 'PostgreSQL QA report already exists.' }
     $script:runtimeCleanupConfirmed = $false
-    Start-HiddenAndWait -Program $program -Arguments @(
+    $parameters = @{Program=$program; Arguments=@(
         '--postgres-self-test', $reportPath, '--data-dir', $postgresPath,
-        '--postgres-qa-lifecycle', $Mode, '--postgres-qa-run', $runId) -Label 'PostgreSQL QA'
+        '--postgres-qa-lifecycle', $Mode, '--postgres-qa-run', $runId); Label='PostgreSQL QA'}
+    if ($electronMode) { $parameters.TimeoutMilliseconds=600000 }
+    Start-HiddenAndWait @parameters
+    if ($electronMode) {
+        $item=Get-Item -LiteralPath $reportPath -Force
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $item.Length -gt 2097152) { throw 'INSTALLER_REPORT_UNSAFE' }
+    }
     $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $script:runtimeCleanupConfirmed = $report.clean_stop -eq $true
     if ($report.ok -ne $true -or $report.clean_stop -ne $true -or
@@ -338,9 +400,12 @@ function Get-PreservedProfileSnapshot {
 function Assert-ShortcutTargets {
     $shell = New-Object -ComObject WScript.Shell
     try {
+        $helpRelative = if (Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue) {
+            'service\_internal\resources\help.html'
+        } else { '_internal\resources\help.html' }
         foreach ($entry in @(
             @{name='ssearch.lnk'; target=$appExecutable},
-            @{name='Справка ssearch.lnk'; target=(Join-Path $appPath '_internal\resources\help.html')},
+            @{name='Справка ssearch.lnk'; target=(Join-Path $appPath $helpRelative)},
             @{name='Удалить ssearch.lnk'; target=$uninstallerPath})) {
             $link = Join-Path $groupPath $entry.name
             if (-not (Test-Path -LiteralPath $link -PathType Leaf)) { throw 'QA shortcut missing.' }
@@ -352,6 +417,275 @@ function Assert-ShortcutTargets {
     } finally {
         $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
     }
+}
+
+function Invoke-InstallerHelper {
+    param([string[]]$Arguments)
+    $value = & $Python (Join-Path $repository 'tools/ci_installer.py') @Arguments
+    if ($LASTEXITCODE -ne 0) { throw 'INSTALLER_CONTRACT_FAILED' }
+    return $value
+}
+
+function Get-OwnedInnoFiles {
+    $records = @{}
+    foreach ($name in @('unins000.exe', 'unins000.dat')) {
+        $path = Join-Path $appPath $name
+        $null = Assert-ArtifactPath $path
+        $item = Get-Item -LiteralPath $path -Force
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'INSTALLER_INNO_FILE_UNSAFE'
+        }
+        $records[$name] = @{size=$item.Length; sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()}
+    }
+    return $records
+}
+
+function Assert-ElectronOwnership {
+    Assert-OwnedInstallation
+    Assert-ShortcutTargets
+    $actualFiles=Get-OwnedInnoFiles
+    foreach ($name in @('unins000.exe', 'unins000.dat')) {
+        $actual=$actualFiles[$name]
+        if ($actual.size -ne $ownedInno[$name].size -or $actual.sha256 -cne $ownedInno[$name].sha256) {
+            throw 'INSTALLER_INNO_OWNERSHIP_CHANGED'
+        }
+    }
+    foreach ($record in $shortcutRecords) {
+        $item = Get-Item -LiteralPath $record.path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            (Get-FileHash -LiteralPath $record.path -Algorithm SHA256).Hash -cne $record.sha256) {
+            throw 'INSTALLER_SHORTCUT_OWNERSHIP_CHANGED'
+        }
+    }
+}
+
+function Assert-ElectronInventory {
+    param([string]$Label, [switch]$Reference)
+    $directory = if ($Reference) { $referencePath } else { $appPath }
+    $ownedPath = Join-Path $testPath "$Label-owned.json"
+    $value = if ($Reference) { @{} } else { $ownedInno }
+    [IO.File]::WriteAllText($ownedPath, ($value | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    $null = Invoke-InstallerHelper @('inventory', '--directory', $directory, '--manifest', $manifestPath,
+        '--owned', $ownedPath, '--output', (Join-Path $testPath "$Label-inventory.json"))
+}
+
+function Invoke-InstalledUiProof {
+    param([string]$Scenario, [string]$Label)
+    Assert-ElectronOwnership
+    $script:runtimeCleanupConfirmed=$false
+    $report = Join-Path $testPath "$Label-ui-$Scenario.json"
+    $profile = Join-Path $testPath "$Label UI $Scenario Кириллица with spaces"
+    $budget = [int]$uiPolicy.budgets_ms.$Scenario + 120000
+    Start-HiddenAndWait -Program $appExecutable -Arguments @('--ui-self-test', $report,
+        '--ui-scenario', $Scenario, '--data-dir', $profile) -Label 'Installed hidden UI proof' -TimeoutMilliseconds $budget
+    $null = Invoke-InstallerHelper @('ui', '--directory', $appPath, '--manifest', $manifestPath,
+        '--report', $report, '--scenario', $Scenario)
+    $script:runtimeCleanupConfirmed=$true
+}
+
+if ($Electron) {
+    # This branch consumes the original Quick artifact, never a source build.
+    # The enclosing CI wrapper already verified the loaded standard-user profile,
+    # DPAPI and owned retained job. Keep its actual KnownFolders/environment.
+    $isElectron=$true
+    if ($env:GITHUB_ACTIONS -cne 'true' -or $env:BUILD_MODE -cne 'installer' -or
+        -not $Python -or $DesktopEvidenceDirectory -or $DesktopEvidenceNonce -or
+        -not [Environment]::Is64BitProcess) { throw 'INSTALLER_CI_CONTEXT_REQUIRED' }
+    $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'INSTALLER_STANDARD_USER_REQUIRED' }
+    $pins = Get-Content -LiteralPath (Join-Path $repository 'resources/ci/installer-proof-input.json') -Raw | ConvertFrom-Json
+    $null=Invoke-InstallerHelper @('admit')
+    $sourceCommit=$pins.source_commit
+    $buildRoot=Join-Path $artifacts ('development-quick\' + $sourceCommit)
+    $installerPath=Assert-ArtifactPath $Installer
+    $testPath=Assert-ArtifactPath $TestDir -Qa
+    $manifestPath=Join-Path $buildRoot 'build-manifest.json'
+    $buildManifest=Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $installerPath.Equals((Join-Path $buildRoot ('artifacts\' + $pins.installer_name)), $comparison) -or
+        -not $testPath.StartsWith((Join-Path $buildRoot 'qa') + '\', $comparison) -or
+        $buildManifest.source_commit -cne $sourceCommit -or $buildManifest.payload_kind -cne 'electron-service' -or
+        (Get-Item -LiteralPath $installerPath).Length -ne $pins.installer_size -or
+        (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash -ine $pins.installer_sha256 -or
+        (Test-Path -LiteralPath $testPath)) { throw 'INSTALLER_INPUT_BOUNDARY' }
+    foreach ($key in @($uninstallKey,
+        'HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{1EAB882B-9360-4FC5-9538-E86CB53AA2A1}_is1',
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{1EAB882B-9360-4FC5-9538-E86CB53AA2A1}_is1',
+        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{1EAB882B-9360-4FC5-9538-E86CB53AA2A1}_is1')) {
+        if (Test-Path -LiteralPath $key) { throw 'INSTALLER_FOREIGN_REGISTRATION' }
+    }
+    if (Get-Process -Name 'ssearch','ssearch-service','AtomSearch','KaizenSearch' -ErrorAction SilentlyContinue) {
+        throw 'INSTALLER_FOREIGN_PROCESS'
+    }
+    $programsPath=[Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
+    if (-not $programsPath) { throw 'INSTALLER_PROGRAMS_UNAVAILABLE' }
+    $groupPath=Join-Path $programsPath $groupName
+    if (Test-Path -LiteralPath $groupPath) { throw 'INSTALLER_FOREIGN_SHORTCUTS' }
+    $null=Invoke-InstallerHelper @('private', '--directory', $testPath)
+    $appPath=Join-Path $testPath 'Installed приложение with spaces'
+    $appExecutable=Join-Path $appPath 'ssearch.exe'
+    $serviceExecutable=Join-Path $appPath 'service/ssearch-service.exe'
+    $referencePath=Join-Path $testPath 'Reference поставка with spaces'
+    $referenceExecutable=Join-Path $referencePath 'ssearch.exe'
+    $referenceServiceExecutable=Join-Path $referencePath 'service/ssearch-service.exe'
+    $uninstallerPath=Join-Path $appPath 'unins000.exe'
+    $dataPath=Join-Path $testPath 'Actual application данные with spaces'
+    $postgresPath=Join-Path $testPath 'Postgres данные with spaces'
+    $ownerFile=Join-Path $testPath 'qa-owner.json'
+    $marker=Join-Path $dataPath 'preserve-marker.txt'
+    $markerValue="ssearch preserved QA $runId"
+    $summaryPath=Join-Path $testPath 'installer-qa.json'
+    $runtimeCleanupConfirmed=$true; $processCompletionConfirmed=$true
+    $null=New-Item -ItemType Directory -Path $dataPath
+    [IO.File]::WriteAllText($marker,$markerValue)
+    @{run_id=$runId;app_path=$appPath} | ConvertTo-Json | Set-Content -LiteralPath $ownerFile -Encoding UTF8
+    $os=Get-CimInstance Win32_OperatingSystem
+    $checks=[ordered]@{}
+    foreach ($name in @('fresh_install_verified','same_version_reinstall_verified','owned_uninstall_verified',
+        'payload_inventory_verified','shortcut_ownership_verified','application_bytes_preserved',
+        'application_index_preserved','postgres_bytes_preserved','postgres_restart_verified',
+        'installed_proofs_passed','runtime_cleanup_confirmed','process_completion_confirmed',
+        'registered_installation_removed','owned_shortcuts_removed','standard_user_profile_verified')) { $checks[$name]=$false }
+    $checks.standard_user_profile_verified=$true
+    $summary=[ordered]@{ok=$false; source_commit=$sourceCommit; installer_sha256=$pins.installer_sha256;
+        installer_bytes=$pins.installer_size; inventory_sha256=$buildManifest.desktop.inventory_sha256;
+        os_product_type=[int]$os.ProductType; os_build=[int]$os.BuildNumber; checks=$checks;
+        postgres_seed=$null; error_code=$null}
+    $ownedInno=$null; $shortcutRecords=@(); $uninstalled=$false; $failed=$false
+    $phase='fresh_install'
+    Write-Host "CI_INSTALLER_PHASE $phase started"
+    try {
+        $uiPolicy=(Invoke-InstallerHelper @('ui-policy')) | ConvertFrom-Json
+        $installArguments=@('/VERYSILENT','/SUPPRESSMSGBOXES','/CURRENTUSER','/NORESTART','/SP-',
+            '/NOCLOSEAPPLICATIONS','/NORESTARTAPPLICATIONS','/MERGETASKS=!desktopicon',
+            ('/DIR=' + $appPath),('/GROUP=' + $groupName))
+        Start-HiddenAndWait $installerPath ($installArguments + @('/LOG=' + (Join-Path $testPath 'fresh.log'))) 'Fresh install' 600000
+        Assert-OwnedInstallation
+        $ownedInno=Get-OwnedInnoFiles
+        Assert-ElectronInventory 'fresh'
+        Assert-ShortcutTargets
+        $links=@(Get-ChildItem -LiteralPath $groupPath -Force)
+        if ($links.Count -ne 3) { throw 'INSTALLER_SHORTCUT_INVENTORY' }
+        $shortcutRecords=@(foreach ($link in $links) {
+            if ($link.PSIsContainer -or ($link.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'INSTALLER_SHORTCUT_UNSAFE' }
+            @{path=$link.FullName;sha256=(Get-FileHash -LiteralPath $link.FullName -Algorithm SHA256).Hash}
+        })
+        $checks.fresh_install_verified=$true
+        # Copy only the verified first installed closure; no dist/source fallback.
+        $inventory=Get-Content -LiteralPath (Join-Path $testPath 'fresh-inventory.json') -Raw | ConvertFrom-Json
+        $null=New-Item -ItemType Directory -Path $referencePath
+        foreach ($record in $inventory.files.PSObject.Properties) {
+            $target=Join-Path $referencePath $record.Name
+            $null=New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force
+            Copy-Item -LiteralPath (Join-Path $appPath $record.Name) -Destination $target
+        }
+        Assert-ElectronInventory 'reference-first' -Reference
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        foreach ($scenario in @('security','load','lifecycle','empty-profile')) {
+            $phase='ui_' + $scenario.Replace('-','_')
+            Write-Host "CI_INSTALLER_PHASE $phase started"
+            Invoke-InstalledUiProof $scenario 'fresh'
+            Write-Host "CI_INSTALLER_PHASE $phase pass"
+        }
+        $phase='ordinary_serve'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $runtimeCleanupConfirmed=$false
+        $serveReport=Join-Path $testPath 'ordinary-serve.json'
+        Start-HiddenAndWait $Python @((Join-Path $repository 'tools/check_frozen_service.py'),
+            '--service-executable',$serviceExecutable,'--qa-directory',(Join-Path $testPath 'Serve profiles Кириллица'),
+            '--source-commit',$sourceCommit,'--app-version',$buildManifest.app_version,'--report',$serveReport) 'Installed ordinary serve' 600000
+        $null=Invoke-InstallerHelper @('serve','--report',$serveReport,'--manifest',$manifestPath)
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='service_owner'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $ownerReport=Join-Path $testPath 'service-owner.json'
+        Start-HiddenAndWait $serviceExecutable @('--service-test',$ownerReport,'--data-dir',
+            (Join-Path $testPath 'Owner profile Кириллица')) 'Installed owner proof' 600000
+        $null=Invoke-InstallerHelper @('owner','--report',$ownerReport,'--manifest',$manifestPath)
+        $runtimeCleanupConfirmed=$true
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='application'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $first=Invoke-InstalledSelfTest 'application-first.json'
+        $null=Invoke-InstallerHelper @('application','--report',(Join-Path $testPath 'application-first.json'),'--manifest',$manifestPath)
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='pg_seed'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $summary.postgres_seed=Invoke-PostgresProof 'postgres-seed.json' 'seed'
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='reinstall'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        Assert-ElectronOwnership
+        Assert-ElectronInventory 'before-reinstall'
+        $pgBefore=Get-PreservedProfileSnapshot
+        $appBefore=Get-PreservedProfileSnapshot -ProfilePath $dataPath
+        Start-HiddenAndWait $installerPath ($installArguments + @('/LOG=' + (Join-Path $testPath 'reinstall.log'))) 'Same version reinstall' 600000
+        # Inno's own .dat may be appended by a successful reinstall. Its new
+        # identity is admitted only after the retained installer and registration.
+        Assert-OwnedInstallation
+        $ownedInno=Get-OwnedInnoFiles
+        Assert-ElectronOwnership
+        Assert-ElectronInventory 'reinstalled'
+        if ((Get-PreservedProfileSnapshot) -cne $pgBefore -or
+            (Get-PreservedProfileSnapshot -ProfilePath $dataPath) -cne $appBefore) { throw 'INSTALLER_REINSTALL_CHANGED_PROFILE' }
+        $repeat=Invoke-InstalledSelfTest 'application-repeat.json'
+        $null=Invoke-InstallerHelper @('application','--report',(Join-Path $testPath 'application-repeat.json'),'--manifest',$manifestPath)
+        $null=Invoke-InstallerHelper @('preservation','--first',(Join-Path $testPath 'application-first.json'),
+            '--report',(Join-Path $testPath 'application-repeat.json'))
+        $null=Invoke-PostgresProof 'postgres-repeat.json' 'verify'
+        Invoke-InstalledUiProof 'load' 'reinstalled'
+        $checks.same_version_reinstall_verified=$true
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='uninstall'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        Assert-ElectronOwnership
+        Assert-ElectronInventory 'before-uninstall'
+        Assert-ElectronInventory 'reference-before-uninstall' -Reference
+        $pgBefore=Get-PreservedProfileSnapshot
+        $appBefore=Get-PreservedProfileSnapshot -ProfilePath $dataPath
+        if (-not $runtimeCleanupConfirmed -or -not $processCompletionConfirmed) { throw 'INSTALLER_RUNTIME_CLEANUP_UNKNOWN' }
+        Invoke-OwnedUninstall 'uninstall.log'
+        if ((Test-Path -LiteralPath $uninstallKey) -or (Test-Path -LiteralPath $appExecutable) -or
+            (Test-Path -LiteralPath $groupPath)) { throw 'INSTALLER_OWNED_REMOVAL_INCOMPLETE' }
+        $uninstalled=$true
+        Assert-Marker
+        if ((Get-PreservedProfileSnapshot) -cne $pgBefore -or
+            (Get-PreservedProfileSnapshot -ProfilePath $dataPath) -cne $appBefore) { throw 'INSTALLER_UNINSTALL_CHANGED_PROFILE' }
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='post_uninstall_app'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $null=Invoke-InstalledSelfTest 'application-after-uninstall.json' -FromBundle
+        $null=Invoke-InstallerHelper @('application','--report',(Join-Path $testPath 'application-after-uninstall.json'),'--manifest',$manifestPath)
+        foreach ($name in @('application-first.json','application-repeat.json')) {
+            $null=Invoke-InstallerHelper @('preservation','--first',(Join-Path $testPath $name),
+                '--report',(Join-Path $testPath 'application-after-uninstall.json'))
+        }
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='post_uninstall_pg'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $null=Invoke-PostgresProof 'postgres-after-uninstall.json' 'verify' -FromBundle
+        Assert-ElectronInventory 'reference-final' -Reference
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        foreach ($name in @('owned_uninstall_verified','payload_inventory_verified','shortcut_ownership_verified',
+            'application_bytes_preserved','application_index_preserved','postgres_bytes_preserved',
+            'postgres_restart_verified','installed_proofs_passed','registered_installation_removed','owned_shortcuts_removed')) { $checks[$name]=$true }
+        $summary.ok=$true
+    } catch {
+        Write-Host "CI_INSTALLER_PHASE $phase fail"
+        $failed=$true
+        $summary.error_code='INSTALLER_LIFECYCLE_FAILED'
+    } finally {
+        if (-not $uninstalled -and $null -ne $ownedInno -and $runtimeCleanupConfirmed -and $processCompletionConfirmed) {
+            try {
+                Assert-ElectronOwnership
+                Invoke-OwnedUninstall 'uninstall-after-failure.log'
+            } catch { $summary.error_code='INSTALLER_CLEANUP_UNCONFIRMED' }
+        }
+        $checks.runtime_cleanup_confirmed=[bool]$runtimeCleanupConfirmed
+        $checks.process_completion_confirmed=[bool]$processCompletionConfirmed
+        [IO.File]::WriteAllText($summaryPath,($summary | ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
+    }
+    if ($failed) { exit 1 }
+    exit 0
 }
 
 # All checks before the first write or process launch are read-only. In
