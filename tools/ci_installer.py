@@ -261,6 +261,36 @@ def validate_ui(directory, manifest, report_path, scenario):
                                  policy=contracts.load_ui_policy(ROOT))
 
 
+def sanitize_ui_summary(value):
+    """Recheck child diagnostics at the parent boundary, using existing domains."""
+    formatter = load_module('ssearch_installer_frozen_summary', ROOT / 'tools/summarize_frozen_report.py')
+    require(type(value) is dict and value.get('diagnostic_only') is True
+        and value.get('role') in tuple(role for role in formatter.ROLES if role.startswith('ui-'))
+        and type(value.get('process_exit_code')) is int and value['process_exit_code'] in (0, 1)
+        and value.get('report_state') in ('read', 'unavailable') and type(value.get('fields')) is dict,
+        'installer_ui_summary_invalid')
+    fields, safe = value['fields'], {}
+    if value['report_state'] == 'read':
+        if type(fields.get('ok')) is bool:
+            safe['ok'] = fields['ok']
+        _, codes, _ = formatter.public_symbols()
+        if type(fields.get('reason_code')) is str and fields['reason_code'] in codes:
+            safe['reason_code'] = fields['reason_code']
+        required = fields.get('required_checks', [])
+        required = required if type(required) is list else []
+        safe['required_checks'] = formatter.ui_checks({}, value['role'])
+        for check in safe['required_checks']:
+            statuses = [item.get('status') for item in required if type(item) is dict and item.get('name') == check['name']]
+            check['status'] = ('missing' if not statuses else statuses[0] if len(statuses) == 1
+                and statuses[0] in ('pass', 'fail', 'not_run', 'missing', 'invalid') else 'invalid')
+        if value['process_exit_code'] == 1 and fields.get('ok') is False:
+            details = formatter.ui_failure_diagnostics(fields.get('failure_diagnostics'))
+            if details:
+                safe['failure_diagnostics'] = details
+    return dict(diagnostic_only=True, role=value['role'], process_exit_code=value['process_exit_code'],
+                report_state=value['report_state'], fields=safe)
+
+
 def main(argv=None):
     try:
         class Parser(argparse.ArgumentParser):
@@ -268,7 +298,8 @@ def main(argv=None):
                 raise ValueError('installer_arguments_invalid')
         parser = Parser(add_help=False, allow_abbrev=False)
         parser.add_argument('command', choices=('fetch', 'verify-harness', 'private', 'inventory', 'preservation',
-            'ui-policy', 'ui', 'application', 'owner', 'serve', 'receipt', 'admit', 'candidate'))
+            'ui-policy', 'ui', 'application', 'owner', 'serve', 'receipt', 'admit', 'candidate',
+            'ui-summary', 'ui-summary-line'))
         parser.add_argument('--harness-commit')
         parser.add_argument('--directory', type=Path)
         parser.add_argument('--manifest', type=Path)
@@ -278,6 +309,7 @@ def main(argv=None):
         parser.add_argument('--report', type=Path)
         parser.add_argument('--scenario')
         parser.add_argument('--exit-code', type=int, default=1)
+        parser.add_argument('--not-before-ms', type=int, default=0)
         parser.add_argument('--parent-drained', action='store_true')
         args = parser.parse_args(argv)
         pins = read_json(ROOT / 'resources/ci/installer-proof-input.json')
@@ -308,6 +340,16 @@ def main(argv=None):
             validate_application_preservation(read_json(args.first), read_json(args.report))
         elif args.command == 'ui-policy':
             print(json.dumps(proof_contracts().desktop_proof_contracts().load_ui_policy(ROOT)))
+        elif args.command in ('ui-summary', 'ui-summary-line'):
+            if args.command == 'ui-summary':
+                formatter = load_module('ssearch_installer_frozen_report', ROOT / 'tools/summarize_frozen_report.py')
+                value = formatter.summarize_report(args.report, 'ui-' + args.scenario, args.exit_code,
+                                                   not_before_ms=args.not_before_ms)
+            else:
+                raw = sys.stdin.buffer.read(65537)
+                require(len(raw) <= 65536, 'installer_ui_summary_oversized')
+                value = json.loads(raw.decode('utf-8'))
+            print('CI_INSTALLER_UI_SUMMARY ' + json.dumps(sanitize_ui_summary(value), ensure_ascii=True, sort_keys=True))
         elif args.command in ('ui', 'application', 'owner', 'serve'):
             manifest = read_json(args.manifest)
             report = read_json(args.report)

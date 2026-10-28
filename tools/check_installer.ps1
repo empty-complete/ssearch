@@ -64,6 +64,7 @@ function Start-HiddenAndWait {
     $script:processWaitObservation = @{waiter_finished=$false; waiter_exit_integer=$false;
         waiter_exit_zero=$false; completion_present=$false}
     $script:processCompletionPayload = $null
+    $script:processExitCode = $null
     # Inno's initial uninstaller exits before its temporary child finishes.
     # A separate hidden waiter preserves Start-Process -Wait's descendant-tree
     # semantics while the coordinator bounds the wait without killing anything.
@@ -168,6 +169,7 @@ try {
     # ConvertFrom-Json returns Int32 in Windows PowerShell, Int64 in PowerShell 7.
     # Coerce only after validating the producer's signed Process.ExitCode range.
     $exitCode = [int]$completion.exit_code
+    $script:processExitCode = $exitCode
     $script:processCompletionConfirmed = $true
     if ($exitCode -ne 0) {
         $script:processCompletionReason = 'child_exit_nonzero'
@@ -563,16 +565,56 @@ function Assert-ElectronInventory {
 
 function Invoke-InstalledUiProof {
     param([string]$Scenario, [string]$Label)
-    Assert-ElectronOwnership
-    $script:runtimeCleanupConfirmed=$false
+    $stage='owner'; $invoked=$false; $notBeforeMs=0
     $report = Join-Path $testPath "$Label-ui-$Scenario.json"
     $profile = Join-Path $testPath "$Label UI $Scenario Кириллица with spaces"
-    $budget = [int]$uiPolicy.budgets_ms.$Scenario + 120000
-    Start-HiddenAndWait -Program $appExecutable -Arguments @('--ui-self-test', $report,
-        '--ui-scenario', $Scenario, '--data-dir', $profile) -Label 'Installed hidden UI proof' -TimeoutMilliseconds $budget
-    $null = Invoke-InstallerHelper @('ui', '--directory', $appPath, '--manifest', $manifestPath,
-        '--report', $report, '--scenario', $Scenario)
-    $script:runtimeCleanupConfirmed=$true
+    $role=if($Scenario -cin @('load','security','lifecycle','empty-profile')) {'ui-' + $Scenario} else {'unavailable'}
+    try {
+        Assert-ElectronOwnership
+        $script:runtimeCleanupConfirmed=$false
+        $stage='prepare'
+        $reportFresh=-not (Test-Path -LiteralPath $report)
+        $profileFresh=-not (Test-Path -LiteralPath $profile)
+        Write-Host "CI_INSTALLER_UI_ADMISSION role=$role report_fresh=$($reportFresh.ToString().ToLowerInvariant()) profile_fresh=$($profileFresh.ToString().ToLowerInvariant())"
+        $budget = [int]$uiPolicy.budgets_ms.$Scenario + 120000
+        $notBeforeMs=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        # Clear only diagnostic context. Binding/quoting can fail before the
+        # new waiter initializes itself; never attribute the installer's exit.
+        $script:processCompletionReason='unavailable'
+        $script:processExitCode=$null
+        $stage='launch'; $invoked=$true
+        Start-HiddenAndWait -Program $appExecutable -Arguments @('--ui-self-test', $report,
+            '--ui-scenario', $Scenario, '--data-dir', $profile) -Label 'Installed hidden UI proof' -TimeoutMilliseconds $budget
+        $stage='report_validate'
+        $null = Invoke-InstallerHelper @('ui', '--directory', $appPath, '--manifest', $manifestPath,
+            '--report', $report, '--scenario', $Scenario)
+        $script:runtimeCleanupConfirmed=$true
+    } catch {
+        $originalFailure=$_
+        $hresult=[int]$_.Exception.HResult
+        $waitReason='unavailable'; $observedExit='unavailable'
+        if ($invoked) {
+            $waitReason=Get-Variable -Name processCompletionReason -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+            if ($waitReason -cnotin @('preparing_waiter','waiting','capture_limit','waiter_timeout',
+                'reading_waiter_exit','checking_completion_file','waiter_exit_unavailable','waiter_exit_nonzero',
+                'completion_missing','reading_completion','completion_payload_invalid','child_exit_nonzero','complete')) { $waitReason='unavailable' }
+            if ($stage -ceq 'launch' -and $waitReason -cnotin @('preparing_waiter','unavailable')) { $stage='wait' }
+            $code=Get-Variable -Name processExitCode -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+            if ($code -is [int]) { $observedExit=[string]$code }
+        }
+        $reportPresent=[bool](Test-Path -LiteralPath $report -PathType Leaf)
+        Write-Host "CI_INSTALLER_UI_FAILURE role=$role stage=$stage invoked=$($invoked.ToString().ToLowerInvariant()) hresult=$hresult wait_reason=$waitReason exit_code=$observedExit report_present=$($reportPresent.ToString().ToLowerInvariant())"
+        if ($invoked -and $observedExit -cin @('0','1')) {
+            try {
+                $value=& $Python (Join-Path $repository 'tools/ci_installer.py') ui-summary --report $report `
+                    --scenario $Scenario --exit-code $observedExit --not-before-ms $notBeforeMs
+                if ($LASTEXITCODE -eq 0 -and @($value).Count -eq 1) { Write-Host ([string]$value) }
+                else { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
+            } catch { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
+        }
+        # Diagnostics never convert an exit/cleanup failure into acceptance.
+        throw $originalFailure
+    }
 }
 
 if ($Electron) {

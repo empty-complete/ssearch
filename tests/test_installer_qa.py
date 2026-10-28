@@ -648,3 +648,93 @@ $expected=if($Fault -ceq 'missing') {'CI_INSTALLER_SHORTCUT role=help exists=fal
     assert fixture_ok, {'fixture_stage': stage, 'hresult': hresult}
     assert observed == dict.fromkeys(('fixture_ok', 'contract', 'classified', 'expected_predicate',
                                       'private_absent', 'unrelated_data_preserved'), True)
+
+
+@pytest.mark.parametrize('mode,scenario', [('owner', 'security'), ('binding', 'security'),
+    *[('native', value) for value in ('load', 'security', 'lifecycle', 'empty-profile')]])
+def test_actual_installed_ui_failure_diagnostics_keep_current_attempt_and_parent_privacy(tmp_path, mode, scenario):
+    """Real UI controller/formatter/parent pipeline; fake only the native proof."""
+    script = tmp_path / 'ui-failure.ps1'
+    script.write_text(r'''
+param($SourceRoot,$Work,$Interpreter,$Mode,$Scenario)
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$tokens=$null;$errors=$null
+foreach($entry in @(@{path='tools/check_installer.ps1';names=@('Invoke-InstalledUiProof','Invoke-InstallerHelper')},
+                   @{path='tools/run_ci_build.ps1';names=@('Test-InstallerPublicLine','Write-InstallerPublicLine')})) {
+    $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $SourceRoot $entry.path),[ref]$tokens,[ref]$errors)
+    if($errors.Count){throw 'ui_probe_syntax_invalid'}
+    foreach($name in $entry.names) {
+        $fn=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name},$true)
+        . ([scriptblock]::Create($fn.Extent.Text))
+    }
+}
+$repository=$SourceRoot;$Python=$Interpreter;$testPath=$Work;$manifestPath='unused'
+$appPath=Join-Path $Work 'owned payload';$appExecutable=Join-Path $appPath 'ssearch.exe'
+$uiPolicy=(Invoke-InstallerHelper @('ui-policy')) | ConvertFrom-Json
+$script:runtimeCleanupConfirmed=$false;$script:processCompletionConfirmed=$true
+# Deliberately stale prior installer success: owner/binding failures must not
+# present these values as the current native UI attempt's observations.
+$script:processCompletionReason='complete';$script:processExitCode=0
+function Assert-ElectronOwnership {if($Mode -ceq 'owner'){throw 'PRIVATE_SENTINEL owner'}}
+function Start-HiddenAndWait {
+    param($Program,$Arguments,$Label,$TimeoutMilliseconds)
+    if($Mode -ceq 'binding'){throw 'PRIVATE_SENTINEL binding'}
+    $checks=@(foreach($name in $uiPolicy.required_checks.$Scenario){@{name=$name;status='fail'}})
+    $report=@{ok=$false;reason_code='ui_proof_wire_audit_incomplete';checks=$checks;
+        failure_diagnostics=@{primary_phase='audit_before_action';primary_category='wire_audit';
+            wire_audit_category='stream_limit';cleanup_category='wire_audit';helper_stage='reply';helper_category='decode_refused';
+            private_error='PRIVATE_SENTINEL'};path='PRIVATE_SENTINEL';pid=12345;raw_stderr='PRIVATE_SENTINEL'}
+    [IO.File]::WriteAllText($Arguments[1],($report | ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+    $script:processCompletionReason='child_exit_nonzero';$script:processExitCode=1
+    throw 'PRIVATE_SENTINEL native'
+}
+$script:originalPreserved=$false
+$captured=@(& {try {Invoke-InstalledUiProof $Scenario 'probe'} catch {
+    $script:originalPreserved=$_.Exception.Message -ceq ('PRIVATE_SENTINEL ' + $Mode)
+}} 6>&1)
+$lines=@($captured | ForEach-Object {[string]$_})
+$prefix='CI_INSTALLER_UI_SUMMARY '
+# The parent must re-normalize even a forged/poisoned JSON envelope instead of
+# forwarding it through a broad prefix/JSON regex.
+$poisoned=@(foreach($line in $lines) {
+    if($line.StartsWith($prefix,[StringComparison]::Ordinal)) {
+        $value=$line.Substring($prefix.Length) | ConvertFrom-Json
+        $value | Add-Member -NotePropertyName path -NotePropertyValue 'PRIVATE_SENTINEL'
+        $value.fields | Add-Member -NotePropertyName raw_stderr -NotePropertyValue 'PRIVATE_SENTINEL'
+        $value.fields.failure_diagnostics | Add-Member -NotePropertyName token -NotePropertyValue 'PRIVATE_SENTINEL'
+        $prefix + ($value | ConvertTo-Json -Depth 8 -Compress)
+    } else {$line}
+})
+$public=@(& {foreach($line in $poisoned){Write-InstallerPublicLine $line}} 6>&1)
+$public=@($public | ForEach-Object {[string]$_})
+$summaries=@($public | Where-Object {$_.StartsWith($prefix,[StringComparison]::Ordinal)})
+$summaryOkay=if($Mode -ceq 'native') {
+    if($summaries.Count -ne 1){$false}else {
+        $value=$summaries[0].Substring($prefix.Length) | ConvertFrom-Json
+        $value.diagnostic_only -eq $true -and $value.role -ceq ('ui-' + $Scenario) -and
+        $value.process_exit_code -eq 1 -and $value.report_state -ceq 'read' -and $value.fields.ok -eq $false -and
+        $value.fields.reason_code -ceq 'ui_proof_wire_audit_incomplete' -and
+        $value.fields.required_checks.Count -eq $uiPolicy.required_checks.$Scenario.Count -and
+        @($value.fields.failure_diagnostics.PSObject.Properties).Count -eq 6
+    }
+} else {$summaries.Count -eq 0}
+$expected=if($Mode -ceq 'native'){'wait'}elseif($Mode -ceq 'binding'){'launch'}else{'owner'}
+$failure=@($public | Where-Object {$_.StartsWith('CI_INSTALLER_UI_FAILURE ',[StringComparison]::Ordinal)})
+$current=($failure.Count -eq 1 -and $failure[0].Contains('stage=' + $expected + ' ') -and
+    $failure[0].Contains($(if($Mode -ceq 'native'){'exit_code=1 '}else{'wait_reason=unavailable exit_code=unavailable '})))
+@{original_failure_preserved=$script:originalPreserved;current_attempt=$current;summary=$summaryOkay;
+    cleanup_not_authorized=(-not $script:runtimeCleanupConfirmed);completion_guard_unchanged=$script:processCompletionConfirmed;
+    child_private_absent=(@($lines | Where-Object {$_.Contains('PRIVATE_SENTINEL') -or $_.Contains('12345')}).Count -eq 0);
+    parent_private_absent=(@($public | Where-Object {$_.Contains('PRIVATE_SENTINEL') -or $_.Contains('12345')}).Count -eq 0)} | ConvertTo-Json -Compress
+''', encoding='utf-8-sig')
+    result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File', str(script), str(ROOT),
+        str(tmp_path), sys.executable, mode, scenario], capture_output=True, timeout=45)
+    clean_exit = result.returncode == 0
+    assert clean_exit, 'Installed UI diagnostic component probe failed'
+    try:
+        observed = json.loads(result.stdout)
+    except (ValueError, UnicodeError):
+        pytest.fail('installed_ui_diagnostic_result_invalid', pytrace=False)
+    assert observed == dict.fromkeys(('original_failure_preserved', 'current_attempt', 'summary',
+        'cleanup_not_authorized', 'completion_guard_unchanged', 'child_private_absent', 'parent_private_absent'), True)

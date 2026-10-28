@@ -31,7 +31,26 @@ function Test-InstallerPublicLine {
         $Line -cmatch '^CI_INSTALLER_SHORTCUT_GROUP exists=(true|false) available=(true|false) count=[0-9]{1,6} known=[0-9]{1,6} unknown=[0-9]{1,6}$' -or
         $Line -cmatch '^CI_INSTALLER_SHORTCUT role=(application|help|uninstall) exists=(true|false) target_match=(true|false|unavailable)$' -or
         $Line -cmatch '^CI_INSTALLER_COM stage=(create|read|release) status=(pass|fail) role=(none|application|help|uninstall) hresult=-?[0-9]{1,10}$' -or
+        $Line -cmatch '^CI_INSTALLER_UI_ADMISSION role=(ui-load|ui-security|ui-lifecycle|ui-empty-profile|unavailable) report_fresh=(true|false) profile_fresh=(true|false)$' -or
+        $Line -cmatch '^CI_INSTALLER_UI_FAILURE role=(ui-load|ui-security|ui-lifecycle|ui-empty-profile|unavailable) stage=(owner|prepare|launch|wait|report_validate) invoked=(true|false) hresult=-?[0-9]{1,10} wait_reason=(preparing_waiter|waiting|capture_limit|waiter_timeout|reading_waiter_exit|checking_completion_file|waiter_exit_unavailable|waiter_exit_nonzero|completion_missing|reading_completion|completion_payload_invalid|child_exit_nonzero|complete|unavailable) exit_code=(-?[0-9]{1,10}|unavailable) report_present=(true|false)$' -or
+        $Line -ceq 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' -or
         $Line -cmatch '^CI_INSTALLER_HELPER code=(installer_inventory_boundary|installer_inno_inventory_invalid|installer_non_file|installer_duplicate_file|installer_inno_identity_changed|installer_inno_file_missing|installer_payload_image_mismatch|installer_inventory_mismatch|installer_reparse_refused|installer_report_unavailable|installer_object_required|unavailable)$')
+}
+
+function Write-InstallerPublicLine {
+    param([string]$Line)
+    $prefix='CI_INSTALLER_UI_SUMMARY '
+    if (Test-InstallerPublicLine $Line) { Write-Host $Line }
+    elseif ($Line.StartsWith($prefix, [StringComparison]::Ordinal) -and $Line.Length -le 65536) {
+        # Never accept an arbitrary JSON body from child stdout. Reapply the
+        # existing formatter's source-owned UI domains at the parent boundary.
+        try {
+            $normalized=$Line.Substring($prefix.Length) | & (Join-Path $repository '.venv/Scripts/python.exe') `
+                (Join-Path $repository 'tools/ci_installer.py') ui-summary-line
+            if ($LASTEXITCODE -eq 0 -and @($normalized).Count -eq 1) { Write-Host ([string]$normalized) }
+            else { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
+        } catch { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
+    }
 }
 
 function Invoke-CiChild {
@@ -438,7 +457,8 @@ exit $LASTEXITCODE
     while (-not $process.WaitForExit(1000)) {
         foreach ($reader in $readers) { while (-not $reader.EndOfStream) {
             $line=$reader.ReadLine()
-            if ($env:BUILD_MODE -ne 'installer' -or (Test-InstallerPublicLine $line)) { Write-Host $line }
+            if ($env:BUILD_MODE -eq 'installer') { Write-InstallerPublicLine $line }
+            else { Write-Host $line }
         } }
         if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
             $exitCode = 124
@@ -448,7 +468,8 @@ exit $LASTEXITCODE
     $childStopped = $true
     foreach ($reader in $readers) { while (-not $reader.EndOfStream) {
         $line=$reader.ReadLine()
-        if ($env:BUILD_MODE -ne 'installer' -or (Test-InstallerPublicLine $line)) { Write-Host $line }
+        if ($env:BUILD_MODE -eq 'installer') { Write-InstallerPublicLine $line }
+        else { Write-Host $line }
     } }
     $exitCode = $process.ExitCode
     $process.Dispose()
