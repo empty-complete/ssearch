@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -514,12 +515,31 @@ def test_actual_shortcut_guard_with_owned_unicode_links_under_pwsh(tmp_path, fau
     Qt or executable fixture runs. COM unavailability is a failure, never skip.
     ASCII-target control retains the actual Unicode group/link names.
     """
+    _exercise_owned_shortcuts(tmp_path, fault)
+
+
+@pytest.mark.parametrize('fault', ['rewrite', 'before-tamper', 'rewrite-wrong-target',
+                                  'unknown-link', 'native-failure'])
+def test_actual_reinstall_readmits_only_authorized_owned_shortcut_changes(fault):
+    """Actual reinstall ownership statements and W links; no installer runs."""
+    (ROOT / '.local').mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='lnk-', dir=ROOT / '.local') as directory:
+        longest_target = (Path(directory) / 'artifacts/development-quick' / ('a' * 40)
+                          / 'qa/owned Ю/PRIVATE_SENTINEL приложение with spaces'
+                          / 'service/_internal/resources/help.html')
+        fixture_bounded = len(str(longest_target)) < 259
+        assert fixture_bounded, 'shortcut_fixture_target_too_long'
+        _exercise_owned_shortcuts(Path(directory), fault)
+
+
+def _exercise_owned_shortcuts(tmp_path, fault):
     script = tmp_path / 'shortcuts.ps1'
     script.write_text(r'''
 param($Controller,$Parent,$Root,$Fault)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $fixtureStage='compile'
+$fixtureRegistry=$null
 try {
 # IShellLinkW vtable/IID: Microsoft WinSDK ShObjIdl_core.h; persistence uses
 # Unicode IPersistFile. Never create the fixture through WScript.TargetPath.
@@ -564,12 +584,20 @@ public static class SsearchLinkFixture {
     public static string Stage = "create";
     static void Check(int value) { if(value != 0) throw new COMException("fixture_hresult", value); }
     public static void Create(string path, string target) {
+        CreateWithDescription(path, target, null);
+    }
+    public static void Rewrite(string path, string target, string description) {
+        File.Delete(path);
+        CreateWithDescription(path, target, description);
+    }
+    static void CreateWithDescription(string path, string target, string description) {
         if(!Path.IsPathRooted(path) || !Path.IsPathRooted(target) || File.Exists(path))
             throw new InvalidOperationException("fixture_boundary");
         Stage="create";
         object writer=new SsearchFixtureLinkClass();
         try {
             Stage="set_path"; Check(((ISsearchFixtureLinkW)writer).SetPath(target));
+            if(description != null) Check(((ISsearchFixtureLinkW)writer).SetDescription(description));
             Stage="save"; Check(((ISsearchFixturePersistFile)writer).Save(path, true));
         } finally { Marshal.FinalReleaseComObject(writer); }
         Stage="create";
@@ -587,17 +615,21 @@ public static class SsearchLinkFixture {
 '@
 $fixtureStage='guard_setup'
 $tokens=$null;$errors=$null
-foreach($entry in @(@{path=$Controller;name='Assert-ShortcutTargets'},
+$reinstallMode=$Fault -cin @('rewrite','before-tamper','rewrite-wrong-target','unknown-link','native-failure')
+foreach($entry in @(@{path=$Controller;name=$null},
                    @{path=$Parent;name='Test-InstallerPublicLine'})) {
     $ast=[Management.Automation.Language.Parser]::ParseFile($entry.path,[ref]$tokens,[ref]$errors)
     if($errors.Count){throw 'shortcut_guard_syntax_invalid'}
-    $fn=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
-        $node.Name -ceq $entry.name},$true)
-    . ([scriptblock]::Create($fn.Extent.Text))
+    $functions=$ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        ($null -eq $entry.name -or $node.Name -ceq $entry.name)},$true)
+    foreach($fn in $functions) {. ([scriptblock]::Create($fn.Extent.Text))}
+    if($entry.path -ceq $Controller){$controllerAst=$ast}
 }
 $isElectron=$true;$comparison=[StringComparison]::OrdinalIgnoreCase
 $fixtureStage='filesystem'
-$appPath=Join-Path $Root $(if($Fault -ceq 'ascii-target') {'PRIVATE_SENTINEL app with spaces'} else {'PRIVATE_SENTINEL приложение with spaces'})
+$repository=$Root;$artifacts=Join-Path $Root 'artifacts'
+$testPath=Join-Path $artifacts ('development-quick/' + ('a'*40) + '/qa/owned Ю')
+$appPath=Join-Path $(if($reinstallMode){$testPath}else{$Root}) $(if($Fault -ceq 'ascii-target') {'PRIVATE_SENTINEL app with spaces'} else {'PRIVATE_SENTINEL приложение with spaces'})
 $groupPath=Join-Path $Root $(if($Fault -ceq 'ascii-target') {'PRIVATE_SENTINEL menu'} else {'PRIVATE_SENTINEL menu Кириллица'})
 $appExecutable=Join-Path $appPath 'ssearch.exe'
 $uninstallerPath=Join-Path $appPath 'unins000.exe'
@@ -614,6 +646,81 @@ foreach($entry in @(@{name='ssearch.lnk';target=$appExecutable},
     [SsearchLinkFixture]::Create((Join-Path $groupPath $entry.name),$selectedTarget)
 }
 if($Fault -ceq 'missing'){Remove-Item -LiteralPath (Join-Path $groupPath 'Справка ssearch.lnk')}
+if($reinstallMode) {
+    # Exercise real registration/path/hash guards against a fresh test-only key.
+    $fixtureStage='registration'
+    $fixtureRegistry='HKCU:\Software\ssearch QA ' + [Guid]::NewGuid().ToString('N')
+    $uninstallKey=$fixtureRegistry;$runId=[Guid]::NewGuid().ToString('N')
+    $ownerFile=Join-Path $testPath 'owner.json'
+    [IO.File]::WriteAllText($ownerFile,(@{run_id=$runId;app_path=$appPath}|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+    $null=New-Item -Path $fixtureRegistry
+    $null=New-ItemProperty -LiteralPath $fixtureRegistry -Name InstallLocation -Value $appPath
+    $null=New-ItemProperty -LiteralPath $fixtureRegistry -Name UninstallString -Value ('"'+$uninstallerPath+'"')
+    [IO.File]::WriteAllText((Join-Path $appPath 'unins000.dat'),'owned inno data')
+    $ownedInno=Get-OwnedInnoFiles
+    $shortcutRecords=@(foreach($item in Get-ChildItem -LiteralPath $groupPath -Force) {
+        @{path=$item.FullName;sha256=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash}
+    })
+    $baseline=$shortcutRecords|ConvertTo-Json -Compress
+    $script:nativeCalls=0;$script:processCompletionConfirmed=$false
+    $script:processExitCode=$null
+    function Start-HiddenAndWait {
+        param($Program,$Arguments,$Label,$TimeoutMilliseconds)
+        $script:nativeCalls++
+        if($Fault -ceq 'native-failure'){throw 'fixture_native_completion_unknown'}
+        if($Fault -ceq 'unknown-link') {
+            [IO.File]::WriteAllText((Join-Path $groupPath 'PRIVATE_SENTINEL unknown.lnk'),'unknown owned fixture')
+        } else {
+            foreach($entry in @(@{name='ssearch.lnk';target=$appExecutable},
+                               @{name='Справка ssearch.lnk';target=$help},
+                               @{name='Удалить ssearch.lnk';target=$uninstallerPath})) {
+                [string]$target=if($Fault -ceq 'rewrite-wrong-target' -and $entry.name -ceq 'Справка ssearch.lnk') {$other} else {$entry.target}
+                [SsearchLinkFixture]::Rewrite((Join-Path $groupPath $entry.name),$target,'authorized installer metadata')
+            }
+        }
+        [IO.File]::AppendAllText((Join-Path $appPath 'unins000.dat'),' appended by installer')
+        $script:processExitCode=0;$script:processCompletionConfirmed=$true
+    }
+    if($Fault -ceq 'before-tamper') {
+        [SsearchLinkFixture]::Rewrite((Join-Path $groupPath 'ssearch.lnk'),$appExecutable,'unadmitted metadata')
+    }
+    # Select the actual reinstall ownership/native statements, excluding only
+    # unrelated full-payload inventory and preserved-PG/application snapshots.
+    $begin=$controllerAst.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left.Extent.Text -ceq '$phase' -and $node.Right.Extent.Text -ceq "'reinstall'"},$true)
+    $end=$controllerAst.Find({param($node) $node -is [Management.Automation.Language.CommandAst] -and
+        $node.GetCommandName() -ceq 'Assert-ElectronInventory' -and $node.CommandElements.Count -eq 2 -and
+        $node.CommandElements[1].Extent.Text -ceq "'reinstalled'"},$true)
+    $text=[IO.File]::ReadAllText($Controller)
+    $section=[scriptblock]::Create($text.Substring($begin.Extent.StartOffset,$end.Extent.StartOffset-$begin.Extent.StartOffset))
+    $statements=@($section.Ast.EndBlock.Statements | Where-Object {
+        if($_ -is [Management.Automation.Language.AssignmentStatementAst] -and
+            $_.Left.Extent.Text -cin @('$pgBefore','$appBefore')) {return $false}
+        $command=$_.Find({param($node) $node -is [Management.Automation.Language.CommandAst]},$false)
+        return $null -eq $command -or $command.GetCommandName() -cne 'Assert-ElectronInventory'
+    })
+    $installerPath=Join-Path $Root 'unused installer.exe';$installArguments=@()
+    $script:caught=$false;$fixtureStage='reinstall'
+    $captured=@(. {try {. ([scriptblock]::Create(($statements.Extent.Text -join "`n")))} catch {$script:caught=$true}} 6>&1)
+    $lines=@($captured | ForEach-Object {[string]$_})
+    $unchanged=($shortcutRecords|ConvertTo-Json -Compress) -ceq $baseline
+    $admitted= -not $script:caught -and -not $unchanged
+    $laterRejected=$false
+    if($admitted) {
+        [SsearchLinkFixture]::Rewrite((Join-Path $groupPath 'ssearch.lnk'),$appExecutable,'later unadmitted metadata')
+        $extra=@(& {try {Assert-ElectronOwnership} catch {$script:laterRejected=$true}} 6>&1)
+        $lines+=@($extra|ForEach-Object {[string]$_})
+        $laterRejected=$script:laterRejected
+    }
+    $expectedCalls=if($Fault -ceq 'before-tamper'){0}else{1}
+    $contract=if($Fault -ceq 'rewrite') {$admitted -and $laterRejected}
+        else {$script:caught -and $unchanged}
+    @{fixture_ok=$true;contract=[bool]$contract;classified=(@($lines|Where-Object {-not(Test-InstallerPublicLine $_)}).Count -eq 0);
+      expected_predicate=($script:nativeCalls -eq $expectedCalls);
+      private_absent=(@($lines|Where-Object {$_.Contains('PRIVATE_SENTINEL')}).Count -eq 0);
+      unrelated_data_preserved=([IO.File]::ReadAllText($other) -ceq 'preserved private data')} | ConvertTo-Json -Compress
+    return
+}
 $script:caught=$false
 $captured=@(& {try {Assert-ShortcutTargets} catch {$script:caught=$true}} 6>&1)
 $lines=@($captured | ForEach-Object {[string]$_})
@@ -631,6 +738,10 @@ $expected=if($Fault -ceq 'missing') {'CI_INSTALLER_SHORTCUT role=help exists=fal
     $hresult=[int]$_.Exception.HResult
     if($_.Exception.InnerException -is [Runtime.InteropServices.COMException]) {$hresult=[int]$_.Exception.InnerException.HResult}
     @{fixture_ok=$false;stage=$fixtureStage;hresult=$hresult} | ConvertTo-Json -Compress
+} finally {
+    if($null -ne $fixtureRegistry -and (Test-Path -LiteralPath $fixtureRegistry)) {
+        Remove-Item -LiteralPath $fixtureRegistry
+    }
 }
 ''', encoding='utf-8-sig')
     result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File', str(script),
@@ -644,7 +755,7 @@ $expected=if($Fault -ceq 'missing') {'CI_INSTALLER_SHORTCUT role=help exists=fal
         pytest.fail('shortcut_component_result_invalid', pytrace=False)
     fixture_ok = observed.get('fixture_ok') is True
     stage = observed.get('stage')
-    stage = stage if stage in ('compile', 'guard_setup', 'filesystem', 'create', 'set_path', 'save', 'load', 'get_path', 'verify') else 'unavailable'
+    stage = stage if stage in ('compile', 'guard_setup', 'filesystem', 'create', 'set_path', 'save', 'load', 'get_path', 'verify', 'registration', 'reinstall') else 'unavailable'
     hresult = observed.get('hresult')
     hresult = hresult if type(hresult) is int and -(2**31) <= hresult < 2**31 else None
     assert fixture_ok, {'fixture_stage': stage, 'hresult': hresult}
