@@ -641,9 +641,29 @@ function Get-OwnedInnoFiles {
     return $records
 }
 
+function Get-OwnedShortcutFiles {
+    $group=Get-Item -LiteralPath $groupPath -Force
+    if (-not $group.PSIsContainer -or ($group.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'INSTALLER_SHORTCUT_UNSAFE'
+    }
+    $links=@(Get-ChildItem -LiteralPath $groupPath -Force)
+    foreach ($link in $links) {
+        if ($link.PSIsContainer -or ($link.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'INSTALLER_SHORTCUT_UNSAFE'
+        }
+    }
+    Assert-ShortcutTargets
+    if ($links.Count -ne 3 -or @($links | Where-Object {
+        $_.Name -cnotin @('ssearch.lnk','Справка ssearch.lnk','Удалить ssearch.lnk')
+    }).Count) { throw 'INSTALLER_SHORTCUT_INVENTORY' }
+    foreach ($link in $links) {
+        @{path=$link.FullName;sha256=(Get-FileHash -LiteralPath $link.FullName -Algorithm SHA256).Hash}
+    }
+}
+
 function Assert-ElectronOwnership {
     Assert-OwnedInstallation
-    Assert-ShortcutTargets
+    $actualShortcuts=@(Get-OwnedShortcutFiles)
     $actualFiles=Get-OwnedInnoFiles
     foreach ($name in @('unins000.exe', 'unins000.dat')) {
         $actual=$actualFiles[$name]
@@ -651,10 +671,10 @@ function Assert-ElectronOwnership {
             throw 'INSTALLER_INNO_OWNERSHIP_CHANGED'
         }
     }
+    if ($actualShortcuts.Count -ne $shortcutRecords.Count) { throw 'INSTALLER_SHORTCUT_OWNERSHIP_CHANGED' }
     foreach ($record in $shortcutRecords) {
-        $item = Get-Item -LiteralPath $record.path -Force
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
-            (Get-FileHash -LiteralPath $record.path -Algorithm SHA256).Hash -cne $record.sha256) {
+        $actual=@($actualShortcuts | Where-Object {$_.path -ceq $record.path})
+        if ($actual.Count -ne 1 -or $actual[0].sha256 -cne $record.sha256) {
             throw 'INSTALLER_SHORTCUT_OWNERSHIP_CHANGED'
         }
     }
@@ -821,13 +841,7 @@ if ($Electron) {
         Write-Host "CI_INSTALLER_FRESH $freshStep pass"
         $freshStep='shortcuts'
         Write-Host "CI_INSTALLER_FRESH $freshStep started"
-        Assert-ShortcutTargets
-        $links=@(Get-ChildItem -LiteralPath $groupPath -Force)
-        if ($links.Count -ne 3) { throw 'INSTALLER_SHORTCUT_INVENTORY' }
-        $shortcutRecords=@(foreach ($link in $links) {
-            if ($link.PSIsContainer -or ($link.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'INSTALLER_SHORTCUT_UNSAFE' }
-            @{path=$link.FullName;sha256=(Get-FileHash -LiteralPath $link.FullName -Algorithm SHA256).Hash}
-        })
+        $shortcutRecords=@(Get-OwnedShortcutFiles)
         $checks.fresh_install_verified=$true
         Write-Host "CI_INSTALLER_FRESH $freshStep pass"
         $freshStep='reference_copy'
@@ -885,10 +899,14 @@ if ($Electron) {
         $pgBefore=Get-PreservedProfileSnapshot
         $appBefore=Get-PreservedProfileSnapshot -ProfilePath $dataPath
         Start-HiddenAndWait $installerPath ($installArguments + @('/LOG=' + (Join-Path $testPath 'reinstall.log'))) 'Same version reinstall' 600000
-        # Inno's own .dat may be appended by a successful reinstall. Its new
-        # identity is admitted only after the retained installer and registration.
+        # Successful Inno may rewrite its .dat and the three owned shortcuts.
+        # Admit both new baselines only after completion, registration and all
+        # shortcut inventory/type/Unicode-target checks have succeeded.
         Assert-OwnedInstallation
-        $ownedInno=Get-OwnedInnoFiles
+        $newOwnedInno=Get-OwnedInnoFiles
+        $newShortcutRecords=@(Get-OwnedShortcutFiles)
+        $ownedInno=$newOwnedInno
+        $shortcutRecords=$newShortcutRecords
         Assert-ElectronOwnership
         Assert-ElectronInventory 'reinstalled'
         if ((Get-PreservedProfileSnapshot) -cne $pgBefore -or
