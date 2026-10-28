@@ -5,7 +5,8 @@ param(
     [string]$DesktopEvidenceDirectory,
     [string]$DesktopEvidenceNonce,
     [switch]$Electron,
-    [string]$Python
+    [string]$Python,
+    [ValidateSet('quick99', 'full6a')][string]$InstallerInputSet = 'quick99'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -616,7 +617,9 @@ public sealed class SsearchInstallerLinkReader : IDisposable {
 
 function Invoke-InstallerHelper {
     param([string[]]$Arguments)
-    $value = & $Python (Join-Path $repository 'tools/ci_installer.py') @Arguments
+    $selection=Get-Variable -Name InstallerInputSet -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if (-not $selection) { $selection='quick99' }
+    $value = & $Python (Join-Path $repository 'tools/ci_installer.py') @Arguments --input-set $selection
     foreach ($line in @($value)) {
         if ($line -cmatch '^CI_INSTALLER_INVENTORY files=[0-9]{1,6} desktop_match=(true|false) service_match=(true|false) inventory_match=(true|false|unavailable)$' -or
             $line -cmatch '^CI_INSTALLER_HELPER code=(installer_inventory_boundary|installer_inno_inventory_invalid|installer_non_file|installer_duplicate_file|installer_inno_identity_changed|installer_inno_file_missing|installer_payload_image_mismatch|installer_inventory_mismatch|installer_reparse_refused|installer_report_unavailable|installer_object_required|unavailable)$') {
@@ -734,8 +737,10 @@ function Invoke-InstalledUiProof {
         Write-Host "CI_INSTALLER_UI_FAILURE role=$role stage=$stage invoked=$($invoked.ToString().ToLowerInvariant()) hresult=$hresult wait_reason=$waitReason exit_code=$observedExit report_present=$($reportPresent.ToString().ToLowerInvariant())"
         if ($invoked -and $observedExit -cin @('0','1')) {
             try {
+                $selection=Get-Variable -Name InstallerInputSet -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+                if (-not $selection) { $selection='quick99' }
                 $value=& $Python (Join-Path $repository 'tools/ci_installer.py') ui-summary --report $report `
-                    --scenario $Scenario --exit-code $observedExit --not-before-ms $notBeforeMs
+                    --scenario $Scenario --exit-code $observedExit --not-before-ms $notBeforeMs --input-set $selection
                 if ($LASTEXITCODE -eq 0 -and @($value).Count -eq 1) { Write-Host ([string]$value) }
                 else { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
             } catch { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
@@ -746,7 +751,7 @@ function Invoke-InstalledUiProof {
 }
 
 if ($Electron) {
-    # This branch consumes the original Quick artifact, never a source build.
+    # Consume only the explicitly pinned existing artifact, never a source build.
     # The enclosing CI wrapper already verified the loaded standard-user profile,
     # DPAPI and owned retained job. Keep its actual KnownFolders/environment.
     $isElectron=$true
@@ -755,10 +760,10 @@ if ($Electron) {
         -not [Environment]::Is64BitProcess) { throw 'INSTALLER_CI_CONTEXT_REQUIRED' }
     $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
     if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'INSTALLER_STANDARD_USER_REQUIRED' }
-    $pins = Get-Content -LiteralPath (Join-Path $repository 'resources/ci/installer-proof-input.json') -Raw | ConvertFrom-Json
+    $pins = (Invoke-InstallerHelper @('inputs')) | ConvertFrom-Json
     $null=Invoke-InstallerHelper @('admit')
     $sourceCommit=$pins.source_commit
-    $buildRoot=Join-Path $artifacts ('development-quick\' + $sourceCommit)
+    $buildRoot=[IO.Path]::GetFullPath((Join-Path $repository $pins.base))
     $installerPath=Assert-ArtifactPath $Installer
     $testPath=Assert-ArtifactPath $TestDir -Qa
     $manifestPath=Join-Path $buildRoot 'build-manifest.json'

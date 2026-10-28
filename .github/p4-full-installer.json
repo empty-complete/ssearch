@@ -1,0 +1,17 @@
+{
+  "repository": "empty-complete/ssearch",
+  "source_commit": "6a380230b8f26cf5df1798b396c850ab59484c7d",
+  "run_id": 40758406045,
+  "artifact_id": 12855200220,
+  "workflow_id": 395933832,
+  "workflow_path": ".github/workflows/windows-build.yml",
+  "head_branch": "main",
+  "artifact_name": "windows-6a380230b8f26cf5df1798b396c850ab59484c7d-full",
+  "archive_size": 340592916,
+  "archive_sha256": "8ce7b5e7a24175d124da2e6fc1803fd3ab760ee6890d5533adf69b9479dc4c44",
+  "installer_name": "ssearch-Setup-0.2.0.exe",
+  "installer_size": 340588167,
+  "installer_sha256": "12fb73a8ad1b619b93e0f290d70973d6727cf5a0becbcf55c4f3b92a8fa5b497",
+  "test_scope": "full",
+  "full_suite_passed": true
+}

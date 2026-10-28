@@ -32,6 +32,11 @@ on:
         description: Publish a development prerelease (Full on main only)
         type: boolean
         default: false
+      installer_input:
+        description: Exact existing installer proof input (installer mode only)
+        type: choice
+        options: [quick99, full6a]
+        default: quick99
 
 permissions:
   contents: read
@@ -53,6 +58,9 @@ jobs:
       pr_number: ${{ steps.scope.outputs.pr_number }}
       pr_head_repository: ${{ steps.scope.outputs.pr_head_repository }}
       route: ${{ steps.scope.outputs.route }}
+      mode: ${{ steps.scope.outputs.mode }}
+      targets: ${{ steps.scope.outputs.targets }}
+      authentication: ${{ steps.scope.outputs.authentication }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -81,6 +89,7 @@ jobs:
           }
           $required = $true
           $route = 'binary'
+          $reviewMode = ''; $reviewTargets = ''; $authentication = ''
           $prNumber = [int]$env:PR_NUMBER
           $testedSha = $env:SOURCE_SHA
           $headRepository = $env:GH_REPO
@@ -109,11 +118,23 @@ jobs:
             $scopeArguments = @('tools/ci_publish.py', 'classify', '--pr-number', $prNumber, '--head-sha', $testedSha)
             if ($env:EVENT_NAME -eq 'push') { $scopeArguments += @('--merge-sha', $env:SOURCE_SHA) }
             $classification = & python @scopeArguments
-            if ($LASTEXITCODE -ne 0 -or $classification -notin @('true', 'false', 'candidate-source')) {
+            if ($LASTEXITCODE -ne 0 -or $classification -notin @('true', 'false', 'candidate-source', 'installer-source')) {
               throw 'Could not safely classify the exact PR head.'
             }
-            $required = $classification -in @('true', 'candidate-source')
-            if ($classification -eq 'candidate-source') { $route = 'candidate-source' }
+            $required = $classification -in @('true', 'candidate-source', 'installer-source')
+            if ($classification -in @('candidate-source', 'installer-source')) {
+              $route = $classification
+              $settingsJson = & python tools/ci_p4_candidate.py --settings $route
+              if ($LASTEXITCODE -ne 0) { throw 'Source review settings unavailable.' }
+              $settings = $settingsJson | ConvertFrom-Json
+              if ($settings.mode -cne 'source' -or $settings.desktop_stack -ne $false -or
+                  $settings.publish -ne $false -or $settings.authentication -cnotin @('candidate', 'full6a')) {
+                throw 'Invalid source review settings.'
+              }
+              $reviewMode = $settings.mode
+              $reviewTargets = ConvertTo-Json -InputObject @($settings.test_targets) -Compress
+              $authentication = $settings.authentication
+            }
           }
           if ($testedSha -notmatch '^[0-9a-f]{40}$' -or $headRepository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
             throw 'Invalid source identity returned by GitHub.'
@@ -123,6 +144,9 @@ jobs:
           "pr_number=$prNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "pr_head_repository=$headRepository" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "route=$route" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "mode=$reviewMode" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "targets=$reviewTargets" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "authentication=$authentication" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
   build:
     needs: changes
@@ -135,8 +159,9 @@ jobs:
     env:
       PYTHONUTF8: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
-      BUILD_MODE: ${{ needs.changes.outputs.route == 'candidate-source' && 'source' || inputs.mode || 'full' }}
-      TEST_TARGETS_JSON: ${{ needs.changes.outputs.route == 'candidate-source' && '["tests/test_ci_p4_candidate.py","tests/test_ci_publish.py","tests/test_ci_inputs.py","tests/test_installer_qa.py","tests/test_resources.py"]' || inputs.test_targets || '[]' }}
+      BUILD_MODE: ${{ needs.changes.outputs.mode || inputs.mode || 'full' }}
+      TEST_TARGETS_JSON: ${{ needs.changes.outputs.targets || inputs.test_targets || '[]' }}
+      SSEARCH_INSTALLER_INPUT_SET: ${{ inputs.installer_input || 'quick99' }}
       DESKTOP_STACK: ${{ inputs.desktop_stack && 'true' || 'false' }}
       FRONTEND_TEST_TARGETS_JSON: ${{ inputs.frontend_test_targets || '[]' }}
       DESKTOP_TEST_TARGETS_JSON: ${{ inputs.desktop_test_targets || '[]' }}
@@ -153,12 +178,14 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.lock.txt
       - name: Authenticate the unchanged candidate proofs before exact-head source tests
-        if: needs.changes.outputs.route == 'candidate-source'
+        if: needs.changes.outputs.route == 'candidate-source' || needs.changes.outputs.route == 'installer-source'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          & python tools/ci_p4_candidate.py --head-sha $env:SOURCE_SHA --pr-number '${{ needs.changes.outputs.pr_number }}'
+          $arguments = @('tools/ci_p4_candidate.py', '--head-sha', $env:SOURCE_SHA, '--pr-number', '${{ needs.changes.outputs.pr_number }}')
+          if ('${{ needs.changes.outputs.authentication }}' -ceq 'full6a') { $arguments += '--installer-review' }
+          & python @arguments
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate requested build scope
         shell: pwsh
@@ -178,6 +205,10 @@ jobs:
           if ($env:BUILD_MODE -eq 'full' -and $count -ne 0) { throw 'Full does not accept test targets.' }
           if ($env:BUILD_MODE -in @('quick', 'source') -and $count -eq 0) { throw 'Quick/source requires explicit targets.' }
           if ($env:BUILD_MODE -notin @('full', 'quick', 'source', 'installer')) { throw 'Unknown build mode.' }
+          if ($env:SSEARCH_INSTALLER_INPUT_SET -cnotin @('quick99', 'full6a') -or
+              ($env:SSEARCH_INSTALLER_INPUT_SET -ceq 'full6a' -and $env:BUILD_MODE -cne 'installer')) {
+            throw 'Installer input selection requires installer mode.'
+          }
           if ($env:BUILD_MODE -eq 'installer' -and ('${{ github.event_name }}' -ne 'workflow_dispatch' -or
               $env:DESKTOP_STACK -ne 'false' -or $count -ne 0 -or '${{ inputs.publish }}' -eq 'true')) {
             throw 'Installer proof is manual only, without packaging, publication or test targets.'
@@ -222,7 +253,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          & python tools/ci_installer.py fetch --harness-commit $env:SOURCE_SHA
+          & python tools/ci_installer.py fetch --harness-commit $env:SOURCE_SHA --input-set $env:SSEARCH_INSTALLER_INPUT_SET
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & python -m venv .venv
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -281,6 +312,7 @@ jobs:
     if: >-
       always() && !cancelled() && needs.changes.outputs.build == 'true' &&
       needs.changes.outputs.route != 'candidate-source' &&
+      needs.changes.outputs.route != 'installer-source' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
         inputs.publish && inputs.mode == 'full' && needs.build.result == 'success'))
