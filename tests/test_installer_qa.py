@@ -541,7 +541,8 @@ try {
                        @{name='Справка ssearch.lnk';target=$help},
                        @{name='Удалить ssearch.lnk';target=$uninstallerPath})) {
         $link=$maker.CreateShortcut((Join-Path $groupPath $entry.name))
-        $link.TargetPath=if($Fault -ceq 'wrong-target' -and $entry.name -ceq 'Справка ssearch.lnk') {$other} else {$entry.target}
+        [string]$selectedTarget=if($Fault -ceq 'wrong-target' -and $entry.name -ceq 'Справка ssearch.lnk') {$other} else {$entry.target}
+        $link.TargetPath=$selectedTarget
         $link.Save()
     }
 } finally {$null=[Runtime.InteropServices.Marshal]::ReleaseComObject($maker)}
@@ -562,7 +563,8 @@ $expected=if($Fault -ceq 'missing') {'CI_INSTALLER_SHORTCUT role=help exists=fal
     result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File', str(script),
         str(ROOT / 'tools/check_installer.ps1'), str(ROOT / 'tools/run_ci_build.ps1'), str(tmp_path), fault],
         capture_output=True, timeout=30)
-    assert result.returncode == 0, 'Real Windows COM shortcut component probe failed'
+    clean_exit = result.returncode == 0
+    assert clean_exit, 'Real Windows COM shortcut component probe failed'
     try:
         observed = json.loads(result.stdout)
     except (ValueError, UnicodeError):
