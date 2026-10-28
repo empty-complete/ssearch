@@ -405,6 +405,8 @@ def test_installer_parent_output_filter_rejects_private_and_unknown_lines(tmp_pa
         ('CI_INSTALLER_FRESH inventory started', True),
         ('CI_INSTALLER_FRESH reference_inventory pass', True),
         ('CI_INSTALLER_FAILURE substep=inventory hresult=-2146233087 wait_reason=complete exit_integer=true exit_zero=true', True),
+        ('CI_INSTALLER_FAILURE substep=install_process hresult=-2146233087 wait_reason=job_drain_timeout exit_integer=false exit_zero=false', True),
+        ('CI_INSTALLER_UI_FAILURE role=ui-security stage=wait invoked=true hresult=-2146233087 wait_reason=assigning_job exit_code=unavailable report_present=false', True),
         ('CI_INSTALLER_INVENTORY files=5001 desktop_match=true service_match=true inventory_match=false', True),
         ('CI_INSTALLER_HELPER code=installer_inventory_mismatch', True),
         ('CI_INSTALLER_HELPER code=unavailable', True),

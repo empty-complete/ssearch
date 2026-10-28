@@ -62,21 +62,71 @@ function Start-HiddenAndWait {
     $script:processCompletionConfirmed = $false
     $script:processCompletionReason = 'preparing_waiter'
     $script:processWaitObservation = @{waiter_finished=$false; waiter_exit_integer=$false;
-        waiter_exit_zero=$false; completion_present=$false}
+        waiter_exit_zero=$false; completion_present=$false; admitted=$false; job_drained=$false}
     $script:processCompletionPayload = $null
     $script:processExitCode = $null
-    # Inno's initial uninstaller exits before its temporary child finishes.
-    # A separate hidden waiter preserves Start-Process -Wait's descendant-tree
-    # semantics while the coordinator bounds the wait without killing anything.
+    if (-not ('SsearchInstallerWaitJob' -as [type])) {
+        # Tracking only: defaults contain no kill, breakaway or UI limits.
+        # Closing this inner handle on timeout preserves unknown descendants;
+        # the admitted outer CI job remains their cleanup authority.
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public sealed class SsearchInstallerWaitJob : IDisposable {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, ExactSpelling=true, SetLastError=true)]
+    static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool QueryInformationJobObject(IntPtr job, int kind, [Out] byte[] data, uint size, IntPtr returned);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool CloseHandle(IntPtr handle);
+    IntPtr handle;
+    public SsearchInstallerWaitJob() {
+        handle=CreateJobObjectW(IntPtr.Zero, null);
+        if(handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    public void Assign(Process process) {
+        if(!AssignProcessToJobObject(handle, process.Handle))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    public uint ActiveProcesses {
+        get {
+            // JOBOBJECT_BASIC_ACCOUNTING_INFORMATION: ActiveProcesses offset40.
+            var data=new byte[48];
+            if(!QueryInformationJobObject(handle, 1, data, (uint)data.Length, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return BitConverter.ToUInt32(data, 40);
+        }
+    }
+    public void Dispose() {
+        if(handle == IntPtr.Zero) return;
+        if(!CloseHandle(handle)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        handle=IntPtr.Zero;
+    }
+}
+'@
+    }
+    # One deadline covers launch, admission, kernel drain and validated receipt.
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    $expires=[DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds).Ticks
     $waitId = [Guid]::NewGuid().ToString('N')
     $completionPath = Join-Path $testPath ("process-completion-$waitId.json")
+    $admissionPath=Join-Path $testPath ("process-admission-$waitId.json")
     $requestValue = @{ program = $Program; arguments = ($quoted -join ' ');
-        directory = $testPath; completion = $completionPath; id = $waitId } | ConvertTo-Json -Compress
+        directory = $testPath; completion = $completionPath; id = $waitId;
+        admission=$admissionPath; expires=$expires } | ConvertTo-Json -Compress
     $request = $requestValue
     if (Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue) {
         $request = @{program=$Program; arguments=($quoted -join ' '); directory=$testPath;
             completion=$completionPath; id=$waitId; stdout=(Join-Path $testPath "$waitId.stdout");
             stderr=(Join-Path $testPath "$waitId.stderr");
+            admission=$admissionPath; expires=$expires;
             frozen=($Program -ine $Python -and $Program -in @($appExecutable,$serviceExecutable,
                 $referenceExecutable,$referenceServiceExecutable))} | ConvertTo-Json -Compress
     }
@@ -86,6 +136,14 @@ $ErrorActionPreference = 'Stop'
 try {
     $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REQUEST__')) |
         ConvertFrom-Json
+    # No native child can start until the caller has enrolled this retained
+    # waiter in its kernel job and atomically admitted this nonce/PID pair.
+    while (-not (Test-Path -LiteralPath $request.admission -PathType Leaf)) {
+        if ([DateTime]::UtcNow.Ticks -ge $request.expires) { throw 'admission_expired' }
+        Start-Sleep -Milliseconds 10
+    }
+    $ticket=Get-Content -LiteralPath $request.admission -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($ticket.id -cne $request.id -or $ticket.pid -ne $PID) { throw 'admission_invalid' }
     $parameters = @{FilePath=$request.program; ArgumentList=$request.arguments;
         WorkingDirectory=$request.directory; WindowStyle='Hidden'; Wait=$true; PassThru=$true}
     if ($request.PSObject.Properties['stdout']) {
@@ -101,6 +159,9 @@ try {
         }
         $env:PATH=Join-Path $env:SystemRoot 'System32'
     }
+    # Admission may have arrived near the deadline. Check immediately before
+    # CreateProcess rather than allowing a late native proof to start.
+    if ([DateTime]::UtcNow.Ticks -ge $request.expires) { throw 'admission_expired' }
     $child = Start-Process @parameters
     $value = @{ id = $request.id; completed = $true; exit_code = $child.ExitCode } |
         ConvertTo-Json -Compress
@@ -117,37 +178,79 @@ try {
     $waiterScript = $waiterScript.Replace('__REQUEST__', $encodedRequest)
     $encodedScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($waiterScript))
     $waiter = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $process = Start-Process -FilePath $waiter -ArgumentList @(
-        '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedScript) `
-        -WorkingDirectory $testPath -WindowStyle Hidden -PassThru
-    $script:processCompletionReason = 'waiting'
-    $finished = $false
-    if (Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue) {
-        $clock = [Diagnostics.Stopwatch]::StartNew()
+    $job=$null; $process=$null
+    try {
+        $script:processCompletionReason='creating_job'
+        $job=[SsearchInstallerWaitJob]::new()
+        $process = Start-Process -FilePath $waiter -ArgumentList @(
+            '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedScript) `
+            -WorkingDirectory $testPath -WindowStyle Hidden -PassThru
+        $null=$process.Handle
+        $script:processCompletionReason='assigning_job'
+        $job.Assign($process)
+        $script:processCompletionReason='admitting_waiter'
+        if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) { throw 'INSTALLER_ADMISSION_EXPIRED' }
+        $ticket=@{id=$waitId;pid=$process.Id} | ConvertTo-Json -Compress
+        $temporary=$admissionPath + '.tmp'
+        $stream=[IO.File]::Open($temporary,'CreateNew','Write','None')
+        try {
+            $bytes=[Text.Encoding]::UTF8.GetBytes($ticket)
+            $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true)
+        } finally { $stream.Dispose() }
+        [IO.File]::Move($temporary,$admissionPath)
+        $script:processWaitObservation.admitted=$true
+        $script:processCompletionReason='waiting'
+        $finished=$false
         do {
-            $finished = $process.WaitForExit(100)
-            foreach ($name in @("$waitId.stdout", "$waitId.stderr")) {
-                $capture = Join-Path $testPath $name
-                if ((Test-Path -LiteralPath $capture) -and (Get-Item -LiteralPath $capture).Length -gt 1048576) {
-                    $script:processCompletionReason='capture_limit'
-                    throw 'INSTALLER_CHILD_CAPTURE_LIMIT'
+            if (-not $finished) {
+                $remaining=[Math]::Max(1,($TimeoutMilliseconds-$clock.ElapsedMilliseconds))
+                $finished=$process.WaitForExit([int][Math]::Min(50,$remaining))
+                if ($finished) {
+                    $script:processCompletionReason='reading_waiter_exit'
+                    $waiterExitCode=$process.ExitCode
+                    $process.Dispose(); $process=$null
                 }
             }
-        } while (-not $finished -and $clock.ElapsedMilliseconds -lt $TimeoutMilliseconds)
-    } else { $finished = $process.WaitForExit($TimeoutMilliseconds) }
-    if (-not $finished) {
-        $script:processCompletionReason = 'waiter_timeout'
-        throw "$Label timed out; descendant completion unknown, files preserved."
+            $script:processWaitObservation.waiter_finished=$finished
+            $script:processCompletionReason='querying_job'
+            $active=$job.ActiveProcesses
+            if (Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue) {
+                foreach ($name in @("$waitId.stdout", "$waitId.stderr")) {
+                    $capture = Join-Path $testPath $name
+                    if ((Test-Path -LiteralPath $capture) -and (Get-Item -LiteralPath $capture).Length -gt 1048576) {
+                        $script:processCompletionReason='capture_limit'
+                        throw 'INSTALLER_CHILD_CAPTURE_LIMIT'
+                    }
+                }
+            }
+            if ($finished -and $active -eq 0) { break }
+            if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
+                $script:processCompletionReason=if($finished){'job_drain_timeout'}else{'waiter_timeout'}
+                throw "$Label timed out; descendant completion unknown, files preserved."
+            }
+            if ($finished) {
+                $remaining=[Math]::Max(1,($TimeoutMilliseconds-$clock.ElapsedMilliseconds))
+                Start-Sleep -Milliseconds ([int][Math]::Min(50,$remaining))
+            }
+            $script:processCompletionReason='waiting'
+        } while ($true)
+        $script:processWaitObservation.job_drained=$true
+    } finally {
+        # Close only handles; no termination and no discovered-process lookup.
+        try {
+            if ($null -ne $job) {
+                try { $job.Dispose() }
+                catch { $script:processCompletionReason='job_close_failed'; throw }
+            }
+        }
+        finally { if ($null -ne $process) { $process.Dispose() } }
     }
-    $script:processWaitObservation.waiter_finished = $true
-    $script:processCompletionReason = 'reading_waiter_exit'
-    $waiterExitCode = $process.ExitCode
     $script:processCompletionReason = 'checking_completion_file'
     $completionPresent = Test-Path -LiteralPath $completionPath -PathType Leaf
     $script:processWaitObservation = @{waiter_finished=$true;
         waiter_exit_integer=($waiterExitCode -is [int] -or $waiterExitCode -is [long]);
         waiter_exit_zero=($null -ne $waiterExitCode -and $waiterExitCode -eq 0);
-        completion_present=$completionPresent}
+        completion_present=$completionPresent; admitted=$true; job_drained=$true}
     if ($waiterExitCode -ne 0 -or -not $completionPresent) {
         $script:processCompletionReason = if ($null -eq $waiterExitCode) { 'waiter_exit_unavailable' }
             elseif ($waiterExitCode -ne 0) { 'waiter_exit_nonzero' } else { 'completion_missing' }
@@ -170,6 +273,10 @@ try {
     # Coerce only after validating the producer's signed Process.ExitCode range.
     $exitCode = [int]$completion.exit_code
     $script:processExitCode = $exitCode
+    if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
+        $script:processCompletionReason='completion_deadline'
+        throw 'INSTALLER_COMPLETION_DEADLINE'
+    }
     $script:processCompletionConfirmed = $true
     if ($exitCode -ne 0) {
         $script:processCompletionReason = 'child_exit_nonzero'
@@ -595,7 +702,8 @@ function Invoke-InstalledUiProof {
         $waitReason='unavailable'; $observedExit='unavailable'
         if ($invoked) {
             $waitReason=Get-Variable -Name processCompletionReason -Scope Script -ValueOnly -ErrorAction SilentlyContinue
-            if ($waitReason -cnotin @('preparing_waiter','waiting','capture_limit','waiter_timeout',
+            if ($waitReason -cnotin @('preparing_waiter','creating_job','assigning_job','admitting_waiter',
+                'querying_job','job_drain_timeout','job_close_failed','completion_deadline','waiting','capture_limit','waiter_timeout',
                 'reading_waiter_exit','checking_completion_file','waiter_exit_unavailable','waiter_exit_nonzero',
                 'completion_missing','reading_completion','completion_payload_invalid','child_exit_nonzero','complete')) { $waitReason='unavailable' }
             if ($stage -ceq 'launch' -and $waitReason -cnotin @('preparing_waiter','unavailable')) { $stage='wait' }
@@ -833,7 +941,8 @@ if ($Electron) {
             # retained waiter's completion observation with a successful one.
             $hresult=[int]$_.Exception.HResult
             $waitReason=Get-Variable -Name processCompletionReason -Scope Script -ValueOnly -ErrorAction SilentlyContinue
-            if ($waitReason -cnotin @('preparing_waiter','waiting','capture_limit','waiter_timeout',
+            if ($waitReason -cnotin @('preparing_waiter','creating_job','assigning_job','admitting_waiter',
+                'querying_job','job_drain_timeout','job_close_failed','completion_deadline','waiting','capture_limit','waiter_timeout',
                 'reading_waiter_exit','checking_completion_file','waiter_exit_unavailable','waiter_exit_nonzero',
                 'completion_missing','reading_completion','completion_payload_invalid','child_exit_nonzero','complete')) { $waitReason='unavailable' }
             $payload=Get-Variable -Name processCompletionPayload -Scope Script -ValueOnly -ErrorAction SilentlyContinue

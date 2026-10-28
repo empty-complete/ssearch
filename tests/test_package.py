@@ -69,8 +69,15 @@ $node.Name -eq 'Start-HiddenAndWait'
 Invoke-Expression $function.Extent.Text
 function Start-Process {
     param($FilePath, $ArgumentList, $WorkingDirectory, $WindowStyle, [switch]$PassThru)
-    $script:ownedWaiter = Microsoft.PowerShell.Management\Start-Process @PSBoundParameters
-    return $script:ownedWaiter
+    $created = Microsoft.PowerShell.Management\Start-Process @PSBoundParameters
+    # Retain a separate handle to this exact newly-created waiter. The real
+    # helper closes its Process before kernel drain; no discovered PID is used
+    # as cleanup authority and neither handle ever kills a process.
+    $createdTicks=$created.StartTime.Ticks
+    $script:ownedWaiter=[Diagnostics.Process]::GetProcessById($created.Id)
+    $null=$script:ownedWaiter.Handle
+    if ($script:ownedWaiter.StartTime.Ticks -ne $createdTicks) { throw 'owned_waiter_identity_changed' }
+    return $created
 }
 $script:processCompletionConfirmed = $false
 $caught = $false
@@ -86,13 +93,15 @@ try {
         payload=$script:processCompletionPayload}
     if ($ExpectTimeout) {
         if (-not $caught -or $script:processCompletionConfirmed -or
-            (Test-Path -LiteralPath $Marker)) {
+            (Test-Path -LiteralPath $Marker) -or -not $script:processWaitObservation.admitted -or
+            $script:processWaitObservation.job_drained) {
             [Console]::Error.WriteLine('owned_tree_observation=' + ($observation | ConvertTo-Json -Depth 4 -Compress))
             throw 'Timed-out descendant tree was marked complete.'
         }
     } else {
         if ($caught -or -not $script:processCompletionConfirmed -or
-            -not (Test-Path -LiteralPath $Marker)) {
+            -not (Test-Path -LiteralPath $Marker) -or -not $script:processWaitObservation.admitted -or
+            -not $script:processWaitObservation.job_drained) {
             [Console]::Error.WriteLine('owned_tree_observation=' + ($observation | ConvertTo-Json -Depth 4 -Compress))
             throw 'Initial process exit was mistaken for descendant completion.'
         }
@@ -102,6 +111,7 @@ try {
     if ($script:ownedWaiter -and -not $script:ownedWaiter.WaitForExit(15000)) {
         throw 'Owned toy waiter did not finish.'
 }
+    if ($script:ownedWaiter) { $script:ownedWaiter.Dispose() }
 }
 @{shell=$PSVersionTable.PSVersion.ToString(); timeout=[bool]$ExpectTimeout;
   completion=$script:processCompletionConfirmed; descendant_finished=(Test-Path -LiteralPath $Marker)} |
@@ -165,6 +175,10 @@ $Label = 'pure completion matrix'
 $testPath = $PSScriptRoot
 $passed = 0
 foreach ($case in $cases) {
+    # The extracted suffix executes after admitted kernel drain in production.
+    # Supply only its original-deadline context, without bypassing any numeric
+    # identity/range/type assertion under test.
+    $clock=[Diagnostics.Stopwatch]::StartNew(); $TimeoutMilliseconds=15000
     $completion = ('{"id":"expected","completed":true,"exit_code":' + $case.json + '}') |
         ConvertFrom-Json
     $script:processCompletionConfirmed = $false
