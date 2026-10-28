@@ -52,6 +52,7 @@ jobs:
       tested_sha: ${{ steps.scope.outputs.tested_sha }}
       pr_number: ${{ steps.scope.outputs.pr_number }}
       pr_head_repository: ${{ steps.scope.outputs.pr_head_repository }}
+      route: ${{ steps.scope.outputs.route }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -79,6 +80,7 @@ jobs:
             return $response | ConvertFrom-Json
           }
           $required = $true
+          $route = 'binary'
           $prNumber = [int]$env:PR_NUMBER
           $testedSha = $env:SOURCE_SHA
           $headRepository = $env:GH_REPO
@@ -104,11 +106,14 @@ jobs:
             $headRepository = $pr.head.repo.full_name
             # Publisher-only changes must preserve the exact base/head workflow
             # header and binary build job. Unknown files still require Full.
-            $classification = & python tools/ci_publish.py classify --pr-number $prNumber --head-sha $testedSha
-            if ($LASTEXITCODE -ne 0 -or $classification -notin @('true', 'false')) {
+            $scopeArguments = @('tools/ci_publish.py', 'classify', '--pr-number', $prNumber, '--head-sha', $testedSha)
+            if ($env:EVENT_NAME -eq 'push') { $scopeArguments += @('--merge-sha', $env:SOURCE_SHA) }
+            $classification = & python @scopeArguments
+            if ($LASTEXITCODE -ne 0 -or $classification -notin @('true', 'false', 'candidate-source')) {
               throw 'Could not safely classify the exact PR head.'
             }
-            $required = $classification -eq 'true'
+            $required = $classification -in @('true', 'candidate-source')
+            if ($classification -eq 'candidate-source') { $route = 'candidate-source' }
           }
           if ($testedSha -notmatch '^[0-9a-f]{40}$' -or $headRepository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
             throw 'Invalid source identity returned by GitHub.'
@@ -117,6 +122,7 @@ jobs:
           "tested_sha=$testedSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "pr_number=$prNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "pr_head_repository=$headRepository" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "route=$route" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
   build:
     needs: changes
@@ -129,8 +135,8 @@ jobs:
     env:
       PYTHONUTF8: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
-      BUILD_MODE: ${{ inputs.mode || 'full' }}
-      TEST_TARGETS_JSON: ${{ inputs.test_targets || '[]' }}
+      BUILD_MODE: ${{ needs.changes.outputs.route == 'candidate-source' && 'source' || inputs.mode || 'full' }}
+      TEST_TARGETS_JSON: ${{ needs.changes.outputs.route == 'candidate-source' && '["tests/test_ci_p4_candidate.py","tests/test_ci_publish.py","tests/test_ci_inputs.py","tests/test_installer_qa.py","tests/test_resources.py"]' || inputs.test_targets || '[]' }}
       DESKTOP_STACK: ${{ inputs.desktop_stack && 'true' || 'false' }}
       FRONTEND_TEST_TARGETS_JSON: ${{ inputs.frontend_test_targets || '[]' }}
       DESKTOP_TEST_TARGETS_JSON: ${{ inputs.desktop_test_targets || '[]' }}
@@ -146,6 +152,14 @@ jobs:
           architecture: x64
           cache: pip
           cache-dependency-path: requirements.lock.txt
+      - name: Authenticate the unchanged candidate proofs before exact-head source tests
+        if: needs.changes.outputs.route == 'candidate-source'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & python tools/ci_p4_candidate.py --head-sha $env:SOURCE_SHA --pr-number '${{ needs.changes.outputs.pr_number }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate requested build scope
         shell: pwsh
         run: |
@@ -266,6 +280,7 @@ jobs:
     needs: [changes, build]
     if: >-
       always() && !cancelled() && needs.changes.outputs.build == 'true' &&
+      needs.changes.outputs.route != 'candidate-source' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
         inputs.publish && inputs.mode == 'full' && needs.build.result == 'success'))

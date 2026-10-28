@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ANCHOR = 'e4e93eebfa51c53ea1703d9a39a34e7c667828ba'
 PAYLOAD = '99c53a141c4864072e8a357d2a0cc5423c1c810b'
 HEAD = 'a' * 40
+MERGE = 'd' * 40
 REPOSITORY = 'empty-complete/ssearch'
 WORKFLOW = '.github/workflows/windows-build.yml'
 INPUT = 'resources/ci/installer-proof-input.json'
@@ -73,6 +74,7 @@ class PublicApi:
         self.pr = dict(number=3, changed_files=2,
             head=dict(sha=HEAD, ref='codex/p4-shared-package', repo=dict(full_name=REPOSITORY)),
             base=dict(sha='b' * 40, ref='main', repo=dict(full_name=REPOSITORY)))
+        self.source_tree = self.merged_tree = 'c' * 40
         self.comparison = dict(status='ahead', base_commit=dict(sha=ANCHOR),
             merge_base_commit=dict(sha=ANCHOR), files=[dict(filename=CONFIG),
                 dict(filename='tools/ci_p4_candidate.py')])
@@ -130,6 +132,8 @@ class PublicApi:
 
     def get(self, endpoint, **kwargs):
         values = {'pulls/3': self.pr, f'compare/{ANCHOR}...{HEAD}': self.comparison,
+                  f'git/commits/{HEAD}': dict(tree=dict(sha=self.source_tree)),
+                  f'git/commits/{MERGE}': dict(tree=dict(sha=self.merged_tree)),
                   'actions/runs/40409747788': self.quick_run,
                   'actions/artifacts/12693783261': self.quick_artifact,
                   'actions/runs/40741860014': self.install_run,
@@ -175,6 +179,28 @@ def test_existing_classifier_selects_real_source_route_instead_of_legacy_qt_full
 
 def test_candidate_route_requires_exact_reviewed_ancestor_and_closed_diff(checker, public_api):
     assert checker.candidate_route(public_api, public_api.pr, HEAD) is True
+
+
+@pytest.mark.parametrize('fault', [None, 'unmerged', 'wrong-merge', 'different-tree'])
+def test_candidate_main_push_suppression_requires_exact_merged_head_and_tree(checker, public_api, monkeypatch, capsys, fault):
+    public_api.pr.update(merged=True, merged_at='2026-10-29T00:00:00Z', merge_commit_sha=MERGE)
+    if fault == 'unmerged':
+        public_api.pr['merged'] = False
+    elif fault == 'wrong-merge':
+        public_api.pr['merge_commit_sha'] = 'e' * 40
+    elif fault == 'different-tree':
+        public_api.merged_tree = 'e' * 40
+    if fault is not None:
+        with pytest.raises(checker.CandidateError):
+            checker.candidate_route(public_api, public_api.pr, HEAD, merge_sha=MERGE)
+    else:
+        assert checker.candidate_route(public_api, public_api.pr, HEAD, merge_sha=MERGE) is True
+        publisher = load_tool('ci_publish')
+        monkeypatch.setattr(publisher, 'GitHub', lambda: public_api)
+        monkeypatch.setattr('sys.argv', ['ci_publish.py', 'classify', '--pr-number', '3',
+                                      '--head-sha', HEAD, '--merge-sha', MERGE])
+        assert publisher.main() == 0
+        assert capsys.readouterr().out == 'candidate-source\n'
 
 
 @pytest.mark.parametrize('fault', ['head', 'head-repository', 'base-repository', 'base-branch'])

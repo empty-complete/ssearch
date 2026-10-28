@@ -1,0 +1,29 @@
+{
+  "ui_compatibility_decision": {
+    "status": "candidate",
+    "candidateDigest": "4f0aba44b9cfe9c4827216c01e1e17ddf96ced66bad54380852f61f7fa4ba2bd",
+    "reports": [
+      "https://github.com/empty-complete/ssearch/actions/runs/40409747788",
+      "https://github.com/empty-complete/ssearch/actions/runs/40741860014"
+    ],
+    "openGates": [
+      "qt_upgrade",
+      "native_windows_11",
+      "native_visual_accessibility",
+      "windows_10_final",
+      "full_p4_acceptance",
+      "stable",
+      "long_qa_paths"
+    ]
+  },
+  "installation_proof": {
+    "source_commit": "e4e93eebfa51c53ea1703d9a39a34e7c667828ba",
+    "run_id": 40741860014,
+    "artifact_id": 12841186601,
+    "artifact_name": "electron-service-installer-proof-e4e93eebfa51c53ea1703d9a39a34e7c667828ba",
+    "archive_size": 776,
+    "archive_sha256": "36c8bf98cd5bef6fc2407803f4c131f39c064d698d023eeb4f3353c9b42f8b14",
+    "receipt_sha256": "791b529348deeb94cdbb6bdc9904243dc53ffcbc5df9210f70caa143b5b35f09",
+    "inventory_sha256": "9cf23eadf6d8afa5b103d8c508852ca9842ffbebffc986ea9e14526427f142db"
+  }
+}
