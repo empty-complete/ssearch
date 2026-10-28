@@ -504,7 +504,7 @@ $outcomes | ConvertTo-Json -Compress
     assert observed == [True, True, True]
 
 
-@pytest.mark.parametrize('fault', ['valid', 'missing', 'wrong-target'])
+@pytest.mark.parametrize('fault', ['valid', 'missing', 'wrong-target', 'ascii'])
 def test_actual_shortcut_guard_with_owned_unicode_links_under_pwsh(tmp_path, fault):
     """Actual Windows COM + actual guard, matching the installed QA host.
 
@@ -516,6 +516,73 @@ def test_actual_shortcut_guard_with_owned_unicode_links_under_pwsh(tmp_path, fau
 param($Controller,$Parent,$Root,$Fault)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+$fixtureStage='compile'
+try {
+# IShellLinkW vtable/IID: Microsoft WinSDK ShObjIdl_core.h; persistence uses
+# Unicode IPersistFile. Never create the fixture through WScript.TargetPath.
+Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Runtime.InteropServices;
+[ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+public class SsearchFixtureLinkClass {}
+[ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ISsearchFixtureLinkW {
+    [PreserveSig] int GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int size, IntPtr data, uint flags);
+    [PreserveSig] int GetIDList(out IntPtr value);
+    [PreserveSig] int SetIDList(IntPtr value);
+    [PreserveSig] int GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder value, int size);
+    [PreserveSig] int SetDescription([MarshalAs(UnmanagedType.LPWStr)] string value);
+    [PreserveSig] int GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder value, int size);
+    [PreserveSig] int SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string value);
+    [PreserveSig] int GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder value, int size);
+    [PreserveSig] int SetArguments([MarshalAs(UnmanagedType.LPWStr)] string value);
+    [PreserveSig] int GetHotkey(out ushort value);
+    [PreserveSig] int SetHotkey(ushort value);
+    [PreserveSig] int GetShowCmd(out int value);
+    [PreserveSig] int SetShowCmd(int value);
+    [PreserveSig] int GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder value, int size, out int index);
+    [PreserveSig] int SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string value, int index);
+    [PreserveSig] int SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string value, uint reserved);
+    [PreserveSig] int Resolve(IntPtr window, uint flags);
+    [PreserveSig] int SetPath([MarshalAs(UnmanagedType.LPWStr)] string value);
+}
+[ComImport, Guid("0000010b-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ISsearchFixturePersistFile {
+    [PreserveSig] int GetClassID(out Guid value);
+    [PreserveSig] int IsDirty();
+    [PreserveSig] int Load([MarshalAs(UnmanagedType.LPWStr)] string path, uint mode);
+    [PreserveSig] int Save([MarshalAs(UnmanagedType.LPWStr)] string path, [MarshalAs(UnmanagedType.Bool)] bool remember);
+    [PreserveSig] int SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string path);
+    [PreserveSig] int GetCurFile(out IntPtr value);
+}
+public static class SsearchLinkFixture {
+    public static string Stage = "create";
+    static void Check(int value) { if(value != 0) throw new COMException("fixture_hresult", value); }
+    public static void Create(string path, string target) {
+        if(!Path.IsPathRooted(path) || !Path.IsPathRooted(target) || File.Exists(path))
+            throw new InvalidOperationException("fixture_boundary");
+        Stage="create";
+        object writer=new SsearchFixtureLinkClass();
+        try {
+            Stage="set_path"; Check(((ISsearchFixtureLinkW)writer).SetPath(target));
+            Stage="save"; Check(((ISsearchFixturePersistFile)writer).Save(path, true));
+        } finally { Marshal.FinalReleaseComObject(writer); }
+        Stage="create";
+        object reader=new SsearchFixtureLinkClass();
+        try {
+            Stage="load"; Check(((ISsearchFixturePersistFile)reader).Load(path, 0));
+            var buffer=new StringBuilder(260);
+            Stage="get_path"; Check(((ISsearchFixtureLinkW)reader).GetPath(buffer, buffer.Capacity, IntPtr.Zero, 0));
+            Stage="verify";
+            if(buffer.Length == 0 || buffer.Length >= 259 || !String.Equals(buffer.ToString(), target, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("fixture_unicode_roundtrip");
+        } finally { Marshal.FinalReleaseComObject(reader); }
+    }
+}
+'@
+$fixtureStage='guard_setup'
 $tokens=$null;$errors=$null
 foreach($entry in @(@{path=$Controller;name='Assert-ShortcutTargets'},
                    @{path=$Parent;name='Test-InstallerPublicLine'})) {
@@ -526,8 +593,9 @@ foreach($entry in @(@{path=$Controller;name='Assert-ShortcutTargets'},
     . ([scriptblock]::Create($fn.Extent.Text))
 }
 $isElectron=$true;$comparison=[StringComparison]::OrdinalIgnoreCase
-$appPath=Join-Path $Root 'PRIVATE_SENTINEL приложение with spaces'
-$groupPath=Join-Path $Root 'PRIVATE_SENTINEL menu Кириллица'
+$fixtureStage='filesystem'
+$appPath=Join-Path $Root $(if($Fault -ceq 'ascii') {'PRIVATE_SENTINEL app with spaces'} else {'PRIVATE_SENTINEL приложение with spaces'})
+$groupPath=Join-Path $Root $(if($Fault -ceq 'ascii') {'PRIVATE_SENTINEL menu'} else {'PRIVATE_SENTINEL menu Кириллица'})
 $appExecutable=Join-Path $appPath 'ssearch.exe'
 $uninstallerPath=Join-Path $appPath 'unins000.exe'
 $help=Join-Path $appPath 'service/_internal/resources/help.html'
@@ -535,17 +603,13 @@ $null=New-Item -ItemType Directory -Path (Split-Path -Parent $help),$groupPath -
 foreach($path in @($appExecutable,$uninstallerPath,$help)) {[IO.File]::WriteAllText($path,'owned destination')}
 $other=Join-Path $Root 'PRIVATE_SENTINEL other destination'
 [IO.File]::WriteAllText($other,'preserved private data')
-$maker=New-Object -ComObject WScript.Shell
-try {
-    foreach($entry in @(@{name='ssearch.lnk';target=$appExecutable},
-                       @{name='Справка ssearch.lnk';target=$help},
-                       @{name='Удалить ssearch.lnk';target=$uninstallerPath})) {
-        $link=$maker.CreateShortcut((Join-Path $groupPath $entry.name))
-        [string]$selectedTarget=if($Fault -ceq 'wrong-target' -and $entry.name -ceq 'Справка ssearch.lnk') {$other} else {$entry.target}
-        $link.TargetPath=$selectedTarget
-        $link.Save()
-    }
-} finally {$null=[Runtime.InteropServices.Marshal]::ReleaseComObject($maker)}
+$fixtureStage='create'
+foreach($entry in @(@{name='ssearch.lnk';target=$appExecutable},
+                   @{name='Справка ssearch.lnk';target=$help},
+                   @{name='Удалить ssearch.lnk';target=$uninstallerPath})) {
+    [string]$selectedTarget=if($Fault -ceq 'wrong-target' -and $entry.name -ceq 'Справка ssearch.lnk') {$other} else {$entry.target}
+    [SsearchLinkFixture]::Create((Join-Path $groupPath $entry.name),$selectedTarget)
+}
 if($Fault -ceq 'missing'){Remove-Item -LiteralPath (Join-Path $groupPath 'Справка ssearch.lnk')}
 $script:caught=$false
 $captured=@(& {try {Assert-ShortcutTargets} catch {$script:caught=$true}} 6>&1)
@@ -554,11 +618,17 @@ $allowed=@($lines | Where-Object {-not (Test-InstallerPublicLine $_)}).Count -eq
 $expected=if($Fault -ceq 'missing') {'CI_INSTALLER_SHORTCUT role=help exists=false target_match=unavailable'}
     elseif($Fault -ceq 'wrong-target') {'CI_INSTALLER_SHORTCUT role=help exists=true target_match=false'}
     else {'CI_INSTALLER_SHORTCUT role=uninstall exists=true target_match=true'}
-@{contract=($script:caught -eq ($Fault -cne 'valid'));
+@{fixture_ok=$true;contract=($script:caught -eq ($Fault -cnotin @('valid','ascii')));
     classified=($lines.Count -gt 0 -and $allowed);
     expected_predicate=(@($lines | Where-Object {$_ -ceq $expected}).Count -ge 1);
     private_absent=(@($lines | Where-Object {$_.Contains('PRIVATE_SENTINEL')}).Count -eq 0);
     unrelated_data_preserved=([IO.File]::ReadAllText($other) -ceq 'preserved private data')} | ConvertTo-Json -Compress
+} catch {
+    if($fixtureStage -ceq 'create' -and ('SsearchLinkFixture' -as [type])) {$fixtureStage=[SsearchLinkFixture]::Stage}
+    $hresult=[int]$_.Exception.HResult
+    if($_.Exception.InnerException -is [Runtime.InteropServices.COMException]) {$hresult=[int]$_.Exception.InnerException.HResult}
+    @{fixture_ok=$false;stage=$fixtureStage;hresult=$hresult} | ConvertTo-Json -Compress
+}
 ''', encoding='utf-8-sig')
     result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File', str(script),
         str(ROOT / 'tools/check_installer.ps1'), str(ROOT / 'tools/run_ci_build.ps1'), str(tmp_path), fault],
@@ -569,5 +639,11 @@ $expected=if($Fault -ceq 'missing') {'CI_INSTALLER_SHORTCUT role=help exists=fal
         observed = json.loads(result.stdout)
     except (ValueError, UnicodeError):
         pytest.fail('shortcut_component_result_invalid', pytrace=False)
-    assert observed == dict.fromkeys(('contract', 'classified', 'expected_predicate',
+    fixture_ok = observed.get('fixture_ok') is True
+    stage = observed.get('stage')
+    stage = stage if stage in ('compile', 'guard_setup', 'filesystem', 'create', 'set_path', 'save', 'load', 'get_path', 'verify') else 'unavailable'
+    hresult = observed.get('hresult')
+    hresult = hresult if type(hresult) is int and -(2**31) <= hresult < 2**31 else None
+    assert fixture_ok, {'fixture_stage': stage, 'hresult': hresult}
+    assert observed == dict.fromkeys(('fixture_ok', 'contract', 'classified', 'expected_predicate',
                                       'private_absent', 'unrelated_data_preserved'), True)
