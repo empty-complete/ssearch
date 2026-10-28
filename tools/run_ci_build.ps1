@@ -219,9 +219,9 @@ print('CI preflight: standard_user=true loaded_profile=true clean_pg_environment
         # comes from the fixed existing installer and its published inventory.
         & (Join-Path $repository 'tools/check_installer.ps1') -Electron -Python $python `
             -Installer (Join-Path $base ('artifacts/' + $pins.installer_name)) `
-            -TestDir (Join-Path $base 'qa/Installer proof Кириллица with spaces')
+            -TestDir (Join-Path $base 'qa/Installer Ю')
         $installerExit = $LASTEXITCODE
-        & $python $controller candidate --report (Join-Path $base 'qa/Installer proof Кириллица with spaces/installer-qa.json') `
+        & $python $controller candidate --report (Join-Path $base 'qa/Installer Ю/installer-qa.json') `
             --output (Join-Path $repository 'artifacts/ci-installer/candidate.json')
         if ($LASTEXITCODE -ne 0) { throw 'CI_INSTALLER_CANDIDATE_FAILED' }
         & $python $controller verify-harness --harness-commit $env:SOURCE_SHA
