@@ -28,6 +28,9 @@ function Test-InstallerPublicLine {
         $Line -cmatch '^CI_INSTALLER_FRESH (policy|install_process|registration|inno_records|inventory|shortcuts|reference_copy|reference_inventory) (started|pass|fail)$' -or
         $Line -cmatch '^CI_INSTALLER_FAILURE substep=(policy|install_process|registration|inno_records|inventory|shortcuts|reference_copy|reference_inventory) hresult=-?[0-9]{1,10} wait_reason=(preparing_waiter|waiting|capture_limit|waiter_timeout|reading_waiter_exit|checking_completion_file|waiter_exit_unavailable|waiter_exit_nonzero|completion_missing|reading_completion|completion_payload_invalid|child_exit_nonzero|complete|unavailable) exit_integer=(true|false) exit_zero=(true|false)$' -or
         $Line -cmatch '^CI_INSTALLER_INVENTORY files=[0-9]{1,6} desktop_match=(true|false) service_match=(true|false) inventory_match=(true|false|unavailable)$' -or
+        $Line -cmatch '^CI_INSTALLER_SHORTCUT_GROUP exists=(true|false) available=(true|false) count=[0-9]{1,6} known=[0-9]{1,6} unknown=[0-9]{1,6}$' -or
+        $Line -cmatch '^CI_INSTALLER_SHORTCUT role=(application|help|uninstall) exists=(true|false) target_match=(true|false|unavailable)$' -or
+        $Line -cmatch '^CI_INSTALLER_COM stage=(create|read|release) status=(pass|fail) role=(none|application|help|uninstall) hresult=-?[0-9]{1,10}$' -or
         $Line -cmatch '^CI_INSTALLER_HELPER code=(installer_inventory_boundary|installer_inno_inventory_invalid|installer_non_file|installer_duplicate_file|installer_inno_identity_changed|installer_inno_file_missing|installer_payload_image_mismatch|installer_inventory_mismatch|installer_reparse_refused|installer_report_unavailable|installer_object_required|unavailable)$')
 }
 

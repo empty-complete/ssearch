@@ -408,6 +408,9 @@ def test_installer_parent_output_filter_rejects_private_and_unknown_lines(tmp_pa
         ('CI_INSTALLER_INVENTORY files=5001 desktop_match=true service_match=true inventory_match=false', True),
         ('CI_INSTALLER_HELPER code=installer_inventory_mismatch', True),
         ('CI_INSTALLER_HELPER code=unavailable', True),
+        ('CI_INSTALLER_SHORTCUT_GROUP exists=true available=true count=3 known=3 unknown=0', True),
+        ('CI_INSTALLER_SHORTCUT role=help exists=true target_match=false', True),
+        ('CI_INSTALLER_COM stage=read status=fail role=help hresult=-2146233087', True),
         ('PRIVATE_SENTINEL', False),
         ('CI_INSTALLER_FRESH PRIVATE_SENTINEL fail', False),
         ('CI_INSTALLER_HELPER code=PRIVATE_SENTINEL', False),
@@ -417,6 +420,9 @@ def test_installer_parent_output_filter_rejects_private_and_unknown_lines(tmp_pa
         ('CI_INSTALLER_INVENTORY files=1234567 desktop_match=true service_match=true inventory_match=false', False),
         ('CI_INSTALLER_INVENTORY files=5 desktop_match=PRIVATE_SENTINEL service_match=true inventory_match=false', False),
         ('CI_INSTALLER_PHASE fresh_install pass\nPRIVATE_SENTINEL', False),
+        ('CI_INSTALLER_SHORTCUT role=PRIVATE_SENTINEL exists=true target_match=true', False),
+        ('CI_INSTALLER_SHORTCUT_GROUP exists=true available=true count=3 known=3 unknown=PRIVATE_SENTINEL', False),
+        ('CI_INSTALLER_COM stage=read status=fail role=help hresult=PRIVATE_SENTINEL', False),
     ]
     data = tmp_path / 'inputs.json'
     data.write_text(json.dumps([line for line, _ in inputs]), encoding='utf-8')
@@ -496,3 +502,70 @@ $outcomes | ConvertTo-Json -Compress
     except (ValueError, UnicodeError):
         pytest.fail('helper_pipeline_result_invalid', pytrace=False)
     assert observed == [True, True, True]
+
+
+@pytest.mark.parametrize('fault', ['valid', 'missing', 'wrong-target'])
+def test_actual_shortcut_guard_with_owned_unicode_links_under_pwsh(tmp_path, fault):
+    """Actual Windows COM + actual guard, matching the installed QA host.
+
+    Tiny owned files are shortcut destinations only; no application, installer,
+    Qt or executable fixture runs. COM unavailability is a failure, never skip.
+    """
+    script = tmp_path / 'shortcuts.ps1'
+    script.write_text(r'''
+param($Controller,$Parent,$Root,$Fault)
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$tokens=$null;$errors=$null
+foreach($entry in @(@{path=$Controller;name='Assert-ShortcutTargets'},
+                   @{path=$Parent;name='Test-InstallerPublicLine'})) {
+    $ast=[Management.Automation.Language.Parser]::ParseFile($entry.path,[ref]$tokens,[ref]$errors)
+    if($errors.Count){throw 'shortcut_guard_syntax_invalid'}
+    $fn=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq $entry.name},$true)
+    . ([scriptblock]::Create($fn.Extent.Text))
+}
+$isElectron=$true;$comparison=[StringComparison]::OrdinalIgnoreCase
+$appPath=Join-Path $Root 'PRIVATE_SENTINEL приложение with spaces'
+$groupPath=Join-Path $Root 'PRIVATE_SENTINEL menu Кириллица'
+$appExecutable=Join-Path $appPath 'ssearch.exe'
+$uninstallerPath=Join-Path $appPath 'unins000.exe'
+$help=Join-Path $appPath 'service/_internal/resources/help.html'
+$null=New-Item -ItemType Directory -Path (Split-Path -Parent $help),$groupPath -Force
+foreach($path in @($appExecutable,$uninstallerPath,$help)) {[IO.File]::WriteAllText($path,'owned destination')}
+$other=Join-Path $Root 'PRIVATE_SENTINEL other destination'
+[IO.File]::WriteAllText($other,'preserved private data')
+$maker=New-Object -ComObject WScript.Shell
+try {
+    foreach($entry in @(@{name='ssearch.lnk';target=$appExecutable},
+                       @{name='Справка ssearch.lnk';target=$help},
+                       @{name='Удалить ssearch.lnk';target=$uninstallerPath})) {
+        $link=$maker.CreateShortcut((Join-Path $groupPath $entry.name))
+        $link.TargetPath=if($Fault -ceq 'wrong-target' -and $entry.name -ceq 'Справка ssearch.lnk') {$other} else {$entry.target}
+        $link.Save()
+    }
+} finally {$null=[Runtime.InteropServices.Marshal]::ReleaseComObject($maker)}
+if($Fault -ceq 'missing'){Remove-Item -LiteralPath (Join-Path $groupPath 'Справка ssearch.lnk')}
+$script:caught=$false
+$captured=@(& {try {Assert-ShortcutTargets} catch {$script:caught=$true}} 6>&1)
+$lines=@($captured | ForEach-Object {[string]$_})
+$allowed=@($lines | Where-Object {-not (Test-InstallerPublicLine $_)}).Count -eq 0
+$expected=if($Fault -ceq 'missing') {'CI_INSTALLER_SHORTCUT role=help exists=false target_match=unavailable'}
+    elseif($Fault -ceq 'wrong-target') {'CI_INSTALLER_SHORTCUT role=help exists=true target_match=false'}
+    else {'CI_INSTALLER_SHORTCUT role=uninstall exists=true target_match=true'}
+@{contract=($script:caught -eq ($Fault -cne 'valid'));
+    classified=($lines.Count -gt 0 -and $allowed);
+    expected_predicate=(@($lines | Where-Object {$_ -ceq $expected}).Count -ge 1);
+    private_absent=(@($lines | Where-Object {$_.Contains('PRIVATE_SENTINEL')}).Count -eq 0);
+    unrelated_data_preserved=([IO.File]::ReadAllText($other) -ceq 'preserved private data')} | ConvertTo-Json -Compress
+''', encoding='utf-8-sig')
+    result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File', str(script),
+        str(ROOT / 'tools/check_installer.ps1'), str(ROOT / 'tools/run_ci_build.ps1'), str(tmp_path), fault],
+        capture_output=True, timeout=30)
+    assert result.returncode == 0, 'Real Windows COM shortcut component probe failed'
+    try:
+        observed = json.loads(result.stdout)
+    except (ValueError, UnicodeError):
+        pytest.fail('shortcut_component_result_invalid', pytrace=False)
+    assert observed == dict.fromkeys(('contract', 'classified', 'expected_predicate',
+                                      'private_absent', 'unrelated_data_preserved'), True)

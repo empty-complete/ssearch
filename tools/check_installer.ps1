@@ -398,24 +398,58 @@ function Get-PreservedProfileSnapshot {
 }
 
 function Assert-ShortcutTargets {
-    $shell = New-Object -ComObject WScript.Shell
+    $electronMode=[bool](Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue)
+    $helpRelative = if ($electronMode) { 'service\_internal\resources\help.html' } else { '_internal\resources\help.html' }
+    $entries=@(@{role='application'; name='ssearch.lnk'; target=$appExecutable},
+        @{role='help'; name='Справка ssearch.lnk'; target=(Join-Path $appPath $helpRelative)},
+        @{role='uninstall'; name='Удалить ssearch.lnk'; target=$uninstallerPath})
+    if ($electronMode) {
+        $groupExists=[bool](Test-Path -LiteralPath $groupPath -PathType Container)
+        try {
+            $items=@(if ($groupExists) { Get-ChildItem -LiteralPath $groupPath -Force -ErrorAction Stop })
+            $known=@($items | Where-Object { $_.Name -cin @('ssearch.lnk','Справка ssearch.lnk','Удалить ssearch.lnk') }).Count
+            $count=[Math]::Min($items.Count,999999); $unknown=[Math]::Min(($items.Count-$known),999999)
+            $known=[Math]::Min($known,999999)
+            Write-Host "CI_INSTALLER_SHORTCUT_GROUP exists=$($groupExists.ToString().ToLowerInvariant()) available=true count=$count known=$known unknown=$unknown"
+        } catch { Write-Host "CI_INSTALLER_SHORTCUT_GROUP exists=$($groupExists.ToString().ToLowerInvariant()) available=false count=0 known=0 unknown=0" }
+        foreach ($entry in $entries) {
+            $exists=[bool](Test-Path -LiteralPath (Join-Path $groupPath $entry.name) -PathType Leaf)
+            Write-Host "CI_INSTALLER_SHORTCUT role=$($entry.role) exists=$($exists.ToString().ToLowerInvariant()) target_match=unavailable"
+        }
+    }
     try {
-        $helpRelative = if (Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue) {
-            'service\_internal\resources\help.html'
-        } else { '_internal\resources\help.html' }
-        foreach ($entry in @(
-            @{name='ssearch.lnk'; target=$appExecutable},
-            @{name='Справка ssearch.lnk'; target=(Join-Path $appPath $helpRelative)},
-            @{name='Удалить ssearch.lnk'; target=$uninstallerPath})) {
+        $shell = New-Object -ComObject WScript.Shell
+        if ($electronMode) { Write-Host 'CI_INSTALLER_COM stage=create status=pass role=none hresult=0' }
+    } catch {
+        if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=create status=fail role=none hresult=$([int]$_.Exception.HResult)" }
+        throw
+    }
+    try {
+        foreach ($entry in $entries) {
             $link = Join-Path $groupPath $entry.name
             if (-not (Test-Path -LiteralPath $link -PathType Leaf)) { throw 'QA shortcut missing.' }
-            $shortcut = $shell.CreateShortcut($link)
-            if (-not ([IO.Path]::GetFullPath($shortcut.TargetPath)).Equals($entry.target, $comparison)) {
+            try {
+                $shortcut = $shell.CreateShortcut($link)
+                $target=[IO.Path]::GetFullPath($shortcut.TargetPath)
+                if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=read status=pass role=$($entry.role) hresult=0" }
+            } catch {
+                if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=read status=fail role=$($entry.role) hresult=$([int]$_.Exception.HResult)" }
+                throw
+            }
+            $targetMatches=$target.Equals($entry.target, $comparison)
+            if ($electronMode) { Write-Host "CI_INSTALLER_SHORTCUT role=$($entry.role) exists=true target_match=$($targetMatches.ToString().ToLowerInvariant())" }
+            if (-not $targetMatches) {
                 throw 'QA shortcut points outside its owned installation.'
             }
         }
     } finally {
-        $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+        try {
+            $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+            if ($electronMode) { Write-Host 'CI_INSTALLER_COM stage=release status=pass role=none hresult=0' }
+        } catch {
+            if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=release status=fail role=none hresult=$([int]$_.Exception.HResult)" }
+            throw
+        }
     }
 }
 
