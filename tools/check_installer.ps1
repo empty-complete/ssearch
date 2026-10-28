@@ -418,7 +418,55 @@ function Assert-ShortcutTargets {
         }
     }
     try {
-        $shell = New-Object -ComObject WScript.Shell
+        if ($electronMode) {
+            if (-not ('SsearchInstallerLinkReader' -as [type])) {
+                # Explicit Unicode interfaces: WScript.TargetPath can expose
+                # the lossy ANSI field even when the LNK stores a valid W path.
+                # GetPath: MAX_PATH, pfd=NULL, flags=0; never Resolve/Expand.
+                Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Runtime.InteropServices;
+[ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+public class SsearchInstallerLinkClass {}
+[ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ISsearchInstallerLinkW {
+    [PreserveSig] int GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int size, IntPtr data, uint flags);
+}
+[ComImport, Guid("0000010b-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ISsearchInstallerPersistRead {
+    [PreserveSig] int GetClassID(out Guid value);
+    [PreserveSig] int IsDirty();
+    [PreserveSig] int Load([MarshalAs(UnmanagedType.LPWStr)] string path, uint mode);
+}
+public sealed class SsearchInstallerLinkReader : IDisposable {
+    object link;
+    public SsearchInstallerLinkReader() { link=new SsearchInstallerLinkClass(); }
+    static void Check(int value) {
+        if(value != 0) throw new COMException("shortcut_hresult", value);
+    }
+    public string ReadTarget(string path) {
+        if(link == null || !Path.IsPathFullyQualified(path))
+            throw new InvalidOperationException("shortcut_boundary");
+        Check(((ISsearchInstallerPersistRead)link).Load(path, 0));
+        var buffer=new StringBuilder(260);
+        Check(((ISsearchInstallerLinkW)link).GetPath(buffer, buffer.Capacity, IntPtr.Zero, 0));
+        if(buffer.Length == 0 || buffer.Length >= 259 || !Path.IsPathFullyQualified(buffer.ToString()))
+            throw new InvalidOperationException("shortcut_path_unconfirmed");
+        return buffer.ToString();
+    }
+    public void Dispose() {
+        if(link != null) {
+            try { Marshal.FinalReleaseComObject(link); }
+            finally { link=null; }
+        }
+    }
+}
+'@
+            }
+            $shell=[SsearchInstallerLinkReader]::new()
+        } else { $shell = New-Object -ComObject WScript.Shell }
         if ($electronMode) { Write-Host 'CI_INSTALLER_COM stage=create status=pass role=none hresult=0' }
     } catch {
         if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=create status=fail role=none hresult=$([int]$_.Exception.HResult)" }
@@ -429,8 +477,11 @@ function Assert-ShortcutTargets {
             $link = Join-Path $groupPath $entry.name
             if (-not (Test-Path -LiteralPath $link -PathType Leaf)) { throw 'QA shortcut missing.' }
             try {
-                $shortcut = $shell.CreateShortcut($link)
-                $target=[IO.Path]::GetFullPath($shortcut.TargetPath)
+                if ($electronMode) { $target=[IO.Path]::GetFullPath($shell.ReadTarget($link)) }
+                else {
+                    $shortcut = $shell.CreateShortcut($link)
+                    $target=[IO.Path]::GetFullPath($shortcut.TargetPath)
+                }
                 if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=read status=pass role=$($entry.role) hresult=0" }
             } catch {
                 if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=read status=fail role=$($entry.role) hresult=$([int]$_.Exception.HResult)" }
@@ -444,7 +495,8 @@ function Assert-ShortcutTargets {
         }
     } finally {
         try {
-            $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+            if ($electronMode) { $shell.Dispose() }
+            else { $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
             if ($electronMode) { Write-Host 'CI_INSTALLER_COM stage=release status=pass role=none hresult=0' }
         } catch {
             if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=release status=fail role=none hresult=$([int]$_.Exception.HResult)" }

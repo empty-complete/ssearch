@@ -504,12 +504,13 @@ $outcomes | ConvertTo-Json -Compress
     assert observed == [True, True, True]
 
 
-@pytest.mark.parametrize('fault', ['valid', 'missing', 'wrong-target', 'ascii'])
+@pytest.mark.parametrize('fault', ['valid', 'missing', 'wrong-target', 'ascii-target'])
 def test_actual_shortcut_guard_with_owned_unicode_links_under_pwsh(tmp_path, fault):
     """Actual Windows COM + actual guard, matching the installed QA host.
 
     Tiny owned files are shortcut destinations only; no application, installer,
     Qt or executable fixture runs. COM unavailability is a failure, never skip.
+    ASCII-target control retains the actual Unicode group/link names.
     """
     script = tmp_path / 'shortcuts.ps1'
     script.write_text(r'''
@@ -594,8 +595,8 @@ foreach($entry in @(@{path=$Controller;name='Assert-ShortcutTargets'},
 }
 $isElectron=$true;$comparison=[StringComparison]::OrdinalIgnoreCase
 $fixtureStage='filesystem'
-$appPath=Join-Path $Root $(if($Fault -ceq 'ascii') {'PRIVATE_SENTINEL app with spaces'} else {'PRIVATE_SENTINEL приложение with spaces'})
-$groupPath=Join-Path $Root $(if($Fault -ceq 'ascii') {'PRIVATE_SENTINEL menu'} else {'PRIVATE_SENTINEL menu Кириллица'})
+$appPath=Join-Path $Root $(if($Fault -ceq 'ascii-target') {'PRIVATE_SENTINEL app with spaces'} else {'PRIVATE_SENTINEL приложение with spaces'})
+$groupPath=Join-Path $Root $(if($Fault -ceq 'ascii-target') {'PRIVATE_SENTINEL menu'} else {'PRIVATE_SENTINEL menu Кириллица'})
 $appExecutable=Join-Path $appPath 'ssearch.exe'
 $uninstallerPath=Join-Path $appPath 'unins000.exe'
 $help=Join-Path $appPath 'service/_internal/resources/help.html'
@@ -618,7 +619,7 @@ $allowed=@($lines | Where-Object {-not (Test-InstallerPublicLine $_)}).Count -eq
 $expected=if($Fault -ceq 'missing') {'CI_INSTALLER_SHORTCUT role=help exists=false target_match=unavailable'}
     elseif($Fault -ceq 'wrong-target') {'CI_INSTALLER_SHORTCUT role=help exists=true target_match=false'}
     else {'CI_INSTALLER_SHORTCUT role=uninstall exists=true target_match=true'}
-@{fixture_ok=$true;contract=($script:caught -eq ($Fault -cnotin @('valid','ascii')));
+@{fixture_ok=$true;contract=($script:caught -eq ($Fault -cnotin @('valid','ascii-target')));
     classified=($lines.Count -gt 0 -and $allowed);
     expected_predicate=(@($lines | Where-Object {$_ -ceq $expected}).Count -ge 1);
     private_absent=(@($lines | Where-Object {$_.Contains('PRIVATE_SENTINEL')}).Count -eq 0);
