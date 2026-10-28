@@ -288,6 +288,168 @@ def test_exact_original_quick_artifact_metadata_is_not_the_new_harness_identity(
     controller.validate_input_metadata(run, artifact, pins)
 
 
+FULL_PAYLOAD = '6a380230b8f26cf5df1798b396c850ab59484c7d'
+
+
+@pytest.fixture
+def full_package(tmp_path):
+    """Five real public files with synthetic bytes; never an installer execution."""
+    directory = tmp_path / 'full-package'
+    directory.mkdir()
+    installer = directory / 'ssearch-Setup-0.2.0.exe'
+    installer.write_bytes(b'unit installer bytes, not native acceptance')
+    pins = dict(repository='empty-complete/ssearch', source_commit=FULL_PAYLOAD,
+        run_id=40758406045, artifact_id=12855200220, workflow_id=395933832,
+        workflow_path='.github/workflows/windows-build.yml', head_branch='main',
+        artifact_name=f'windows-{FULL_PAYLOAD}-full', archive_size=123,
+        archive_sha256='a' * 64, installer_name=installer.name,
+        installer_size=installer.stat().st_size, installer_sha256=sha(installer),
+        test_scope='full', full_suite_passed=True)
+    manifest = dict(source_commit=FULL_PAYLOAD, app_version='0.2.0', core_version='0.2.0',
+        payload_kind='electron-service', test_scope='full', full_suite_passed=True,
+        test_targets=[], frontend_test_targets=[], desktop_test_targets=[],
+        catalog=dict(backend='postgresql', schema_version=5),
+        capabilities=dict(postgresql='application_verified'), windows_validation=[],
+        installer=dict(path='artifacts/' + installer.name, size=pins['installer_size'],
+                       sha256=pins['installer_sha256']),
+        executable=dict(path='build/desktop-stage/ssearch-win32-x64/ssearch.exe', size=20, sha256='b' * 64),
+        service_executable=dict(path='build/desktop-stage/ssearch-win32-x64/service/ssearch-service.exe',
+                                size=20, sha256='c' * 64),
+        desktop=dict(required_frozen_proofs_passed=True, stage_accepted=False,
+                     proof_index_sha256='d' * 64, inventory_sha256='e' * 64))
+    receipt = dict(source_commit=FULL_PAYLOAD, scope='full', full_suite_passed=True, exit_code=0,
+                   test_targets=[], frontend_test_targets=[], desktop_test_targets=[])
+    flags = {'application': ('model_ready', 'clean_stop', 'source_clean', 'public_identity_preserved'),
+             'postgresql': ('scram', 'wrong_password_rejected', 'clean_stop', 'profile_removed',
+                 'restart_verified', 'dpapi_verified', 'private_acl_verified', 'application_privileges_verified')}
+    evidence = dict(schema_version=1, source_commit=FULL_PAYLOAD, test_scope='full', full_suite_passed=True,
+        runner_platform='Windows Server 2025 x64', windows_validation=[], release_channel='development-prerelease',
+        frozen_proofs={name: dict(passed=True, execution_mode='frozen', original_receipt_sha256='f' * 64,
+                                 checks=dict.fromkeys(checks, True)) for name, checks in flags.items()},
+        desktop=dict(payload_kind='electron-service', required_frozen_proofs_passed=True,
+            stage_accepted=False, original_proof_index_sha256='d' * 64,
+            scoped_backend_counts=dict.fromkeys(('model_constructions', 'runtime_starts', 'runtime_stops', 'core_closes'), 1),
+            ui_scenarios=dict.fromkeys(('security', 'load', 'lifecycle', 'empty-profile'), 'packaged_hidden_offscreen'),
+            open_gates=['qt_upgrade', 'native_windows_11', 'windows_10', 'full_p4_acceptance']))
+    return directory, pins, manifest, receipt, evidence
+
+
+def write_public_full_fixture(fixture):
+    directory, _, manifest, receipt, evidence = fixture
+    for name, value in (('build-manifest.json', manifest), ('test-receipt.json', receipt),
+                        ('ci-evidence.json', evidence)):
+        (directory / name).write_text(json.dumps(value), encoding='utf-8')
+    files = sorted(path for path in directory.iterdir() if path.name != 'SHA256SUMS.txt')
+    (directory / 'SHA256SUMS.txt').write_text(''.join(f'{sha(path)}  {path.name}\n' for path in files), encoding='utf-8')
+
+
+def test_explicit_full_artifact_admission_accepts_actual_three_list_receipt(controller, full_package):
+    write_public_full_fixture(full_package)
+    directory, pins, manifest, _, _ = full_package
+    # Existing admission reaches its targeted-only guard on RED; no new loader,
+    # nonexistent entry point, keyword argument or native fixture is involved.
+    assert controller.validate_package(directory, pins) == manifest
+
+
+@pytest.mark.parametrize('document', ['manifest', 'receipt'])
+@pytest.mark.parametrize('field', ['test_targets', 'frontend_test_targets', 'desktop_test_targets'])
+def test_full_admission_requires_all_three_target_lists_present_and_empty(controller, full_package, document, field):
+    _, pins, manifest, receipt, _ = full_package
+    value = manifest if document == 'manifest' else receipt
+    value[field] = ['tests/selected.py']
+    write_public_full_fixture(full_package)
+    with pytest.raises(ValueError):
+        controller.validate_package(full_package[0], pins)
+    value.pop(field)
+    write_public_full_fixture(full_package)
+    with pytest.raises(ValueError):
+        controller.validate_package(full_package[0], pins)
+
+
+@pytest.mark.parametrize('fault', ['manifest-scope', 'receipt-scope', 'evidence-scope',
+                                  'manifest-full', 'receipt-full', 'evidence-full',
+                                  'source', 'installer', 'frozen', 'ui', 'index', 'counts'])
+def test_full_admission_does_not_waive_any_existing_binding(controller, full_package, fault):
+    _, pins, manifest, receipt, evidence = full_package
+    if fault.endswith('-scope'):
+        {'manifest': manifest, 'receipt': receipt, 'evidence': evidence}[fault.split('-')[0]][
+            'scope' if fault.startswith('receipt') else 'test_scope'] = 'targeted'
+    elif fault.endswith('-full'):
+        {'manifest': manifest, 'receipt': receipt, 'evidence': evidence}[fault.split('-')[0]]['full_suite_passed'] = False
+    elif fault == 'source':
+        receipt['source_commit'] = PAYLOAD
+    elif fault == 'installer':
+        manifest['installer']['sha256'] = '0' * 64
+    elif fault == 'frozen':
+        evidence['frozen_proofs']['postgresql']['checks']['clean_stop'] = False
+    elif fault == 'ui':
+        evidence['desktop']['ui_scenarios'].pop('security')
+    elif fault == 'index':
+        evidence['desktop']['original_proof_index_sha256'] = '0' * 64
+    else:
+        evidence['desktop']['scoped_backend_counts']['runtime_stops'] = 0
+    write_public_full_fixture(full_package)  # Semantic refusal, not merely an outdated checksum.
+    with pytest.raises(ValueError):
+        controller.validate_package(full_package[0], pins)
+
+
+@pytest.mark.parametrize('direction', ['full-with-quick-pins', 'quick-with-full-pins'])
+def test_quick_and_full_artifact_admission_cannot_be_cross_selected(controller, full_package, direction):
+    _, pins, manifest, receipt, evidence = full_package
+    if direction == 'full-with-quick-pins':
+        pins = input_metadata()[0]
+    else:
+        manifest.update(test_scope='targeted', full_suite_passed=False, test_targets=['tests/test_sample.py'])
+        receipt.update(scope='targeted', full_suite_passed=False, test_targets=['tests/test_sample.py'])
+        evidence.update(test_scope='targeted', full_suite_passed=False)
+    write_public_full_fixture(full_package)
+    with pytest.raises(ValueError):
+        controller.validate_package(full_package[0], pins)
+
+
+def test_full_input_selector_and_cli_are_closed_and_keep_quick_default(controller, capsys):
+    load = getattr(controller, 'load_input_set', None)
+    assert callable(load), 'explicit_installer_input_selector_not_implemented'
+    assert load('quick99') == json.loads((ROOT / 'resources/ci/installer-proof-input.json').read_text(encoding='utf-8'))
+    pins = load('full6a')
+    assert pins['source_commit'] == FULL_PAYLOAD and pins['artifact_id'] == 12855200220
+    assert pins['run_id'] == 40758406045 and pins['test_scope'] == 'full' and pins['full_suite_passed'] is True
+    assert pins['installer_sha256'] == '12fb73a8ad1b619b93e0f290d70973d6727cf5a0becbcf55c4f3b92a8fa5b497'
+    assert controller.main(['inputs', '--input-set', 'full6a']) == 0
+    value = json.loads(capsys.readouterr().out)
+    assert value['source_commit'] == FULL_PAYLOAD and value['test_scope'] == 'full'
+    assert value['base'] == f'artifacts/development/{FULL_PAYLOAD}'
+    assert controller.main(['inputs']) == 0
+    default = json.loads(capsys.readouterr().out)
+    assert default['source_commit'] == PAYLOAD and default['test_scope'] == 'targeted'
+    assert default['base'] == f'artifacts/development-quick/{PAYLOAD}'
+
+
+@pytest.mark.parametrize('selection', ['unknown', '../resources/ci/installer-proof-input.json', 'C:/PRIVATE_SENTINEL.json'])
+def test_installer_input_selector_never_accepts_arbitrary_policy_paths(controller, capsys, selection):
+    load = getattr(controller, 'load_input_set', None)
+    assert callable(load), 'explicit_installer_input_selector_not_implemented'
+    with pytest.raises(ValueError, match='^installer_input_set_invalid$'):
+        load(selection)
+    assert controller.main(['inputs', '--input-set', selection]) == 1
+    output = capsys.readouterr()
+    private_absent = 'PRIVATE_SENTINEL' not in output.out + output.err
+    assert private_absent, 'installer_selector_output_not_private'
+
+
+def test_full_payload_does_not_turn_lifecycle_receipt_into_a_second_full_suite(controller, full_package):
+    pins = full_package[1]
+    raw = dict(ok=True, source_commit=FULL_PAYLOAD, installer_sha256=pins['installer_sha256'],
+        installer_bytes=pins['installer_size'], inventory_sha256='e' * 64,
+        os_product_type=3, os_build=26100, checks=dict.fromkeys(controller.CHECKS, True))
+    value = controller.sanitize_installation_receipt(raw, pins=pins, harness_commit=HARNESS, exit_code=0)
+    assert value['ok'] is True and value['full_suite_passed'] is False
+    assert value['payload_source_commit'] == FULL_PAYLOAD and value['artifact_id'] == 12855200220
+    assert set(value) == {'schema_version', 'ok', 'payload_source_commit', 'harness_source_commit',
+        'installer_sha256', 'installer_size', 'artifact_run_id', 'artifact_id', 'payload_inventory_sha256',
+        'runner_platform', 'windows_validation', 'full_suite_passed', 'checks', 'open_gates'}
+
+
 @pytest.mark.parametrize('fault', ['run', 'workflow', 'path', 'event', 'status', 'conclusion',
                                   'source', 'branch', 'repository', 'artifact', 'name', 'expired',
                                   'archive-size', 'archive-digest', 'artifact-run', 'artifact-source'])

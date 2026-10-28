@@ -344,3 +344,157 @@ def test_candidate_decision_preserves_factual_server_scope_and_open_platform_gat
     else:
         with pytest.raises(checker.CandidateError):
             checker.validate_decision(decision, (ROOT / CANDIDATE).read_bytes(), pins=public_api.pins, proof=public_api.policy['installation_proof'])
+
+
+FULL_ANCHOR = '6a380230b8f26cf5df1798b396c850ab59484c7d'
+FULL_CONFIG = '.github/p4-full-installer.json'
+
+
+class FullInstallerApi(PublicApi):
+    def __init__(self, root):
+        super().__init__(root)
+        # This separate review changes the harness, outside the old e4 route.
+        self.comparison['files'] = [dict(filename='tools/ci_installer.py'), dict(filename=FULL_CONFIG)]
+        self.full_comparison = dict(status='ahead', base_commit=dict(sha=FULL_ANCHOR),
+            merge_base_commit=dict(sha=FULL_ANCHOR), files=copy.deepcopy(self.comparison['files']))
+        self.pr['base']['sha'] = FULL_ANCHOR
+        self.full_pins = dict(repository=REPOSITORY, source_commit=FULL_ANCHOR,
+            run_id=40758406045, artifact_id=12855200220, workflow_id=395933832,
+            workflow_path=WORKFLOW, head_branch='main', artifact_name=f'windows-{FULL_ANCHOR}-full',
+            archive_size=340592916, archive_sha256='8ce7b5e7a24175d124da2e6fc1803fd3ab760ee6890d5533adf69b9479dc4c44',
+            installer_name='ssearch-Setup-0.2.0.exe', installer_size=340588167,
+            installer_sha256='12fb73a8ad1b619b93e0f290d70973d6727cf5a0becbcf55c4f3b92a8fa5b497',
+            test_scope='full', full_suite_passed=True)
+        self.full_run = self.run(40758406045, FULL_ANCHOR)
+        self.full_run['head_branch'] = 'main'
+        self.full_artifact = self.artifact(self.full_pins, FULL_ANCHOR)
+        self.jobs[40758406045] = [dict(name=name, status='completed', conclusion='success')
+                                  for name in ('changes', 'build')]
+        (root / FULL_CONFIG).write_text(json.dumps(self.full_pins), encoding='utf-8')
+        # Historical policies are copied exactly and never regenerated for Full.
+        for path in (INPUT, CONFIG):
+            (root / path).write_bytes((ROOT / path).read_bytes())
+
+    def get(self, endpoint, **kwargs):
+        values = {f'compare/{FULL_ANCHOR}...{HEAD}': self.full_comparison,
+                  'actions/runs/40758406045': self.full_run,
+                  'actions/artifacts/12855200220': self.full_artifact}
+        return copy.deepcopy(values[endpoint]) if endpoint in values else super().get(endpoint, **kwargs)
+
+    def pages(self, endpoint, key=None):
+        if endpoint == 'pulls/3/files':
+            return copy.deepcopy(self.full_comparison['files'])
+        return super().pages(endpoint, key)
+
+    def file(self, path, ref):
+        if path in (INPUT, CONFIG) and ref == FULL_ANCHOR:
+            return (ROOT / path).read_text(encoding='utf-8')
+        return super().file(path, ref)
+
+
+@pytest.fixture
+def full_installer_api(tmp_path):
+    return FullInstallerApi(tmp_path)
+
+
+def full_review_function(checker, name):
+    value = getattr(checker, name, None)
+    assert callable(value), 'full_installer_review_contract_not_implemented'
+    return value
+
+
+def test_existing_classifier_and_cli_select_real_source_for_full_installer_changes(full_installer_api, monkeypatch, capsys):
+    publisher = load_tool('ci_publish')
+    # Current candidate route refuses the harness files, then legacy routing
+    # chooses Full. This is the existing public-behavior RED anchor.
+    assert publisher.classify(full_installer_api, 3, HEAD) == 'installer-source'
+    monkeypatch.setattr(publisher, 'GitHub', lambda: full_installer_api)
+    monkeypatch.setattr('sys.argv', ['ci_publish.py', 'classify', '--pr-number', '3', '--head-sha', HEAD])
+    assert publisher.main() == 0
+    assert capsys.readouterr().out == 'installer-source\n'
+
+
+def test_full_installer_route_authentication_source_settings_and_cli_agree(checker, full_installer_api, monkeypatch, capsys):
+    route = full_review_function(checker, 'installer_route')
+    verify = full_review_function(checker, 'verify_installer_inputs')
+    settings = full_review_function(checker, 'review_settings')
+    assert route(full_installer_api, full_installer_api.pr, HEAD) is True
+    assert checker.candidate_route(full_installer_api, full_installer_api.pr, HEAD) is False
+    expected = dict(mode='source', desktop_stack=False, publish=False, authentication='full6a',
+        test_targets=['tests/test_ci_p4_candidate.py', 'tests/test_ci_publish.py', 'tests/test_ci_inputs.py',
+                      'tests/test_installer_qa.py', 'tests/test_resources.py'])
+    assert settings('installer-source') == expected
+    assert verify(full_installer_api, full_installer_api.root, HEAD) == dict(route='installer-source',
+        source_commit=HEAD, payload_source_commit=FULL_ANCHOR, full_suite_passed=False, windows_validation=[])
+    assert full_installer_api.downloaded == [], 'Source review must not redownload an installer or old proof ZIP'
+    monkeypatch.setattr('sys.argv', ['ci_p4_candidate.py', '--settings', 'installer-source'])
+    assert checker.main() == 0
+    assert json.loads(capsys.readouterr().out) == expected
+    publisher = load_tool('ci_publish')
+    installer = load_tool('ci_installer')
+    verified = []
+    monkeypatch.setattr(installer, 'verify_harness', lambda sha: verified.append(sha))
+    monkeypatch.setattr(checker, 'load_tool', lambda name: {'ci_publish': publisher, 'ci_installer': installer}[name])
+    monkeypatch.setattr(checker, 'ROOT', full_installer_api.root)
+    monkeypatch.setattr(publisher, 'GitHub', lambda: full_installer_api)
+    monkeypatch.setattr('sys.argv', ['ci_p4_candidate.py', '--installer-review', '--head-sha', HEAD, '--pr-number', '3'])
+    assert checker.main() == 0
+    assert json.loads(capsys.readouterr().out)['route'] == 'installer-source'
+    assert verified == [HEAD, HEAD]  # Actual clean-checkout implementation is retained by the real CLI.
+
+
+@pytest.mark.parametrize('fault', ['ancestry', 'unknown', 'rename', 'resource', 'historical-policy', 'frontend', 'truncated'])
+def test_full_installer_route_is_a_separate_closed_post_6a_boundary(checker, full_installer_api, fault):
+    route = full_review_function(checker, 'installer_route')
+    comparison = full_installer_api.full_comparison
+    if fault == 'ancestry':
+        comparison['merge_base_commit']['sha'] = ANCHOR
+    elif fault == 'truncated':
+        comparison['files'] *= 150
+    else:
+        path = {'unknown': 'arbitrary.txt', 'rename': FULL_CONFIG, 'resource': INPUT,
+                'historical-policy': CONFIG, 'frontend': 'desktop/src/main.ts'}[fault]
+        comparison['files'].append(dict(filename=path,
+            **({'previous_filename': 'src/private.py'} if fault == 'rename' else {})))
+    assert route(full_installer_api, full_installer_api.pr, HEAD) is False
+
+
+@pytest.mark.parametrize('fault', ['source', 'digest', 'expired', 'job', 'quick-policy', 'historical-bytes'])
+def test_full_installer_source_authentication_rejects_substitution(checker, full_installer_api, fault):
+    verify = full_review_function(checker, 'verify_installer_inputs')
+    if fault == 'source':
+        full_installer_api.full_run['head_sha'] = HEAD
+    elif fault == 'digest':
+        full_installer_api.full_artifact['digest'] = 'sha256:' + '0' * 64
+    elif fault == 'expired':
+        full_installer_api.full_artifact['expired'] = True
+    elif fault == 'job':
+        full_installer_api.jobs[40758406045][1]['conclusion'] = 'skipped'
+    elif fault == 'quick-policy':
+        full_installer_api.full_pins.update(test_scope='targeted', full_suite_passed=False)
+        (full_installer_api.root / FULL_CONFIG).write_text(json.dumps(full_installer_api.full_pins), encoding='utf-8')
+    else:
+        path = full_installer_api.root / CONFIG
+        path.write_bytes(path.read_bytes() + b'\n')
+    with pytest.raises(checker.CandidateError):
+        verify(full_installer_api, full_installer_api.root, HEAD)
+
+
+@pytest.mark.parametrize('fault', [None, 'unmerged', 'merge', 'tree'])
+def test_full_installer_main_push_never_publishes_without_exact_merge_binding(checker, full_installer_api, fault):
+    route = full_review_function(checker, 'installer_route')
+    settings = full_review_function(checker, 'review_settings')
+    full_installer_api.pr.update(merged=True, merged_at='2026-10-29T00:00:00Z', merge_commit_sha=MERGE)
+    if fault == 'unmerged':
+        full_installer_api.pr['merged'] = False
+    elif fault == 'merge':
+        full_installer_api.pr['merge_commit_sha'] = 'e' * 40
+    elif fault == 'tree':
+        full_installer_api.merged_tree = 'e' * 40
+    if fault is None:
+        assert route(full_installer_api, full_installer_api.pr, HEAD, merge_sha=MERGE) is True
+        assert settings('installer-source')['publish'] is False
+        assert load_tool('ci_publish').classify(full_installer_api, 3, HEAD, merge_sha=MERGE) == 'installer-source'
+    else:
+        with pytest.raises(checker.CandidateError):
+            route(full_installer_api, full_installer_api.pr, HEAD, merge_sha=MERGE)
