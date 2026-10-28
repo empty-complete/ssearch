@@ -441,3 +441,58 @@ $values=Get-Content -LiteralPath $InputFile -Raw -Encoding UTF8 | ConvertFrom-Js
     except (ValueError, UnicodeError):
         pytest.fail('parent_output_policy_result_invalid', pytrace=False)
     assert observed == [expected for _, expected in inputs]
+
+
+def test_installer_helper_forwards_safe_host_lines_before_failure_and_keeps_policy_json(tmp_path):
+    """Real PS helper and parent filter; only the external producer is fake."""
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    (tools / 'ci_installer.py').write_text(
+        'import sys\n'
+        'if sys.argv[1] == "policy":\n'
+        '    print(\'{"budgets_ms":{"load":5000}}\')\n'
+        'else:\n'
+        '    print("CI_INSTALLER_INVENTORY files=3 desktop_match=true service_match=true inventory_match=false")\n'
+        '    print("CI_INSTALLER_HELPER code=installer_inventory_mismatch")\n'
+        '    print("PRIVATE_SENTINEL")\n'
+        'sys.exit(1 if sys.argv[1] == "fail" else 0)\n', encoding='utf-8')
+    script = tmp_path / 'pipeline.ps1'
+    script.write_text(r'''
+param($Controller,$Parent,$Fixture,$Interpreter)
+$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+foreach($entry in @(@{path=$Controller;name='Invoke-InstallerHelper'},
+                   @{path=$Parent;name='Test-InstallerPublicLine'})) {
+    $ast=[Management.Automation.Language.Parser]::ParseFile($entry.path,[ref]$tokens,[ref]$errors)
+    if($errors.Count){throw 'helper_pipeline_syntax_invalid'}
+    $fn=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq $entry.name},$true)
+    . ([scriptblock]::Create($fn.Extent.Text))
+}
+$repository=$Fixture;$Python=$Interpreter
+$outcomes=@()
+foreach($mode in @('fail','pass')) {
+    $script:caught=$false
+    # The actual caller discards success-pipeline output. Host diagnostics must
+    # survive that discard and must already exist when the helper throws.
+    $raw=@(& {try {$null=Invoke-InstallerHelper @($mode)} catch {$script:caught=$true}} 6>&1)
+    $lines=@($raw | ForEach-Object {[string]$_})
+    $public=@($lines | Where-Object {Test-InstallerPublicLine $_})
+    $outcomes+=($public.Count -eq 2 -and
+        $public[0] -ceq 'CI_INSTALLER_INVENTORY files=3 desktop_match=true service_match=true inventory_match=false' -and
+        $public[1] -ceq 'CI_INSTALLER_HELPER code=installer_inventory_mismatch' -and
+        -not ($lines -match 'PRIVATE_SENTINEL') -and $script:caught -eq ($mode -ceq 'fail'))
+}
+$policy=Invoke-InstallerHelper @('policy')
+$outcomes+=((($policy | ConvertFrom-Json).budgets_ms.load) -eq 5000)
+$outcomes | ConvertTo-Json -Compress
+''', encoding='utf-8-sig')
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', str(script), str(ROOT / 'tools/check_installer.ps1'), str(ROOT / 'tools/run_ci_build.ps1'),
+        str(tmp_path), sys.executable], capture_output=True, timeout=30)
+    assert result.returncode == 0, 'Actual helper/parent output pipeline probe failed'
+    try:
+        observed = json.loads(result.stdout)
+    except (ValueError, UnicodeError):
+        pytest.fail('helper_pipeline_result_invalid', pytrace=False)
+    assert observed == [True, True, True]
