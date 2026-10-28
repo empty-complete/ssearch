@@ -20,9 +20,15 @@ INPUT = 'resources/ci/installer-proof-input.json'
 CONFIG = '.github/p4-candidate.json'
 CANDIDATE = 'frontend/compatibility/candidate-versions.json'
 LOCKS = ('frontend/package-lock.json', 'desktop/package-lock.json')
+INSTALLER_ANCHOR = '6a380230b8f26cf5df1798b396c850ab59484c7d'
+FULL_CONFIG = '.github/p4-full-installer.json'
 ALLOWED = frozenset((CONFIG, '.github/workflows/windows-build.yml',
     'tools/ci_p4_candidate.py', 'tests/test_ci_p4_candidate.py',
     'tools/ci_publish.py', 'tests/test_ci_publish.py'))
+INSTALLER_ALLOWED = frozenset((FULL_CONFIG, '.github/workflows/windows-build.yml',
+    'tools/ci_installer.py', 'tools/check_installer.ps1', 'tools/run_ci_build.ps1',
+    'tools/ci_p4_candidate.py', 'tests/test_ci_p4_candidate.py', 'tests/test_installer_qa.py',
+    'tests/test_ci_inputs.py', 'tools/ci_publish.py', 'tests/test_ci_publish.py'))
 OPEN = frozenset(('qt_upgrade', 'native_windows_11', 'native_visual_accessibility',
     'windows_10_final', 'full_p4_acceptance', 'stable', 'long_qa_paths'))
 
@@ -45,28 +51,40 @@ def load_tool(name):
 
 
 def allowed_delta(api, head):
+    return review_delta(api, head, ANCHOR, ALLOWED)
+
+
+def review_delta(api, head, anchor, allowed):
     require(type(head) is str and re.fullmatch('[0-9a-f]{40}', head), 'candidate_head_invalid')
-    comparison = api.get(f'compare/{ANCHOR}...{head}', optional=True)
+    comparison = api.get(f'compare/{anchor}...{head}', optional=True)
     if not isinstance(comparison, dict):
         return False
     files = comparison.get('files')
     # GitHub compare exposes at most 300 files. Exactly 300 is ambiguous too.
     return (comparison.get('status') in ('ahead', 'identical')
-        and comparison.get('base_commit', {}).get('sha') == ANCHOR
-        and comparison.get('merge_base_commit', {}).get('sha') == ANCHOR
+        and comparison.get('base_commit', {}).get('sha') == anchor
+        and comparison.get('merge_base_commit', {}).get('sha') == anchor
         and type(files) is list and len(files) < 300
-        and all(type(item) is dict and type(item.get('filename')) is str and item['filename'] in ALLOWED
+        and all(type(item) is dict and type(item.get('filename')) is str and item['filename'] in allowed
                 and ('previous_filename' not in item or
-                     (type(item['previous_filename']) is str and item['previous_filename'] in ALLOWED))
+                     (type(item['previous_filename']) is str and item['previous_filename'] in allowed))
                 for item in files))
 
 
 def candidate_route(api, pr, head, *, merge_sha=None):
+    return review_route(api, pr, head, ANCHOR, ALLOWED, merge_sha)
+
+
+def installer_route(api, pr, head, *, merge_sha=None):
+    return review_route(api, pr, head, INSTALLER_ANCHOR, INSTALLER_ALLOWED, merge_sha)
+
+
+def review_route(api, pr, head, anchor, allowed, merge_sha):
     require(type(pr) is dict and pr.get('head', {}).get('sha') == head
         and pr.get('head', {}).get('repo', {}).get('full_name') == 'empty-complete/ssearch'
         and pr.get('base', {}).get('repo', {}).get('full_name') == 'empty-complete/ssearch'
         and pr.get('base', {}).get('ref') == 'main', 'candidate_pr_identity_mismatch')
-    if not allowed_delta(api, head):
+    if not review_delta(api, head, anchor, allowed):
         return False
     if merge_sha is not None:
         require(type(merge_sha) is str and re.fullmatch('[0-9a-f]{40}', merge_sha)
@@ -77,6 +95,14 @@ def candidate_route(api, pr, head, *, merge_sha=None):
         require(type(source_tree) is str and re.fullmatch('[0-9a-f]{40}', source_tree)
             and source_tree == merged_tree, 'candidate_merge_tree_mismatch')
     return True
+
+
+def review_settings(route):
+    require(route in ('candidate-source', 'installer-source'), 'candidate_route_required')
+    return dict(mode='source', desktop_stack=False, publish=False,
+        authentication='full6a' if route == 'installer-source' else 'candidate',
+        test_targets=['tests/test_ci_p4_candidate.py', 'tests/test_ci_publish.py', 'tests/test_ci_inputs.py',
+                      'tests/test_installer_qa.py', 'tests/test_resources.py'])
 
 
 def validate_decision(decision, candidate_bytes, *, pins, proof):
@@ -176,19 +202,49 @@ def verify_candidate_inputs(api, root, head):
         raise CandidateError('candidate_evidence_unavailable') from None
 
 
+def verify_installer_inputs(api, root, head):
+    """Authenticate Full input metadata without downloading or executing its ZIP."""
+    try:
+        require(review_delta(api, head, INSTALLER_ANCHOR, INSTALLER_ALLOWED), 'installer_review_inputs_changed')
+        installer = load_tool('ci_installer')
+        root = Path(root)
+        for relative in (INPUT, CONFIG, CANDIDATE, *LOCKS):
+            installer.no_links(root / relative)
+            require((root / relative).read_bytes() == api.file(relative, INSTALLER_ANCHOR).encode('utf-8'),
+                    'installer_review_historical_input_changed')
+        pins = installer.load_input_set('full6a', root=root)
+        installer.validate_input_metadata(api.get(f"actions/runs/{pins['run_id']}"),
+            api.get(f"actions/artifacts/{pins['artifact_id']}"), pins)
+        verify_jobs(api, pins['run_id'])
+        return dict(route='installer-source', source_commit=head, payload_source_commit=pins['source_commit'],
+                    full_suite_passed=False, windows_validation=[])
+    except CandidateError:
+        raise
+    except Exception:
+        raise CandidateError('installer_review_evidence_unavailable') from None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--head-sha', required=True)
-    parser.add_argument('--pr-number', required=True, type=int)
+    parser.add_argument('--head-sha')
+    parser.add_argument('--pr-number', type=int)
+    parser.add_argument('--settings')
+    parser.add_argument('--installer-review', action='store_true')
     args = parser.parse_args()
     try:
+        if args.settings is not None:
+            print(json.dumps(review_settings(args.settings)))
+            return 0
         publisher = load_tool('ci_publish')
         installer = load_tool('ci_installer')
         installer.verify_harness(args.head_sha)
         api = publisher.GitHub()
-        require(args.pr_number > 0 and candidate_route(api, api.get(f'pulls/{args.pr_number}'), args.head_sha),
+        route = installer_route if args.installer_review else candidate_route
+        require(type(args.pr_number) is int and args.pr_number > 0
+            and route(api, api.get(f'pulls/{args.pr_number}'), args.head_sha),
                 'candidate_route_required')
-        result = verify_candidate_inputs(api, ROOT, args.head_sha)
+        verify = verify_installer_inputs if args.installer_review else verify_candidate_inputs
+        result = verify(api, ROOT, args.head_sha)
         installer.verify_harness(args.head_sha)
         print(json.dumps(result, sort_keys=True))
         return 0

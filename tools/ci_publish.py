@@ -360,6 +360,8 @@ def classify(api, number, head_sha, *, merge_sha=None):
         try:
             if candidate.candidate_route(api, pr, head_sha, merge_sha=merge_sha):
                 return 'candidate-source'
+            if candidate.installer_route(api, pr, head_sha, merge_sha=merge_sha):
+                return 'installer-source'
         except candidate.CandidateError:
             # Do not turn an invalid candidate identity into a packaging bypass.
             raise PublishError('candidate_review_identity_invalid') from None
@@ -446,7 +448,7 @@ def main():
         api = GitHub()
         if args.command == 'classify':
             route = classify(api, args.pr_number, args.head_sha, merge_sha=args.merge_sha)
-            print('candidate-source' if route == 'candidate-source' else ('true' if route else 'false'))
+            print(route if route in ('candidate-source', 'installer-source') else ('true' if route else 'false'))
         elif args.command == 'verify-pr':
             print(json.dumps(verify_pr_selection(api, args.pr_number)))
         else:

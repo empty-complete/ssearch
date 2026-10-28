@@ -17,6 +17,8 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+FULL_SOURCE = '6a380230b8f26cf5df1798b396c850ab59484c7d'
+FULL_INPUT = '.github/p4-full-installer.json'
 CHECKS = ('fresh_install_verified', 'same_version_reinstall_verified', 'owned_uninstall_verified',
     'payload_inventory_verified', 'shortcut_ownership_verified', 'application_bytes_preserved',
     'application_index_preserved', 'postgres_bytes_preserved', 'postgres_restart_verified',
@@ -59,6 +61,38 @@ def write_json(path, value):
     with path.open('x', encoding='utf-8') as stream:
         json.dump(value, stream, indent=2)
         stream.write('\n')
+
+
+def payload_scope(pins):
+    if 'test_scope' not in pins and 'full_suite_passed' not in pins:
+        return 'targeted'
+    require(pins.get('test_scope') == 'full' and pins.get('full_suite_passed') is True
+        and pins.get('source_commit') == FULL_SOURCE
+        and pins.get('artifact_name') == f'windows-{FULL_SOURCE}-full', 'installer_input_scope_invalid')
+    return 'full'
+
+
+def load_input_set(selection='quick99', *, root=None):
+    require(selection in ('quick99', 'full6a'), 'installer_input_set_invalid')
+    root = ROOT if root is None else Path(root)
+    pins = read_json(root / ('resources/ci/installer-proof-input.json' if selection == 'quick99' else FULL_INPUT))
+    if selection == 'full6a':
+        require(payload_scope(pins) == 'full' and pins.get('repository') == 'empty-complete/ssearch'
+            and pins.get('workflow_id') == 395933832 and pins.get('workflow_path') == '.github/workflows/windows-build.yml'
+            and pins.get('head_branch') == 'main', 'installer_full_input_invalid')
+        require(all(type(pins.get(key)) is int and pins[key] > 0 for key in
+            ('run_id', 'artifact_id', 'archive_size', 'installer_size'))
+            and all(type(pins.get(key)) is str and re.fullmatch('[0-9a-f]{64}', pins[key])
+                for key in ('archive_sha256', 'installer_sha256')), 'installer_full_input_invalid')
+    else:
+        require(payload_scope(pins) == 'targeted', 'installer_quick_input_invalid')
+    return pins
+
+
+def input_base(pins):
+    require(type(pins.get('source_commit')) is str and re.fullmatch('[0-9a-f]{40}', pins['source_commit']),
+            'installer_source_invalid')
+    return ROOT / ('artifacts/development' if payload_scope(pins) == 'full' else 'artifacts/development-quick') / pins['source_commit']
 
 
 def load_module(name, path):
@@ -176,26 +210,34 @@ def validate_package(directory, pins):
             'installer_checksums_mismatch')
     manifest = read_json(directory / 'build-manifest.json')
     source = pins['source_commit']
+    scope = payload_scope(pins)
+    full = scope == 'full'
     require(manifest.get('source_commit') == source and manifest.get('payload_kind') == 'electron-service'
         and manifest.get('app_version') == manifest.get('core_version') == '0.2.0'
-        and manifest.get('test_scope') == 'targeted' and manifest.get('full_suite_passed') is False
+        and manifest.get('test_scope') == scope and manifest.get('full_suite_passed') is full
         and manifest.get('catalog') == dict(backend='postgresql', schema_version=5)
         and manifest.get('capabilities') == dict(postgresql='application_verified')
         and manifest.get('windows_validation') == [] and manifest.get('desktop', {}).get('required_frozen_proofs_passed') is True,
-        'installer_quick_manifest_mismatch')
+        'installer_full_manifest_mismatch' if full else 'installer_quick_manifest_mismatch')
     installer = directory / pins['installer_name']
     require(installer.stat().st_size == pins['installer_size'] and digest(installer) == pins['installer_sha256']
         and manifest.get('installer') == dict(path='artifacts/' + pins['installer_name'],
             size=pins['installer_size'], sha256=pins['installer_sha256']), 'installer_identity_mismatch')
     receipt = read_json(directory / 'test-receipt.json')
     evidence = read_json(directory / 'ci-evidence.json')
-    require(receipt.get('source_commit') == source and receipt.get('scope') == 'targeted'
-        and receipt.get('full_suite_passed') is False and type(receipt.get('exit_code')) is int
-        and receipt['exit_code'] == 0 and any(receipt.get(key) for key in
-            ('test_targets', 'frontend_test_targets', 'desktop_test_targets')),
+    target_keys = ('test_targets', 'frontend_test_targets', 'desktop_test_targets')
+    require(receipt.get('source_commit') == source and receipt.get('scope') == scope
+        and receipt.get('full_suite_passed') is full and type(receipt.get('exit_code')) is int
+        and receipt['exit_code'] == 0 and (full or any(receipt.get(key) for key in target_keys)),
         'installer_test_receipt_mismatch')
-    require(evidence.get('source_commit') == source and evidence.get('test_scope') == 'targeted'
-        and evidence.get('full_suite_passed') is False and evidence.get('windows_validation') == [],
+    if full:
+        require(all(manifest.get(key) == [] and receipt.get(key) == [] for key in target_keys)
+            and set(receipt) == {'source_commit', 'scope', 'full_suite_passed', 'exit_code', *target_keys}
+            and evidence.get('schema_version') == 1 and evidence.get('runner_platform') == 'Windows Server 2025 x64'
+            and evidence.get('release_channel') == 'development-prerelease'
+            and manifest.get('desktop', {}).get('stage_accepted') is False, 'installer_full_receipt_invalid')
+    require(evidence.get('source_commit') == source and evidence.get('test_scope') == scope
+        and evidence.get('full_suite_passed') is full and evidence.get('windows_validation') == [],
         'installer_evidence_mismatch')
     proofs = evidence.get('frozen_proofs', {})
     require(set(proofs) == set(publisher.PROOF_CHECKS), 'installer_frozen_proofs_missing')
@@ -203,6 +245,9 @@ def validate_package(directory, pins):
         proof = proofs[name]
         require(proof.get('passed') is True and proof.get('execution_mode') == 'frozen'
             and proof.get('checks') == dict.fromkeys(flags, True), 'installer_frozen_proof_invalid')
+        if full:
+            require(type(proof.get('original_receipt_sha256')) is str
+                and re.fullmatch('[0-9a-f]{64}', proof['original_receipt_sha256']), 'installer_frozen_digest_invalid')
     desktop = evidence.get('desktop', {})
     require(desktop.get('payload_kind') == 'electron-service' and desktop.get('required_frozen_proofs_passed') is True
         and desktop.get('stage_accepted') is False
@@ -217,7 +262,7 @@ def validate_package(directory, pins):
 def fetch(pins):
     require(os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
         and os.environ.get('GITHUB_REPOSITORY') == pins['repository'], 'installer_manual_ci_required')
-    base = ROOT / 'artifacts/development-quick' / pins['source_commit']
+    base = input_base(pins)
     no_links(base)
     require(not base.exists(), 'installer_ingress_exists')
     base.mkdir(parents=True)
@@ -231,6 +276,10 @@ def fetch(pins):
             api(endpoint, stream)
     artifact = read_json(base / 'artifact.json')
     validate_input_metadata(read_json(base / 'run.json'), artifact, pins)
+    if payload_scope(pins) == 'full':
+        publisher = load_module('ssearch_installer_api', ROOT / 'tools/ci_publish.py')
+        review = load_module('ssearch_installer_review', ROOT / 'tools/ci_p4_candidate.py')
+        review.verify_jobs(publisher.GitHub(), pins['run_id'])
     archive = base / 'artifact.zip'
     with archive.open('xb') as stream:
         api(f"actions/artifacts/{pins['artifact_id']}/zip", stream)
@@ -299,7 +348,8 @@ def main(argv=None):
         parser = Parser(add_help=False, allow_abbrev=False)
         parser.add_argument('command', choices=('fetch', 'verify-harness', 'private', 'inventory', 'preservation',
             'ui-policy', 'ui', 'application', 'owner', 'serve', 'receipt', 'admit', 'candidate',
-            'ui-summary', 'ui-summary-line'))
+            'ui-summary', 'ui-summary-line', 'inputs'))
+        parser.add_argument('--input-set', default='quick99')
         parser.add_argument('--harness-commit')
         parser.add_argument('--directory', type=Path)
         parser.add_argument('--manifest', type=Path)
@@ -312,14 +362,18 @@ def main(argv=None):
         parser.add_argument('--not-before-ms', type=int, default=0)
         parser.add_argument('--parent-drained', action='store_true')
         args = parser.parse_args(argv)
-        pins = read_json(ROOT / 'resources/ci/installer-proof-input.json')
-        if args.command == 'fetch':
+        pins = load_input_set(args.input_set)
+        if args.command == 'inputs':
+            scope = payload_scope(pins)
+            print(json.dumps({**pins, 'test_scope': scope, 'full_suite_passed': scope == 'full',
+                'base': input_base(pins).relative_to(ROOT).as_posix()}))
+        elif args.command == 'fetch':
             verify_harness(args.harness_commit)
             fetch(pins)
         elif args.command == 'verify-harness':
             verify_harness(args.harness_commit)
         elif args.command == 'admit':
-            base = ROOT / 'artifacts/development-quick' / pins['source_commit']
+            base = input_base(pins)
             validate_package(base / 'download', pins)
             require(digest(base / 'build-manifest.json') == digest(base / 'download/build-manifest.json')
                 and digest(base / 'artifacts' / pins['installer_name']) == pins['installer_sha256'],

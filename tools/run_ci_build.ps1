@@ -14,6 +14,9 @@ Set-StrictMode -Version Latest
 if ($env:GITHUB_ACTIONS -cne 'true') { throw 'CI_ACTIONS_REQUIRED' }
 if ($Child -and (-not $ExpectedSid -or -not $RunDirectory)) { throw 'CI_OWNED_CHILD_REQUIRED' }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$installerInputSet=if ($env:SSEARCH_INSTALLER_INPUT_SET) { $env:SSEARCH_INSTALLER_INPUT_SET } else { 'quick99' }
+if ($installerInputSet -cnotin @('quick99','full6a') -or
+    ($installerInputSet -ceq 'full6a' -and $env:BUILD_MODE -cne 'installer')) { throw 'CI_INSTALLER_INPUT_INVALID' }
 if (-not $env:GITHUB_WORKSPACE -or
     [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\') -ine $repository.TrimEnd('\')) {
     throw 'CI_WORKSPACE_MISMATCH'
@@ -45,8 +48,10 @@ function Write-InstallerPublicLine {
         # Never accept an arbitrary JSON body from child stdout. Reapply the
         # existing formatter's source-owned UI domains at the parent boundary.
         try {
+            $selection=Get-Variable -Name installerInputSet -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+            if (-not $selection) { $selection='quick99' }
             $normalized=$Line.Substring($prefix.Length) | & (Join-Path $repository '.venv/Scripts/python.exe') `
-                (Join-Path $repository 'tools/ci_installer.py') ui-summary-line
+                (Join-Path $repository 'tools/ci_installer.py') ui-summary-line --input-set $selection
             if ($LASTEXITCODE -eq 0 -and @($normalized).Count -eq 1) { Write-Host ([string]$normalized) }
             else { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
         } catch { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
@@ -211,20 +216,22 @@ print('CI preflight: standard_user=true loaded_profile=true clean_pg_environment
         ($env:BUILD_MODE -in @('quick', 'source') -and $targetCount -eq 0)) { throw 'CI_BUILD_SCOPE_INVALID' }
     if ($env:BUILD_MODE -eq 'installer') {
         $controller = Join-Path $repository 'tools/ci_installer.py'
-        & $python $controller verify-harness --harness-commit $env:SOURCE_SHA
+        & $python $controller verify-harness --harness-commit $env:SOURCE_SHA --input-set $installerInputSet
         if ($LASTEXITCODE -ne 0) { throw 'CI_INSTALLER_HARNESS_INVALID' }
-        $pins = Get-Content -LiteralPath (Join-Path $repository 'resources/ci/installer-proof-input.json') -Raw | ConvertFrom-Json
-        $base = Join-Path $repository ('artifacts/development-quick/' + $pins.source_commit)
+        $inputContext = & $python $controller inputs --input-set $installerInputSet
+        if ($LASTEXITCODE -ne 0) { throw 'CI_INSTALLER_INPUT_INVALID' }
+        $pins = $inputContext | ConvertFrom-Json
+        $base = Join-Path $repository $pins.base
         # No source/native dependency preparation: every model/PG/desktop byte
         # comes from the fixed existing installer and its published inventory.
-        & (Join-Path $repository 'tools/check_installer.ps1') -Electron -Python $python `
+        & (Join-Path $repository 'tools/check_installer.ps1') -Electron -Python $python -InstallerInputSet $installerInputSet `
             -Installer (Join-Path $base ('artifacts/' + $pins.installer_name)) `
             -TestDir (Join-Path $base 'qa/Installer Ю')
         $installerExit = $LASTEXITCODE
         & $python $controller candidate --report (Join-Path $base 'qa/Installer Ю/installer-qa.json') `
-            --output (Join-Path $repository 'artifacts/ci-installer/candidate.json')
+            --output (Join-Path $repository 'artifacts/ci-installer/candidate.json') --input-set $installerInputSet
         if ($LASTEXITCODE -ne 0) { throw 'CI_INSTALLER_CANDIDATE_FAILED' }
-        & $python $controller verify-harness --harness-commit $env:SOURCE_SHA
+        & $python $controller verify-harness --harness-commit $env:SOURCE_SHA --input-set $installerInputSet
         if ($LASTEXITCODE -ne 0) { throw 'CI_INSTALLER_HARNESS_CHANGED' }
         exit $installerExit
     }
@@ -399,6 +406,7 @@ try {
             DESKTOP_STACK = $env:DESKTOP_STACK
             FRONTEND_TEST_TARGETS_JSON = $env:FRONTEND_TEST_TARGETS_JSON
             DESKTOP_TEST_TARGETS_JSON = $env:DESKTOP_TEST_TARGETS_JSON
+            SSEARCH_INSTALLER_INPUT_SET = $installerInputSet
             PIP_DISABLE_PIP_VERSION_CHECK = '1'
         }
     }
@@ -409,7 +417,7 @@ try {
     $data = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'launch.json') -Raw | ConvertFrom-Json
     foreach ($name in @('GITHUB_ACTIONS', 'GITHUB_WORKSPACE', 'SOURCE_SHA', 'BUILD_MODE',
                         'TEST_TARGETS_JSON', 'DESKTOP_STACK', 'FRONTEND_TEST_TARGETS_JSON',
-                        'DESKTOP_TEST_TARGETS_JSON', 'PYTHONUTF8', 'PIP_DISABLE_PIP_VERSION_CHECK')) {
+                        'DESKTOP_TEST_TARGETS_JSON', 'PYTHONUTF8', 'PIP_DISABLE_PIP_VERSION_CHECK', 'SSEARCH_INSTALLER_INPUT_SET')) {
         [Environment]::SetEnvironmentVariable($name, [string]$data.context.$name, 'Process')
     }
 } catch {
@@ -541,11 +549,10 @@ exit $LASTEXITCODE
 }
 if ($env:BUILD_MODE -eq 'installer') {
     try {
-        $pins=Get-Content -LiteralPath (Join-Path $repository 'resources/ci/installer-proof-input.json') -Raw | ConvertFrom-Json
         $raw=Join-Path $repository 'artifacts/ci-installer/candidate.json'
         $arguments=@((Join-Path $repository 'tools/ci_installer.py'),'receipt','--harness-commit',$env:SOURCE_SHA,
             '--report',$raw,'--exit-code',[string]$exitCode,'--output',
-            (Join-Path $repository 'artifacts/ci-installer/installation-receipt.json'))
+            (Join-Path $repository 'artifacts/ci-installer/installation-receipt.json'), '--input-set', $installerInputSet)
         # The child cannot self-declare a drained retained job. A forced tree
         # termination is never successful completion, even if the job is empty.
         if ($treeDrained -and $childStopped -and -not $jobTerminated) { $arguments += '--parent-drained' }
