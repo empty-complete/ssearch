@@ -334,7 +334,7 @@ def publication_plan(api, env, *, recovery_pr=None):
             'run': run, 'artifact': artifact, 'publisher_execution_sha': execution}
 
 
-def classify(api, number, head_sha):
+def classify(api, number, head_sha, *, merge_sha=None):
     pr = api.get(f'pulls/{number}')
     require(pr['head']['sha'] == head_sha and bool(SHA.fullmatch(head_sha)),
             'classification_head_changed')
@@ -350,6 +350,19 @@ def classify(api, number, head_sha):
             paths.append(item['previous_filename'])
     require(bool(SHA.fullmatch(pr['base']['sha'])) and bool(SHA.fullmatch(pr['head']['sha'])),
             'invalid_classification_identity')
+    candidate_path = Path(__file__).with_name('ci_p4_candidate.py')
+    if (candidate_path.is_file() and pr['head'].get('repo', {}).get('full_name') == REPOSITORY
+            and pr['base'].get('repo', {}).get('full_name') == REPOSITORY and pr['base'].get('ref') == 'main'):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('ssearch_p4_review_route', candidate_path)
+        candidate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(candidate)
+        try:
+            if candidate.candidate_route(api, pr, head_sha, merge_sha=merge_sha):
+                return 'candidate-source'
+        except candidate.CandidateError:
+            # Do not turn an invalid candidate identity into a packaging bypass.
+            raise PublishError('candidate_review_identity_invalid') from None
     return requires_build(paths, api.file(WORKFLOW, pr['base']['sha']), api.file(WORKFLOW, pr['head']['sha']))
 
 
@@ -422,6 +435,7 @@ def main():
     scope = commands.add_parser('classify')
     scope.add_argument('--pr-number', type=int, required=True)
     scope.add_argument('--head-sha', required=True)
+    scope.add_argument('--merge-sha')
     selection = commands.add_parser('verify-pr')
     selection.add_argument('--pr-number', type=int, required=True)
     publication = commands.add_parser('publish')
@@ -431,7 +445,8 @@ def main():
     try:
         api = GitHub()
         if args.command == 'classify':
-            print('true' if classify(api, args.pr_number, args.head_sha) else 'false')
+            route = classify(api, args.pr_number, args.head_sha, merge_sha=args.merge_sha)
+            print('candidate-source' if route == 'candidate-source' else ('true' if route else 'false'))
         elif args.command == 'verify-pr':
             print(json.dumps(verify_pr_selection(api, args.pr_number)))
         else:

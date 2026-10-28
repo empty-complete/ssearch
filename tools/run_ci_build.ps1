@@ -22,6 +22,37 @@ for ($entry = Get-Item -LiteralPath $repository; $null -ne $entry; $entry = $ent
     if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'CI_WORKSPACE_REPARSE' }
 }
 
+function Test-InstallerPublicLine {
+    param([string]$Line)
+    return ($Line -cmatch '^CI_INSTALLER_PHASE (fresh_install|ui_security|ui_load|ui_lifecycle|ui_empty_profile|ordinary_serve|service_owner|application|pg_seed|reinstall|uninstall|post_uninstall_app|post_uninstall_pg) (started|pass|fail)$' -or
+        $Line -cmatch '^CI_INSTALLER_FRESH (policy|install_process|registration|inno_records|inventory|shortcuts|reference_copy|reference_inventory) (started|pass|fail)$' -or
+        $Line -cmatch '^CI_INSTALLER_FAILURE substep=(policy|install_process|registration|inno_records|inventory|shortcuts|reference_copy|reference_inventory) hresult=-?[0-9]{1,10} wait_reason=(preparing_waiter|creating_job|assigning_job|admitting_waiter|querying_job|job_drain_timeout|job_close_failed|completion_deadline|waiting|capture_limit|waiter_timeout|reading_waiter_exit|checking_completion_file|waiter_exit_unavailable|waiter_exit_nonzero|completion_missing|reading_completion|completion_payload_invalid|child_exit_nonzero|complete|unavailable) exit_integer=(true|false) exit_zero=(true|false)$' -or
+        $Line -cmatch '^CI_INSTALLER_INVENTORY files=[0-9]{1,6} desktop_match=(true|false) service_match=(true|false) inventory_match=(true|false|unavailable)$' -or
+        $Line -cmatch '^CI_INSTALLER_SHORTCUT_GROUP exists=(true|false) available=(true|false) count=[0-9]{1,6} known=[0-9]{1,6} unknown=[0-9]{1,6}$' -or
+        $Line -cmatch '^CI_INSTALLER_SHORTCUT role=(application|help|uninstall) exists=(true|false) target_match=(true|false|unavailable)$' -or
+        $Line -cmatch '^CI_INSTALLER_COM stage=(create|read|release) status=(pass|fail) role=(none|application|help|uninstall) hresult=-?[0-9]{1,10}$' -or
+        $Line -cmatch '^CI_INSTALLER_UI_ADMISSION role=(ui-load|ui-security|ui-lifecycle|ui-empty-profile|unavailable) report_fresh=(true|false) profile_fresh=(true|false)$' -or
+        $Line -cmatch '^CI_INSTALLER_UI_FAILURE role=(ui-load|ui-security|ui-lifecycle|ui-empty-profile|unavailable) stage=(owner|prepare|launch|wait|report_validate) invoked=(true|false) hresult=-?[0-9]{1,10} wait_reason=(preparing_waiter|creating_job|assigning_job|admitting_waiter|querying_job|job_drain_timeout|job_close_failed|completion_deadline|waiting|capture_limit|waiter_timeout|reading_waiter_exit|checking_completion_file|waiter_exit_unavailable|waiter_exit_nonzero|completion_missing|reading_completion|completion_payload_invalid|child_exit_nonzero|complete|unavailable) exit_code=(-?[0-9]{1,10}|unavailable) report_present=(true|false)$' -or
+        $Line -ceq 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' -or
+        $Line -cmatch '^CI_INSTALLER_HELPER code=(installer_inventory_boundary|installer_inno_inventory_invalid|installer_non_file|installer_duplicate_file|installer_inno_identity_changed|installer_inno_file_missing|installer_payload_image_mismatch|installer_inventory_mismatch|installer_reparse_refused|installer_report_unavailable|installer_object_required|unavailable)$')
+}
+
+function Write-InstallerPublicLine {
+    param([string]$Line)
+    $prefix='CI_INSTALLER_UI_SUMMARY '
+    if (Test-InstallerPublicLine $Line) { Write-Host $Line }
+    elseif ($Line.StartsWith($prefix, [StringComparison]::Ordinal) -and $Line.Length -le 65536) {
+        # Never accept an arbitrary JSON body from child stdout. Reapply the
+        # existing formatter's source-owned UI domains at the parent boundary.
+        try {
+            $normalized=$Line.Substring($prefix.Length) | & (Join-Path $repository '.venv/Scripts/python.exe') `
+                (Join-Path $repository 'tools/ci_installer.py') ui-summary-line
+            if ($LASTEXITCODE -eq 0 -and @($normalized).Count -eq 1) { Write-Host ([string]$normalized) }
+            else { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
+        } catch { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
+    }
+}
+
 function Invoke-CiChild {
     if ($ExpectedSid -notmatch '^S-1-5-21-\d+-\d+-\d+-\d+$' -or
         [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($RunDirectory)) -ine (Join-Path $repository '.local') -or
@@ -163,10 +194,40 @@ print('CI preflight: standard_user=true loaded_profile=true clean_pg_environment
     & $python -c $preflight (Join-Path $RunDirectory 'preflight')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $targets = ConvertFrom-Json -InputObject $env:TEST_TARGETS_JSON -NoEnumerate
-    if ($targets -isnot [array] -or @($targets | Where-Object { $_ -isnot [string] }).Count -or
-        $env:BUILD_MODE -notin @('full', 'quick', 'source') -or
-        ($env:BUILD_MODE -eq 'full' -and $targets.Count -ne 0) -or
-        ($env:BUILD_MODE -in @('quick', 'source') -and $targets.Count -eq 0)) { throw 'CI_BUILD_SCOPE_INVALID' }
+    # Older source-only callers supply no desktop inputs. They stay Python-only.
+    $desktopStack = $env:DESKTOP_STACK -ceq 'true'
+    if ($env:DESKTOP_STACK -and $env:DESKTOP_STACK -cnotin @('true', 'false')) { throw 'CI_BUILD_SCOPE_INVALID' }
+    $frontendTargets = ConvertFrom-Json -InputObject $(if ($env:FRONTEND_TEST_TARGETS_JSON) { $env:FRONTEND_TEST_TARGETS_JSON } else { '[]' }) -NoEnumerate
+    $desktopTargets = ConvertFrom-Json -InputObject $(if ($env:DESKTOP_TEST_TARGETS_JSON) { $env:DESKTOP_TEST_TARGETS_JSON } else { '[]' }) -NoEnumerate
+    foreach ($list in @(@{items=$targets}, @{items=$frontendTargets}, @{items=$desktopTargets})) {
+        if ($list.items -isnot [array] -or @($list.items | Where-Object { $_ -isnot [string] }).Count) { throw 'CI_BUILD_SCOPE_INVALID' }
+    }
+    $targetCount = $targets.Count + $frontendTargets.Count + $desktopTargets.Count
+    if ((-not $desktopStack -and ($frontendTargets.Count -or $desktopTargets.Count)) -or
+        ($desktopStack -and $env:BUILD_MODE -eq 'source') -or
+        $env:BUILD_MODE -notin @('full', 'quick', 'source', 'installer') -or
+        ($env:BUILD_MODE -eq 'installer' -and ($desktopStack -or $targetCount -ne 0)) -or
+        ($env:BUILD_MODE -eq 'full' -and $targetCount -ne 0) -or
+        ($env:BUILD_MODE -in @('quick', 'source') -and $targetCount -eq 0)) { throw 'CI_BUILD_SCOPE_INVALID' }
+    if ($env:BUILD_MODE -eq 'installer') {
+        $controller = Join-Path $repository 'tools/ci_installer.py'
+        & $python $controller verify-harness --harness-commit $env:SOURCE_SHA
+        if ($LASTEXITCODE -ne 0) { throw 'CI_INSTALLER_HARNESS_INVALID' }
+        $pins = Get-Content -LiteralPath (Join-Path $repository 'resources/ci/installer-proof-input.json') -Raw | ConvertFrom-Json
+        $base = Join-Path $repository ('artifacts/development-quick/' + $pins.source_commit)
+        # No source/native dependency preparation: every model/PG/desktop byte
+        # comes from the fixed existing installer and its published inventory.
+        & (Join-Path $repository 'tools/check_installer.ps1') -Electron -Python $python `
+            -Installer (Join-Path $base ('artifacts/' + $pins.installer_name)) `
+            -TestDir (Join-Path $base 'qa/Installer Ю')
+        $installerExit = $LASTEXITCODE
+        & $python $controller candidate --report (Join-Path $base 'qa/Installer Ю/installer-qa.json') `
+            --output (Join-Path $repository 'artifacts/ci-installer/candidate.json')
+        if ($LASTEXITCODE -ne 0) { throw 'CI_INSTALLER_CANDIDATE_FAILED' }
+        & $python $controller verify-harness --harness-commit $env:SOURCE_SHA
+        if ($LASTEXITCODE -ne 0) { throw 'CI_INSTALLER_HARNESS_CHANGED' }
+        exit $installerExit
+    }
     if ($env:BUILD_MODE -eq 'source') {
         if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'CI_SOURCE_SHA_REQUIRED' }
         $helper = Join-Path $repository 'packaging/build_support.py'
@@ -199,17 +260,33 @@ print('CI preflight: standard_user=true loaded_profile=true clean_pg_environment
     }
     $parameters = @{ Development = $true; Python = $python; ISCC = (Join-Path $repository '.tools/InnoSetup7/ISCC.exe') }
     if ($env:BUILD_MODE -eq 'quick') { $parameters.Quick = $true; $parameters.TestTargets = [string[]]$targets }
+    if ($desktopStack) {
+        $inputs = Get-Content -LiteralPath (Join-Path $repository 'resources/ci/build-inputs.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $parameters.Electron = $true
+        $parameters.NodeDirectory = Join-Path $repository '.tools/ci-node'
+        $parameters.FrontendCachePath = Join-Path $repository 'frontend/.cache/npm'
+        $parameters.DesktopCachePath = Join-Path $repository 'desktop/.cache/npm'
+        $parameters.ElectronZipDirectory = Join-Path $repository '.tools/electron-cache'
+        $parameters.ElectronZipSha256 = $inputs.electron_runtime.archive.sha256
+        $parameters.FrontendTestTargets = [string[]]$frontendTargets
+        $parameters.DesktopTestTargets = [string[]]$desktopTargets
+    }
     & (Join-Path $repository 'tools/build.ps1') @parameters
     # A build exception stops here. Export reads private proofs under the same
     # user and writes only the existing public allowlist for upload-artifact.
     $arguments = @((Join-Path $repository 'tools/export_ci_artifacts.py'), '--commit', $env:SOURCE_SHA)
     if ($env:BUILD_MODE -eq 'quick') { $arguments += '--quick' }
+    if ($desktopStack) { $arguments += '--desktop-stack' }
     & $python @arguments
     exit $LASTEXITCODE
 }
 
 if ($Child) {
-    try { Invoke-CiChild } catch { Write-Error $_ -ErrorAction Continue; exit 1 }
+    try { Invoke-CiChild } catch {
+        if ($env:BUILD_MODE -eq 'installer') { Write-Host 'CI_INSTALLER_CHILD_FAILED' }
+        else { Write-Error $_ -ErrorAction Continue }
+        exit 1
+    }
 }
 
 $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -285,6 +362,7 @@ $job = $null
 $assigned = $false
 $childStopped = $true
 $treeDrained = $false
+$jobTerminated = $false
 $startedAt = $null
 $password = $null
 $credential = $null
@@ -292,6 +370,8 @@ $readers = @()
 $exitCode = 1
 $accountName = 'ssci' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
 if ($env:BUILD_MODE -eq 'source') { $TimeoutSeconds = [Math]::Min($TimeoutSeconds, 3600) }
+if ($env:BUILD_MODE -eq 'installer' -and ($env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or
+    $env:DESKTOP_STACK -cne 'false')) { throw 'CI_INSTALLER_MANUAL_ONLY' }
 try {
     $password = ConvertTo-SecureString ([Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48)) + 'aA1!') -AsPlainText -Force
     $account = New-LocalUser -Name $accountName -Password $password -AccountNeverExpires -PasswordNeverExpires
@@ -316,6 +396,9 @@ try {
             GITHUB_ACTIONS = 'true'; GITHUB_WORKSPACE = $repository
             SOURCE_SHA = $env:SOURCE_SHA; BUILD_MODE = $env:BUILD_MODE
             TEST_TARGETS_JSON = $env:TEST_TARGETS_JSON; PYTHONUTF8 = '1'
+            DESKTOP_STACK = $env:DESKTOP_STACK
+            FRONTEND_TEST_TARGETS_JSON = $env:FRONTEND_TEST_TARGETS_JSON
+            DESKTOP_TEST_TARGETS_JSON = $env:DESKTOP_TEST_TARGETS_JSON
             PIP_DISABLE_PIP_VERSION_CHECK = '1'
         }
     }
@@ -325,7 +408,8 @@ Set-StrictMode -Version Latest
 try {
     $data = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'launch.json') -Raw | ConvertFrom-Json
     foreach ($name in @('GITHUB_ACTIONS', 'GITHUB_WORKSPACE', 'SOURCE_SHA', 'BUILD_MODE',
-                        'TEST_TARGETS_JSON', 'PYTHONUTF8', 'PIP_DISABLE_PIP_VERSION_CHECK')) {
+                        'TEST_TARGETS_JSON', 'DESKTOP_STACK', 'FRONTEND_TEST_TARGETS_JSON',
+                        'DESKTOP_TEST_TARGETS_JSON', 'PYTHONUTF8', 'PIP_DISABLE_PIP_VERSION_CHECK')) {
         [Environment]::SetEnvironmentVariable($name, [string]$data.context.$name, 'Process')
     }
 } catch {
@@ -371,14 +455,22 @@ exit $LASTEXITCODE
     }
     $timer = [Diagnostics.Stopwatch]::StartNew()
     while (-not $process.WaitForExit(1000)) {
-        foreach ($reader in $readers) { while (-not $reader.EndOfStream) { Write-Host $reader.ReadLine() } }
+        foreach ($reader in $readers) { while (-not $reader.EndOfStream) {
+            $line=$reader.ReadLine()
+            if ($env:BUILD_MODE -eq 'installer') { Write-InstallerPublicLine $line }
+            else { Write-Host $line }
+        } }
         if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
             $exitCode = 124
             throw 'CI_CHILD_TIMEOUT'
         }
     }
     $childStopped = $true
-    foreach ($reader in $readers) { while (-not $reader.EndOfStream) { Write-Host $reader.ReadLine() } }
+    foreach ($reader in $readers) { while (-not $reader.EndOfStream) {
+        $line=$reader.ReadLine()
+        if ($env:BUILD_MODE -eq 'installer') { Write-InstallerPublicLine $line }
+        else { Write-Host $line }
+    } }
     $exitCode = $process.ExitCode
     $process.Dispose()
     $process = $null
@@ -390,12 +482,13 @@ exit $LASTEXITCODE
     $treeDrained = $true
 } catch {
     if ($exitCode -eq 0) { $exitCode = 1 }
-    Write-Error $_ -ErrorAction Continue
+    if ($env:BUILD_MODE -eq 'installer') { Write-Host 'CI_INSTALLER_PARENT_FAILED' }
+    else { Write-Error $_ -ErrorAction Continue }
 } finally {
     foreach ($reader in $readers) { $reader.Dispose() }
     if ($job) {
         try {
-            if ($job.ActiveProcesses -gt 0) { $job.Terminate() }
+            if ($job.ActiveProcesses -gt 0) { $jobTerminated=$true; $job.Terminate() }
         } catch {
             Write-Warning 'CI owned job cleanup could not be confirmed.'
             if ($exitCode -eq 0) { $exitCode = 1 }
@@ -445,6 +538,20 @@ exit $LASTEXITCODE
     }
     if ($password) { $password.Dispose() }
     $credential = $null
+}
+if ($env:BUILD_MODE -eq 'installer') {
+    try {
+        $pins=Get-Content -LiteralPath (Join-Path $repository 'resources/ci/installer-proof-input.json') -Raw | ConvertFrom-Json
+        $raw=Join-Path $repository 'artifacts/ci-installer/candidate.json'
+        $arguments=@((Join-Path $repository 'tools/ci_installer.py'),'receipt','--harness-commit',$env:SOURCE_SHA,
+            '--report',$raw,'--exit-code',[string]$exitCode,'--output',
+            (Join-Path $repository 'artifacts/ci-installer/installation-receipt.json'))
+        # The child cannot self-declare a drained retained job. A forced tree
+        # termination is never successful completion, even if the job is empty.
+        if ($treeDrained -and $childStopped -and -not $jobTerminated) { $arguments += '--parent-drained' }
+        & (Join-Path $repository '.venv/Scripts/python.exe') @arguments
+        if ($LASTEXITCODE -ne 0) { $exitCode=1 }
+    } catch { Write-Host 'CI_INSTALLER_RECEIPT_FAILED'; $exitCode=1 }
 }
 if ($env:BUILD_MODE -eq 'source') {
     $receiptPath = Join-Path $repository 'artifacts/ci-source/test-receipt.json'

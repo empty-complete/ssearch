@@ -1,0 +1,46 @@
+{
+  "package": "client-only",
+  "version": "0.0.1",
+  "declared_license": "MIT",
+  "metadata_source": "https://registry.npmjs.org/client-only",
+  "metadata_version_selector": "0.0.1",
+  "tarball_source": "https://registry.npmjs.org/client-only/-/client-only-0.0.1.tgz",
+  "integrity": "sha512-IV3Ou0jSMzZrd3pZ48nLkT9DA7Ag1pnPzaiQhpW7c3RbcqqzvzzVu+L8gfqMp/8IM2MQtSiqaCxrrcfu8I8rMA==",
+  "upstream_license_text_supplied": false,
+  "copyright_holder": null,
+  "browser_entry": "index.js",
+  "browser_entry_bytes": 0,
+  "files": [
+    {
+      "file": "error.js",
+      "bytes": 144,
+      "sha256": "7d211552731db17e1ff8635eea0970ef57ecc91b04b95536b9fa5abbfafaec26"
+    },
+    {
+      "file": "index.js",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "package.json",
+      "bytes": 467,
+      "sha256": "4d6342705767832f299b9a59c28e4275bcf02db19472732f93f67d979441df8f"
+    }
+  ],
+  "primary_origin_observations": {
+    "inspected_on": "2026-10-25",
+    "npm_publisher_login": "sebmarkbage",
+    "published_repository_supplied": false,
+    "published_git_head_supplied": false,
+    "publisher_is_not_a_copyright_statement": true,
+    "marker_conventions_source": "https://raw.githubusercontent.com/reactjs/rfcs/d633174475a77d1538263cb42753b11ef641f5af/text/0227-server-module-conventions.md",
+    "marker_source_support": "The React RFC documents already-published marker packages and react-server:error.js/default:index.js conditions. It does not supply an original license or copyright notice for this npm release.",
+    "static_archive_observation": "The original npm tarball has exactly the three files above, 611 unpacked bytes, no license/notice file, and no author/repository field in package.json."
+  },
+  "source_bundle_policy": {
+    "allowed_cases": ["observed_empty_default_entry", "absent_from_complete_browser_graph"],
+    "requires": "Exact integrity/file hashes, supported complete actual browser graph, zero rendered package implementation, no server branch, external marker import or package asset, and all current chunk/input/source SHA bindings.",
+    "scope": "Current source browser bundle only. Actual frozen/package input acceptance remains not_run."
+  },
+  "disclosure": "Exact upstream npm package declares MIT but supplies no LICENSE or copyright notice. No copyright holder or replacement MIT notice is inferred. The source-only empty-marker disposition requires measured build evidence and preserves the original metadata; actual package acceptance remains open."
+}

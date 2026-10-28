@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/service-source.live.ts",
+    "tests/packaged-runtime.test.ts",
+    "tests/package-metadata.test.ts",
+    "tests/diagnostics-policy.test.ts",
+    "tests/diagnostics-wire.test.ts",
+    "tests/diagnostics-outcome.test.ts",
+    "tests/diagnostics-helpers.test.ts",
+    "tests/diagnostics-framing.test.ts",
+    "tests/diagnostics-helper-pipe.test.ts"
+  ]
+}

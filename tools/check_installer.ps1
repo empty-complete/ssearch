@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory = $true)][string]$Installer,
     [Parameter(Mandatory = $true)][string]$TestDir,
     [string]$DesktopEvidenceDirectory,
-    [string]$DesktopEvidenceNonce
+    [string]$DesktopEvidenceNonce,
+    [switch]$Electron,
+    [string]$Python
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,21 +60,109 @@ function Start-HiddenAndWait {
         '"' + $argument + '"'
     }
     $script:processCompletionConfirmed = $false
-    # Inno's initial uninstaller exits before its temporary child finishes.
-    # A separate hidden waiter preserves Start-Process -Wait's descendant-tree
-    # semantics while the coordinator bounds the wait without killing anything.
+    $script:processCompletionReason = 'preparing_waiter'
+    $script:processWaitObservation = @{waiter_finished=$false; waiter_exit_integer=$false;
+        waiter_exit_zero=$false; completion_present=$false; admitted=$false; job_drained=$false}
+    $script:processCompletionPayload = $null
+    $script:processExitCode = $null
+    if (-not ('SsearchInstallerWaitJob' -as [type])) {
+        # Tracking only: defaults contain no kill, breakaway or UI limits.
+        # Closing this inner handle on timeout preserves unknown descendants;
+        # the admitted outer CI job remains their cleanup authority.
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public sealed class SsearchInstallerWaitJob : IDisposable {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, ExactSpelling=true, SetLastError=true)]
+    static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool QueryInformationJobObject(IntPtr job, int kind, [Out] byte[] data, uint size, IntPtr returned);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool CloseHandle(IntPtr handle);
+    IntPtr handle;
+    public SsearchInstallerWaitJob() {
+        handle=CreateJobObjectW(IntPtr.Zero, null);
+        if(handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    public void Assign(Process process) {
+        if(!AssignProcessToJobObject(handle, process.Handle))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    public uint ActiveProcesses {
+        get {
+            // JOBOBJECT_BASIC_ACCOUNTING_INFORMATION: ActiveProcesses offset40.
+            var data=new byte[48];
+            if(!QueryInformationJobObject(handle, 1, data, (uint)data.Length, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return BitConverter.ToUInt32(data, 40);
+        }
+    }
+    public void Dispose() {
+        if(handle == IntPtr.Zero) return;
+        if(!CloseHandle(handle)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        handle=IntPtr.Zero;
+    }
+}
+'@
+    }
+    # One deadline covers launch, admission, kernel drain and validated receipt.
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    $expires=[DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds).Ticks
     $waitId = [Guid]::NewGuid().ToString('N')
     $completionPath = Join-Path $testPath ("process-completion-$waitId.json")
-    $request = @{ program = $Program; arguments = ($quoted -join ' ');
-        directory = $testPath; completion = $completionPath; id = $waitId } | ConvertTo-Json -Compress
+    $admissionPath=Join-Path $testPath ("process-admission-$waitId.json")
+    $requestValue = @{ program = $Program; arguments = ($quoted -join ' ');
+        directory = $testPath; completion = $completionPath; id = $waitId;
+        admission=$admissionPath; expires=$expires } | ConvertTo-Json -Compress
+    $request = $requestValue
+    if (Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue) {
+        $request = @{program=$Program; arguments=($quoted -join ' '); directory=$testPath;
+            completion=$completionPath; id=$waitId; stdout=(Join-Path $testPath "$waitId.stdout");
+            stderr=(Join-Path $testPath "$waitId.stderr");
+            admission=$admissionPath; expires=$expires;
+            frozen=($Program -ine $Python -and $Program -in @($appExecutable,$serviceExecutable,
+                $referenceExecutable,$referenceServiceExecutable))} | ConvertTo-Json -Compress
+    }
     $encodedRequest = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($request))
     $waiterScript = @'
 $ErrorActionPreference = 'Stop'
 try {
     $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REQUEST__')) |
         ConvertFrom-Json
-    $child = Start-Process -FilePath $request.program -ArgumentList $request.arguments `
-        -WorkingDirectory $request.directory -WindowStyle Hidden -Wait -PassThru
+    # No native child can start until the caller has enrolled this retained
+    # waiter in its kernel job and atomically admitted this nonce/PID pair.
+    while (-not (Test-Path -LiteralPath $request.admission -PathType Leaf)) {
+        if ([DateTime]::UtcNow.Ticks -ge $request.expires) { throw 'admission_expired' }
+        Start-Sleep -Milliseconds 10
+    }
+    $ticket=Get-Content -LiteralPath $request.admission -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($ticket.id -cne $request.id -or $ticket.pid -ne $PID) { throw 'admission_invalid' }
+    $parameters = @{FilePath=$request.program; ArgumentList=$request.arguments;
+        WorkingDirectory=$request.directory; WindowStyle='Hidden'; Wait=$true; PassThru=$true}
+    if ($request.PSObject.Properties['stdout']) {
+        $parameters.RedirectStandardOutput=$request.stdout
+        $parameters.RedirectStandardError=$request.stderr
+    }
+    if ($request.PSObject.Properties['frozen'] -and $request.frozen) {
+        foreach ($name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+            if ($name -match '^(PYTHON|PYTEST|PYI_|_PYI_|NODE|ELECTRON|NPM_|CONDA_|PG|SSEARCH_)' -or
+                $name -in @('PATH','VIRTUAL_ENV','__PYVENV_LAUNCHER__','SOURCE_SHA','BUILD_MODE')) {
+                Remove-Item -LiteralPath ('Env:\' + $name)
+            }
+        }
+        $env:PATH=Join-Path $env:SystemRoot 'System32'
+    }
+    # Admission may have arrived near the deadline. Check immediately before
+    # CreateProcess rather than allowing a late native proof to start.
+    if ([DateTime]::UtcNow.Ticks -ge $request.expires) { throw 'admission_expired' }
+    $child = Start-Process @parameters
     $value = @{ id = $request.id; completed = $true; exit_code = $child.ExitCode } |
         ConvertTo-Json -Compress
     $stream = [IO.File]::Open($request.completion, [IO.FileMode]::CreateNew,
@@ -88,28 +178,111 @@ try {
     $waiterScript = $waiterScript.Replace('__REQUEST__', $encodedRequest)
     $encodedScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($waiterScript))
     $waiter = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $process = Start-Process -FilePath $waiter -ArgumentList @(
-        '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedScript) `
-        -WorkingDirectory $testPath -WindowStyle Hidden -PassThru
-    if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-        throw "$Label timed out; descendant completion unknown, files preserved."
+    $job=$null; $process=$null
+    try {
+        $script:processCompletionReason='creating_job'
+        $job=[SsearchInstallerWaitJob]::new()
+        $process = Start-Process -FilePath $waiter -ArgumentList @(
+            '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedScript) `
+            -WorkingDirectory $testPath -WindowStyle Hidden -PassThru
+        $null=$process.Handle
+        $script:processCompletionReason='assigning_job'
+        $job.Assign($process)
+        $script:processCompletionReason='admitting_waiter'
+        if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) { throw 'INSTALLER_ADMISSION_EXPIRED' }
+        $ticket=@{id=$waitId;pid=$process.Id} | ConvertTo-Json -Compress
+        $temporary=$admissionPath + '.tmp'
+        $stream=[IO.File]::Open($temporary,'CreateNew','Write','None')
+        try {
+            $bytes=[Text.Encoding]::UTF8.GetBytes($ticket)
+            $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true)
+        } finally { $stream.Dispose() }
+        [IO.File]::Move($temporary,$admissionPath)
+        $script:processWaitObservation.admitted=$true
+        $script:processCompletionReason='waiting'
+        $finished=$false
+        do {
+            if (-not $finished) {
+                $remaining=[Math]::Max(1,($TimeoutMilliseconds-$clock.ElapsedMilliseconds))
+                $finished=$process.WaitForExit([int][Math]::Min(50,$remaining))
+                if ($finished) {
+                    $script:processCompletionReason='reading_waiter_exit'
+                    $waiterExitCode=$process.ExitCode
+                    $process.Dispose(); $process=$null
+                }
+            }
+            $script:processWaitObservation.waiter_finished=$finished
+            $script:processCompletionReason='querying_job'
+            $active=$job.ActiveProcesses
+            if (Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue) {
+                foreach ($name in @("$waitId.stdout", "$waitId.stderr")) {
+                    $capture = Join-Path $testPath $name
+                    if ((Test-Path -LiteralPath $capture) -and (Get-Item -LiteralPath $capture).Length -gt 1048576) {
+                        $script:processCompletionReason='capture_limit'
+                        throw 'INSTALLER_CHILD_CAPTURE_LIMIT'
+                    }
+                }
+            }
+            if ($finished -and $active -eq 0) { break }
+            if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
+                $script:processCompletionReason=if($finished){'job_drain_timeout'}else{'waiter_timeout'}
+                throw "$Label timed out; descendant completion unknown, files preserved."
+            }
+            if ($finished) {
+                $remaining=[Math]::Max(1,($TimeoutMilliseconds-$clock.ElapsedMilliseconds))
+                Start-Sleep -Milliseconds ([int][Math]::Min(50,$remaining))
+            }
+            $script:processCompletionReason='waiting'
+        } while ($true)
+        $script:processWaitObservation.job_drained=$true
+    } finally {
+        # Close only handles; no termination and no discovered-process lookup.
+        try {
+            if ($null -ne $job) {
+                try { $job.Dispose() }
+                catch { $script:processCompletionReason='job_close_failed'; throw }
+            }
+        }
+        finally { if ($null -ne $process) { $process.Dispose() } }
     }
-    if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $completionPath -PathType Leaf)) {
+    $script:processCompletionReason = 'checking_completion_file'
+    $completionPresent = Test-Path -LiteralPath $completionPath -PathType Leaf
+    $script:processWaitObservation = @{waiter_finished=$true;
+        waiter_exit_integer=($waiterExitCode -is [int] -or $waiterExitCode -is [long]);
+        waiter_exit_zero=($null -ne $waiterExitCode -and $waiterExitCode -eq 0);
+        completion_present=$completionPresent; admitted=$true; job_drained=$true}
+    if ($waiterExitCode -ne 0 -or -not $completionPresent) {
+        $script:processCompletionReason = if ($null -eq $waiterExitCode) { 'waiter_exit_unavailable' }
+            elseif ($waiterExitCode -ne 0) { 'waiter_exit_nonzero' } else { 'completion_missing' }
         throw "$Label descendant completion unknown; files preserved."
     }
+    $script:processCompletionReason = 'reading_completion'
     $completion = Get-Content -LiteralPath $completionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $integerExit = $completion.exit_code -is [int] -or $completion.exit_code -is [long]
+    $script:processCompletionPayload = @{id_matches=($completion.id -ceq $waitId);
+        completed=($completion.completed -eq $true); exit_integer=$integerExit;
+        exit_in_range=($integerExit -and $completion.exit_code -ge [int]::MinValue -and $completion.exit_code -le [int]::MaxValue);
+        exit_zero=($integerExit -and $completion.exit_code -eq 0)}
     if ($completion.id -cne $waitId -or $completion.completed -ne $true -or
         -not ($completion.exit_code -is [int] -or $completion.exit_code -is [long]) -or
         $completion.exit_code -lt [int]::MinValue -or $completion.exit_code -gt [int]::MaxValue) {
+        $script:processCompletionReason = 'completion_payload_invalid'
         throw "$Label descendant completion evidence invalid; files preserved."
     }
     # ConvertFrom-Json returns Int32 in Windows PowerShell, Int64 in PowerShell 7.
     # Coerce only after validating the producer's signed Process.ExitCode range.
     $exitCode = [int]$completion.exit_code
+    $script:processExitCode = $exitCode
+    if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
+        $script:processCompletionReason='completion_deadline'
+        throw 'INSTALLER_COMPLETION_DEADLINE'
+    }
     $script:processCompletionConfirmed = $true
     if ($exitCode -ne 0) {
+        $script:processCompletionReason = 'child_exit_nonzero'
         throw "$Label завершился с кодом $exitCode. Журналы: $testPath"
     }
+    $script:processCompletionReason = 'complete'
 }
 
 function Assert-Marker {
@@ -147,21 +320,34 @@ function Assert-OwnedInstallation {
 function Invoke-OwnedUninstall {
     param([string]$LogName)
     Assert-OwnedInstallation
-    Start-HiddenAndWait -Program $uninstallerPath -Arguments @(
+    $parameters=@{Program=$uninstallerPath; Arguments=@(
         '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
-        ('/LOG=' + (Join-Path $testPath $LogName))) -Label 'Удаление QA'
+        ('/LOG=' + (Join-Path $testPath $LogName))); Label='Удаление QA'}
+    if (Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue) { $parameters.TimeoutMilliseconds=600000 }
+    Start-HiddenAndWait @parameters
 }
 
 function Invoke-InstalledSelfTest {
-    param([string]$ReportName)
-    Assert-OwnedInstallation
+    param([string]$ReportName, [switch]$FromBundle)
+    $electronMode = [bool](Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue)
+    if (-not $FromBundle) { Assert-OwnedInstallation }
+    $program = $appExecutable
+    if ($electronMode) {
+        $program = if ($FromBundle) { $referenceServiceExecutable } else { $serviceExecutable }
+    } elseif ($FromBundle) { $program = $referenceExecutable }
     $reportPath = Join-Path $testPath $ReportName
     if (Test-Path -LiteralPath $reportPath) { throw "Отчёт QA уже существует: $reportPath" }
     $script:runtimeCleanupConfirmed = $false
-    Start-HiddenAndWait -Program $appExecutable -Arguments @(
-        '--self-test', $reportPath, '--data-dir', $dataPath) -Label 'Самопроверка установленного приложения'
+    $parameters = @{Program=$program; Arguments=@('--self-test', $reportPath, '--data-dir', $dataPath);
+        Label='Самопроверка установленного приложения'}
+    if ($electronMode) { $parameters.TimeoutMilliseconds=600000 }
+    Start-HiddenAndWait @parameters
     if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
         throw "Процесс завершился, но не создал JSON самопроверки: $reportPath"
+    }
+    if ($electronMode) {
+        $item=Get-Item -LiteralPath $reportPath -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.Length -gt 2097152) { throw 'INSTALLER_REPORT_UNSAFE' }
     }
     $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($report.ok -ne $true -or $report.model_ready -ne $true -or
@@ -255,12 +441,23 @@ function Invoke-PostgresProof {
     param([string]$ReportName, [string]$Mode, [switch]$FromBundle)
     $program = $appExecutable
     if ($FromBundle) { $program = $referenceExecutable } else { Assert-OwnedInstallation }
+    $electronMode = [bool](Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue)
+    if ($electronMode) {
+        $program = if ($FromBundle) { $referenceServiceExecutable } else { $serviceExecutable }
+    }
     $reportPath = Join-Path $testPath $ReportName
     if (Test-Path -LiteralPath $reportPath) { throw 'PostgreSQL QA report already exists.' }
     $script:runtimeCleanupConfirmed = $false
-    Start-HiddenAndWait -Program $program -Arguments @(
+    $parameters = @{Program=$program; Arguments=@(
         '--postgres-self-test', $reportPath, '--data-dir', $postgresPath,
-        '--postgres-qa-lifecycle', $Mode, '--postgres-qa-run', $runId) -Label 'PostgreSQL QA'
+        '--postgres-qa-lifecycle', $Mode, '--postgres-qa-run', $runId); Label='PostgreSQL QA'}
+    if ($electronMode) { $parameters.TimeoutMilliseconds=600000 }
+    Start-HiddenAndWait @parameters
+    if ($electronMode) {
+        $item=Get-Item -LiteralPath $reportPath -Force
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $item.Length -gt 2097152) { throw 'INSTALLER_REPORT_UNSAFE' }
+    }
     $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $script:runtimeCleanupConfirmed = $report.clean_stop -eq $true
     if ($report.ok -ne $true -or $report.clean_stop -ne $true -or
@@ -310,22 +507,484 @@ function Get-PreservedProfileSnapshot {
 }
 
 function Assert-ShortcutTargets {
-    $shell = New-Object -ComObject WScript.Shell
+    $electronMode=[bool](Get-Variable -Name isElectron -ValueOnly -ErrorAction SilentlyContinue)
+    $helpRelative = if ($electronMode) { 'service\_internal\resources\help.html' } else { '_internal\resources\help.html' }
+    $entries=@(@{role='application'; name='ssearch.lnk'; target=$appExecutable},
+        @{role='help'; name='Справка ssearch.lnk'; target=(Join-Path $appPath $helpRelative)},
+        @{role='uninstall'; name='Удалить ssearch.lnk'; target=$uninstallerPath})
+    if ($electronMode) {
+        $groupExists=[bool](Test-Path -LiteralPath $groupPath -PathType Container)
+        try {
+            $items=@(if ($groupExists) { Get-ChildItem -LiteralPath $groupPath -Force -ErrorAction Stop })
+            $known=@($items | Where-Object { $_.Name -cin @('ssearch.lnk','Справка ssearch.lnk','Удалить ssearch.lnk') }).Count
+            $count=[Math]::Min($items.Count,999999); $unknown=[Math]::Min(($items.Count-$known),999999)
+            $known=[Math]::Min($known,999999)
+            Write-Host "CI_INSTALLER_SHORTCUT_GROUP exists=$($groupExists.ToString().ToLowerInvariant()) available=true count=$count known=$known unknown=$unknown"
+        } catch { Write-Host "CI_INSTALLER_SHORTCUT_GROUP exists=$($groupExists.ToString().ToLowerInvariant()) available=false count=0 known=0 unknown=0" }
+        foreach ($entry in $entries) {
+            $exists=[bool](Test-Path -LiteralPath (Join-Path $groupPath $entry.name) -PathType Leaf)
+            Write-Host "CI_INSTALLER_SHORTCUT role=$($entry.role) exists=$($exists.ToString().ToLowerInvariant()) target_match=unavailable"
+        }
+    }
     try {
-        foreach ($entry in @(
-            @{name='ssearch.lnk'; target=$appExecutable},
-            @{name='Справка ssearch.lnk'; target=(Join-Path $appPath '_internal\resources\help.html')},
-            @{name='Удалить ssearch.lnk'; target=$uninstallerPath})) {
+        if ($electronMode) {
+            if (-not ('SsearchInstallerLinkReader' -as [type])) {
+                # Explicit Unicode interfaces: WScript.TargetPath can expose
+                # the lossy ANSI field even when the LNK stores a valid W path.
+                # GetPath: MAX_PATH, pfd=NULL, flags=0; never Resolve/Expand.
+                Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Runtime.InteropServices;
+[ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+public class SsearchInstallerLinkClass {}
+[ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ISsearchInstallerLinkW {
+    [PreserveSig] int GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int size, IntPtr data, uint flags);
+}
+[ComImport, Guid("0000010b-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ISsearchInstallerPersistRead {
+    [PreserveSig] int GetClassID(out Guid value);
+    [PreserveSig] int IsDirty();
+    [PreserveSig] int Load([MarshalAs(UnmanagedType.LPWStr)] string path, uint mode);
+}
+public sealed class SsearchInstallerLinkReader : IDisposable {
+    object link;
+    public SsearchInstallerLinkReader() { link=new SsearchInstallerLinkClass(); }
+    static void Check(int value) {
+        if(value != 0) throw new COMException("shortcut_hresult", value);
+    }
+    public string ReadTarget(string path) {
+        if(link == null || !Path.IsPathFullyQualified(path))
+            throw new InvalidOperationException("shortcut_boundary");
+        Check(((ISsearchInstallerPersistRead)link).Load(path, 0));
+        var buffer=new StringBuilder(260);
+        Check(((ISsearchInstallerLinkW)link).GetPath(buffer, buffer.Capacity, IntPtr.Zero, 0));
+        if(buffer.Length == 0 || buffer.Length >= 259 || !Path.IsPathFullyQualified(buffer.ToString()))
+            throw new InvalidOperationException("shortcut_path_unconfirmed");
+        return buffer.ToString();
+    }
+    public void Dispose() {
+        if(link != null) {
+            try { Marshal.FinalReleaseComObject(link); }
+            finally { link=null; }
+        }
+    }
+}
+'@
+            }
+            $shell=[SsearchInstallerLinkReader]::new()
+        } else { $shell = New-Object -ComObject WScript.Shell }
+        if ($electronMode) { Write-Host 'CI_INSTALLER_COM stage=create status=pass role=none hresult=0' }
+    } catch {
+        if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=create status=fail role=none hresult=$([int]$_.Exception.HResult)" }
+        throw
+    }
+    try {
+        foreach ($entry in $entries) {
             $link = Join-Path $groupPath $entry.name
             if (-not (Test-Path -LiteralPath $link -PathType Leaf)) { throw 'QA shortcut missing.' }
-            $shortcut = $shell.CreateShortcut($link)
-            if (-not ([IO.Path]::GetFullPath($shortcut.TargetPath)).Equals($entry.target, $comparison)) {
+            try {
+                if ($electronMode) { $target=[IO.Path]::GetFullPath($shell.ReadTarget($link)) }
+                else {
+                    $shortcut = $shell.CreateShortcut($link)
+                    $target=[IO.Path]::GetFullPath($shortcut.TargetPath)
+                }
+                if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=read status=pass role=$($entry.role) hresult=0" }
+            } catch {
+                if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=read status=fail role=$($entry.role) hresult=$([int]$_.Exception.HResult)" }
+                throw
+            }
+            $targetMatches=$target.Equals($entry.target, $comparison)
+            if ($electronMode) { Write-Host "CI_INSTALLER_SHORTCUT role=$($entry.role) exists=true target_match=$($targetMatches.ToString().ToLowerInvariant())" }
+            if (-not $targetMatches) {
                 throw 'QA shortcut points outside its owned installation.'
             }
         }
     } finally {
-        $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+        try {
+            if ($electronMode) { $shell.Dispose() }
+            else { $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+            if ($electronMode) { Write-Host 'CI_INSTALLER_COM stage=release status=pass role=none hresult=0' }
+        } catch {
+            if ($electronMode) { Write-Host "CI_INSTALLER_COM stage=release status=fail role=none hresult=$([int]$_.Exception.HResult)" }
+            throw
+        }
     }
+}
+
+function Invoke-InstallerHelper {
+    param([string[]]$Arguments)
+    $value = & $Python (Join-Path $repository 'tools/ci_installer.py') @Arguments
+    foreach ($line in @($value)) {
+        if ($line -cmatch '^CI_INSTALLER_INVENTORY files=[0-9]{1,6} desktop_match=(true|false) service_match=(true|false) inventory_match=(true|false|unavailable)$' -or
+            $line -cmatch '^CI_INSTALLER_HELPER code=(installer_inventory_boundary|installer_inno_inventory_invalid|installer_non_file|installer_duplicate_file|installer_inno_identity_changed|installer_inno_file_missing|installer_payload_image_mismatch|installer_inventory_mismatch|installer_reparse_refused|installer_report_unavailable|installer_object_required|unavailable)$') {
+            Write-Host $line
+        }
+    }
+    if ($LASTEXITCODE -ne 0) { throw 'INSTALLER_CONTRACT_FAILED' }
+    return $value
+}
+
+function Get-OwnedInnoFiles {
+    $records = @{}
+    foreach ($name in @('unins000.exe', 'unins000.dat')) {
+        $path = Join-Path $appPath $name
+        $null = Assert-ArtifactPath $path
+        $item = Get-Item -LiteralPath $path -Force
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'INSTALLER_INNO_FILE_UNSAFE'
+        }
+        $records[$name] = @{size=$item.Length; sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()}
+    }
+    return $records
+}
+
+function Get-OwnedShortcutFiles {
+    $group=Get-Item -LiteralPath $groupPath -Force
+    if (-not $group.PSIsContainer -or ($group.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'INSTALLER_SHORTCUT_UNSAFE'
+    }
+    $links=@(Get-ChildItem -LiteralPath $groupPath -Force)
+    foreach ($link in $links) {
+        if ($link.PSIsContainer -or ($link.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'INSTALLER_SHORTCUT_UNSAFE'
+        }
+    }
+    Assert-ShortcutTargets
+    if ($links.Count -ne 3 -or @($links | Where-Object {
+        $_.Name -cnotin @('ssearch.lnk','Справка ssearch.lnk','Удалить ssearch.lnk')
+    }).Count) { throw 'INSTALLER_SHORTCUT_INVENTORY' }
+    foreach ($link in $links) {
+        @{path=$link.FullName;sha256=(Get-FileHash -LiteralPath $link.FullName -Algorithm SHA256).Hash}
+    }
+}
+
+function Assert-ElectronOwnership {
+    Assert-OwnedInstallation
+    $actualShortcuts=@(Get-OwnedShortcutFiles)
+    $actualFiles=Get-OwnedInnoFiles
+    foreach ($name in @('unins000.exe', 'unins000.dat')) {
+        $actual=$actualFiles[$name]
+        if ($actual.size -ne $ownedInno[$name].size -or $actual.sha256 -cne $ownedInno[$name].sha256) {
+            throw 'INSTALLER_INNO_OWNERSHIP_CHANGED'
+        }
+    }
+    if ($actualShortcuts.Count -ne $shortcutRecords.Count) { throw 'INSTALLER_SHORTCUT_OWNERSHIP_CHANGED' }
+    foreach ($record in $shortcutRecords) {
+        $actual=@($actualShortcuts | Where-Object {$_.path -ceq $record.path})
+        if ($actual.Count -ne 1 -or $actual[0].sha256 -cne $record.sha256) {
+            throw 'INSTALLER_SHORTCUT_OWNERSHIP_CHANGED'
+        }
+    }
+}
+
+function Assert-ElectronInventory {
+    param([string]$Label, [switch]$Reference)
+    $directory = if ($Reference) { $referencePath } else { $appPath }
+    $ownedPath = Join-Path $testPath "$Label-owned.json"
+    $value = if ($Reference) { @{} } else { $ownedInno }
+    [IO.File]::WriteAllText($ownedPath, ($value | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    $null = Invoke-InstallerHelper @('inventory', '--directory', $directory, '--manifest', $manifestPath,
+        '--owned', $ownedPath, '--output', (Join-Path $testPath "$Label-inventory.json"))
+}
+
+function Invoke-InstalledUiProof {
+    param([string]$Scenario, [string]$Label)
+    $stage='owner'; $invoked=$false; $notBeforeMs=0
+    $report = Join-Path $testPath "$Label-ui-$Scenario.json"
+    $profile = Join-Path $testPath "$Label UI $Scenario Кириллица with spaces"
+    $role=if($Scenario -cin @('load','security','lifecycle','empty-profile')) {'ui-' + $Scenario} else {'unavailable'}
+    try {
+        Assert-ElectronOwnership
+        $script:runtimeCleanupConfirmed=$false
+        $stage='prepare'
+        $reportFresh=-not (Test-Path -LiteralPath $report)
+        $profileFresh=-not (Test-Path -LiteralPath $profile)
+        Write-Host "CI_INSTALLER_UI_ADMISSION role=$role report_fresh=$($reportFresh.ToString().ToLowerInvariant()) profile_fresh=$($profileFresh.ToString().ToLowerInvariant())"
+        $budget = [int]$uiPolicy.budgets_ms.$Scenario + 120000
+        $notBeforeMs=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        # Clear only diagnostic context. Binding/quoting can fail before the
+        # new waiter initializes itself; never attribute the installer's exit.
+        $script:processCompletionReason='unavailable'
+        $script:processExitCode=$null
+        $stage='launch'; $invoked=$true
+        Start-HiddenAndWait -Program $appExecutable -Arguments @('--ui-self-test', $report,
+            '--ui-scenario', $Scenario, '--data-dir', $profile) -Label 'Installed hidden UI proof' -TimeoutMilliseconds $budget
+        $stage='report_validate'
+        $null = Invoke-InstallerHelper @('ui', '--directory', $appPath, '--manifest', $manifestPath,
+            '--report', $report, '--scenario', $Scenario)
+        $script:runtimeCleanupConfirmed=$true
+    } catch {
+        $originalFailure=$_
+        $hresult=[int]$_.Exception.HResult
+        $waitReason='unavailable'; $observedExit='unavailable'
+        if ($invoked) {
+            $waitReason=Get-Variable -Name processCompletionReason -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+            if ($waitReason -cnotin @('preparing_waiter','creating_job','assigning_job','admitting_waiter',
+                'querying_job','job_drain_timeout','job_close_failed','completion_deadline','waiting','capture_limit','waiter_timeout',
+                'reading_waiter_exit','checking_completion_file','waiter_exit_unavailable','waiter_exit_nonzero',
+                'completion_missing','reading_completion','completion_payload_invalid','child_exit_nonzero','complete')) { $waitReason='unavailable' }
+            if ($stage -ceq 'launch' -and $waitReason -cnotin @('preparing_waiter','unavailable')) { $stage='wait' }
+            $code=Get-Variable -Name processExitCode -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+            if ($code -is [int]) { $observedExit=[string]$code }
+        }
+        $reportPresent=[bool](Test-Path -LiteralPath $report -PathType Leaf)
+        Write-Host "CI_INSTALLER_UI_FAILURE role=$role stage=$stage invoked=$($invoked.ToString().ToLowerInvariant()) hresult=$hresult wait_reason=$waitReason exit_code=$observedExit report_present=$($reportPresent.ToString().ToLowerInvariant())"
+        if ($invoked -and $observedExit -cin @('0','1')) {
+            try {
+                $value=& $Python (Join-Path $repository 'tools/ci_installer.py') ui-summary --report $report `
+                    --scenario $Scenario --exit-code $observedExit --not-before-ms $notBeforeMs
+                if ($LASTEXITCODE -eq 0 -and @($value).Count -eq 1) { Write-Host ([string]$value) }
+                else { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
+            } catch { Write-Host 'CI_INSTALLER_UI_SUMMARY_UNAVAILABLE' }
+        }
+        # Diagnostics never convert an exit/cleanup failure into acceptance.
+        throw $originalFailure
+    }
+}
+
+if ($Electron) {
+    # This branch consumes the original Quick artifact, never a source build.
+    # The enclosing CI wrapper already verified the loaded standard-user profile,
+    # DPAPI and owned retained job. Keep its actual KnownFolders/environment.
+    $isElectron=$true
+    if ($env:GITHUB_ACTIONS -cne 'true' -or $env:BUILD_MODE -cne 'installer' -or
+        -not $Python -or $DesktopEvidenceDirectory -or $DesktopEvidenceNonce -or
+        -not [Environment]::Is64BitProcess) { throw 'INSTALLER_CI_CONTEXT_REQUIRED' }
+    $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'INSTALLER_STANDARD_USER_REQUIRED' }
+    $pins = Get-Content -LiteralPath (Join-Path $repository 'resources/ci/installer-proof-input.json') -Raw | ConvertFrom-Json
+    $null=Invoke-InstallerHelper @('admit')
+    $sourceCommit=$pins.source_commit
+    $buildRoot=Join-Path $artifacts ('development-quick\' + $sourceCommit)
+    $installerPath=Assert-ArtifactPath $Installer
+    $testPath=Assert-ArtifactPath $TestDir -Qa
+    $manifestPath=Join-Path $buildRoot 'build-manifest.json'
+    $buildManifest=Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $installerPath.Equals((Join-Path $buildRoot ('artifacts\' + $pins.installer_name)), $comparison) -or
+        -not $testPath.StartsWith((Join-Path $buildRoot 'qa') + '\', $comparison) -or
+        $buildManifest.source_commit -cne $sourceCommit -or $buildManifest.payload_kind -cne 'electron-service' -or
+        (Get-Item -LiteralPath $installerPath).Length -ne $pins.installer_size -or
+        (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash -ine $pins.installer_sha256 -or
+        (Test-Path -LiteralPath $testPath)) { throw 'INSTALLER_INPUT_BOUNDARY' }
+    foreach ($key in @($uninstallKey,
+        'HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{1EAB882B-9360-4FC5-9538-E86CB53AA2A1}_is1',
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{1EAB882B-9360-4FC5-9538-E86CB53AA2A1}_is1',
+        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{1EAB882B-9360-4FC5-9538-E86CB53AA2A1}_is1')) {
+        if (Test-Path -LiteralPath $key) { throw 'INSTALLER_FOREIGN_REGISTRATION' }
+    }
+    if (Get-Process -Name 'ssearch','ssearch-service','AtomSearch','KaizenSearch' -ErrorAction SilentlyContinue) {
+        throw 'INSTALLER_FOREIGN_PROCESS'
+    }
+    $programsPath=[Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
+    if (-not $programsPath) { throw 'INSTALLER_PROGRAMS_UNAVAILABLE' }
+    $groupPath=Join-Path $programsPath $groupName
+    if (Test-Path -LiteralPath $groupPath) { throw 'INSTALLER_FOREIGN_SHORTCUTS' }
+    $null=Invoke-InstallerHelper @('private', '--directory', $testPath)
+    $appPath=Join-Path $testPath 'Installed приложение with spaces'
+    $appExecutable=Join-Path $appPath 'ssearch.exe'
+    $serviceExecutable=Join-Path $appPath 'service/ssearch-service.exe'
+    $referencePath=Join-Path $testPath 'Reference поставка with spaces'
+    $referenceExecutable=Join-Path $referencePath 'ssearch.exe'
+    $referenceServiceExecutable=Join-Path $referencePath 'service/ssearch-service.exe'
+    $uninstallerPath=Join-Path $appPath 'unins000.exe'
+    $dataPath=Join-Path $testPath 'Actual application данные with spaces'
+    $postgresPath=Join-Path $testPath 'Postgres данные with spaces'
+    $ownerFile=Join-Path $testPath 'qa-owner.json'
+    $marker=Join-Path $dataPath 'preserve-marker.txt'
+    $markerValue="ssearch preserved QA $runId"
+    $summaryPath=Join-Path $testPath 'installer-qa.json'
+    $runtimeCleanupConfirmed=$true; $processCompletionConfirmed=$true
+    $null=New-Item -ItemType Directory -Path $dataPath
+    [IO.File]::WriteAllText($marker,$markerValue)
+    @{run_id=$runId;app_path=$appPath} | ConvertTo-Json | Set-Content -LiteralPath $ownerFile -Encoding UTF8
+    $os=Get-CimInstance Win32_OperatingSystem
+    $checks=[ordered]@{}
+    foreach ($name in @('fresh_install_verified','same_version_reinstall_verified','owned_uninstall_verified',
+        'payload_inventory_verified','shortcut_ownership_verified','application_bytes_preserved',
+        'application_index_preserved','postgres_bytes_preserved','postgres_restart_verified',
+        'installed_proofs_passed','runtime_cleanup_confirmed','process_completion_confirmed',
+        'registered_installation_removed','owned_shortcuts_removed','standard_user_profile_verified')) { $checks[$name]=$false }
+    $checks.standard_user_profile_verified=$true
+    $summary=[ordered]@{ok=$false; source_commit=$sourceCommit; installer_sha256=$pins.installer_sha256;
+        installer_bytes=$pins.installer_size; inventory_sha256=$buildManifest.desktop.inventory_sha256;
+        os_product_type=[int]$os.ProductType; os_build=[int]$os.BuildNumber; checks=$checks;
+        postgres_seed=$null; error_code=$null}
+    $ownedInno=$null; $shortcutRecords=@(); $uninstalled=$false; $failed=$false
+    $phase='fresh_install'
+    $freshStep='policy'
+    Write-Host "CI_INSTALLER_PHASE $phase started"
+    try {
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
+        $uiPolicy=(Invoke-InstallerHelper @('ui-policy')) | ConvertFrom-Json
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $installArguments=@('/VERYSILENT','/SUPPRESSMSGBOXES','/CURRENTUSER','/NORESTART','/SP-',
+            '/NOCLOSEAPPLICATIONS','/NORESTARTAPPLICATIONS','/MERGETASKS=!desktopicon',
+            ('/DIR=' + $appPath),('/GROUP=' + $groupName))
+        $freshStep='install_process'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
+        Start-HiddenAndWait $installerPath ($installArguments + @('/LOG=' + (Join-Path $testPath 'fresh.log'))) 'Fresh install' 600000
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='registration'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
+        Assert-OwnedInstallation
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='inno_records'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
+        $ownedInno=Get-OwnedInnoFiles
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='inventory'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
+        Assert-ElectronInventory 'fresh'
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='shortcuts'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
+        $shortcutRecords=@(Get-OwnedShortcutFiles)
+        $checks.fresh_install_verified=$true
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='reference_copy'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
+        # Copy only the verified first installed closure; no dist/source fallback.
+        $inventory=Get-Content -LiteralPath (Join-Path $testPath 'fresh-inventory.json') -Raw | ConvertFrom-Json
+        $null=New-Item -ItemType Directory -Path $referencePath
+        foreach ($record in $inventory.files.PSObject.Properties) {
+            $target=Join-Path $referencePath $record.Name
+            $null=New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force
+            Copy-Item -LiteralPath (Join-Path $appPath $record.Name) -Destination $target
+        }
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='reference_inventory'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
+        Assert-ElectronInventory 'reference-first' -Reference
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        foreach ($scenario in @('security','load','lifecycle','empty-profile')) {
+            $phase='ui_' + $scenario.Replace('-','_')
+            Write-Host "CI_INSTALLER_PHASE $phase started"
+            Invoke-InstalledUiProof $scenario 'fresh'
+            Write-Host "CI_INSTALLER_PHASE $phase pass"
+        }
+        $phase='ordinary_serve'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $runtimeCleanupConfirmed=$false
+        $serveReport=Join-Path $testPath 'ordinary-serve.json'
+        Start-HiddenAndWait $Python @((Join-Path $repository 'tools/check_frozen_service.py'),
+            '--service-executable',$serviceExecutable,'--qa-directory',(Join-Path $testPath 'Serve profiles Кириллица'),
+            '--source-commit',$sourceCommit,'--app-version',$buildManifest.app_version,'--report',$serveReport) 'Installed ordinary serve' 600000
+        $null=Invoke-InstallerHelper @('serve','--report',$serveReport,'--manifest',$manifestPath)
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='service_owner'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $ownerReport=Join-Path $testPath 'service-owner.json'
+        Start-HiddenAndWait $serviceExecutable @('--service-test',$ownerReport,'--data-dir',
+            (Join-Path $testPath 'Owner profile Кириллица')) 'Installed owner proof' 600000
+        $null=Invoke-InstallerHelper @('owner','--report',$ownerReport,'--manifest',$manifestPath)
+        $runtimeCleanupConfirmed=$true
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='application'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $first=Invoke-InstalledSelfTest 'application-first.json'
+        $null=Invoke-InstallerHelper @('application','--report',(Join-Path $testPath 'application-first.json'),'--manifest',$manifestPath)
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='pg_seed'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $summary.postgres_seed=Invoke-PostgresProof 'postgres-seed.json' 'seed'
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='reinstall'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        Assert-ElectronOwnership
+        Assert-ElectronInventory 'before-reinstall'
+        $pgBefore=Get-PreservedProfileSnapshot
+        $appBefore=Get-PreservedProfileSnapshot -ProfilePath $dataPath
+        Start-HiddenAndWait $installerPath ($installArguments + @('/LOG=' + (Join-Path $testPath 'reinstall.log'))) 'Same version reinstall' 600000
+        # Successful Inno may rewrite its .dat and the three owned shortcuts.
+        # Admit both new baselines only after completion, registration and all
+        # shortcut inventory/type/Unicode-target checks have succeeded.
+        Assert-OwnedInstallation
+        $newOwnedInno=Get-OwnedInnoFiles
+        $newShortcutRecords=@(Get-OwnedShortcutFiles)
+        $ownedInno=$newOwnedInno
+        $shortcutRecords=$newShortcutRecords
+        Assert-ElectronOwnership
+        Assert-ElectronInventory 'reinstalled'
+        if ((Get-PreservedProfileSnapshot) -cne $pgBefore -or
+            (Get-PreservedProfileSnapshot -ProfilePath $dataPath) -cne $appBefore) { throw 'INSTALLER_REINSTALL_CHANGED_PROFILE' }
+        $repeat=Invoke-InstalledSelfTest 'application-repeat.json'
+        $null=Invoke-InstallerHelper @('application','--report',(Join-Path $testPath 'application-repeat.json'),'--manifest',$manifestPath)
+        $null=Invoke-InstallerHelper @('preservation','--first',(Join-Path $testPath 'application-first.json'),
+            '--report',(Join-Path $testPath 'application-repeat.json'))
+        $null=Invoke-PostgresProof 'postgres-repeat.json' 'verify'
+        Invoke-InstalledUiProof 'load' 'reinstalled'
+        $checks.same_version_reinstall_verified=$true
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='uninstall'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        Assert-ElectronOwnership
+        Assert-ElectronInventory 'before-uninstall'
+        Assert-ElectronInventory 'reference-before-uninstall' -Reference
+        $pgBefore=Get-PreservedProfileSnapshot
+        $appBefore=Get-PreservedProfileSnapshot -ProfilePath $dataPath
+        if (-not $runtimeCleanupConfirmed -or -not $processCompletionConfirmed) { throw 'INSTALLER_RUNTIME_CLEANUP_UNKNOWN' }
+        Invoke-OwnedUninstall 'uninstall.log'
+        if ((Test-Path -LiteralPath $uninstallKey) -or (Test-Path -LiteralPath $appExecutable) -or
+            (Test-Path -LiteralPath $groupPath)) { throw 'INSTALLER_OWNED_REMOVAL_INCOMPLETE' }
+        $uninstalled=$true
+        Assert-Marker
+        if ((Get-PreservedProfileSnapshot) -cne $pgBefore -or
+            (Get-PreservedProfileSnapshot -ProfilePath $dataPath) -cne $appBefore) { throw 'INSTALLER_UNINSTALL_CHANGED_PROFILE' }
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='post_uninstall_app'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $null=Invoke-InstalledSelfTest 'application-after-uninstall.json' -FromBundle
+        $null=Invoke-InstallerHelper @('application','--report',(Join-Path $testPath 'application-after-uninstall.json'),'--manifest',$manifestPath)
+        foreach ($name in @('application-first.json','application-repeat.json')) {
+            $null=Invoke-InstallerHelper @('preservation','--first',(Join-Path $testPath $name),
+                '--report',(Join-Path $testPath 'application-after-uninstall.json'))
+        }
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        $phase='post_uninstall_pg'
+        Write-Host "CI_INSTALLER_PHASE $phase started"
+        $null=Invoke-PostgresProof 'postgres-after-uninstall.json' 'verify' -FromBundle
+        Assert-ElectronInventory 'reference-final' -Reference
+        Write-Host "CI_INSTALLER_PHASE $phase pass"
+        foreach ($name in @('owned_uninstall_verified','payload_inventory_verified','shortcut_ownership_verified',
+            'application_bytes_preserved','application_index_preserved','postgres_bytes_preserved',
+            'postgres_restart_verified','installed_proofs_passed','registered_installation_removed','owned_shortcuts_removed')) { $checks[$name]=$true }
+        $summary.ok=$true
+    } catch {
+        if ($phase -ceq 'fresh_install') {
+            # Capture the failed operation before cleanup can replace the last
+            # retained waiter's completion observation with a successful one.
+            $hresult=[int]$_.Exception.HResult
+            $waitReason=Get-Variable -Name processCompletionReason -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+            if ($waitReason -cnotin @('preparing_waiter','creating_job','assigning_job','admitting_waiter',
+                'querying_job','job_drain_timeout','job_close_failed','completion_deadline','waiting','capture_limit','waiter_timeout',
+                'reading_waiter_exit','checking_completion_file','waiter_exit_unavailable','waiter_exit_nonzero',
+                'completion_missing','reading_completion','completion_payload_invalid','child_exit_nonzero','complete')) { $waitReason='unavailable' }
+            $payload=Get-Variable -Name processCompletionPayload -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+            $integer=($null -ne $payload -and $payload.exit_integer -eq $true).ToString().ToLowerInvariant()
+            $zero=($null -ne $payload -and $payload.exit_zero -eq $true).ToString().ToLowerInvariant()
+            Write-Host "CI_INSTALLER_FRESH $freshStep fail"
+            Write-Host "CI_INSTALLER_FAILURE substep=$freshStep hresult=$hresult wait_reason=$waitReason exit_integer=$integer exit_zero=$zero"
+        }
+        Write-Host "CI_INSTALLER_PHASE $phase fail"
+        $failed=$true
+        $summary.error_code='INSTALLER_LIFECYCLE_FAILED'
+    } finally {
+        if (-not $uninstalled -and $null -ne $ownedInno -and $runtimeCleanupConfirmed -and $processCompletionConfirmed) {
+            try {
+                Assert-ElectronOwnership
+                Invoke-OwnedUninstall 'uninstall-after-failure.log'
+            } catch { $summary.error_code='INSTALLER_CLEANUP_UNCONFIRMED' }
+        }
+        $checks.runtime_cleanup_confirmed=[bool]$runtimeCleanupConfirmed
+        $checks.process_completion_confirmed=[bool]$processCompletionConfirmed
+        [IO.File]::WriteAllText($summaryPath,($summary | ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
+    }
+    if ($failed) { exit 1 }
+    exit 0
 }
 
 # All checks before the first write or process launch are read-only. In

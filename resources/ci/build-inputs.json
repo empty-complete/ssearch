@@ -1,6 +1,27 @@
 {
   "schema_version": 1,
   "python_version": "3.12.10",
+  "electron_runtime": {
+    "version": "45.0.0",
+    "platform": "win32",
+    "architecture": "x64",
+    "archive": {
+      "url": "https://github.com/electron/electron/releases/download/v45.0.0/electron-v45.0.0-win32-x64.zip",
+      "size": 158223852,
+      "sha256": "ae53887a23bb640369c93dbd38c408a2af5c0deb86f2fa76c6c244cb444b7f47"
+    },
+    "checksums": {
+      "url": "https://github.com/electron/electron/releases/download/v45.0.0/SHASUMS256.txt",
+      "size": 6740,
+      "sha256": "5882ee4d3f943f567cdb6df9bf86e78de9c369e41d9093daaa2e3acaa630093b"
+    },
+    "provenance": {
+      "release_url": "https://github.com/electron/electron/releases/tag/v45.0.0",
+      "release_published_at": "2026-10-21T05:22:39Z",
+      "github_asset_digest_matches_checksums": true,
+      "windows_validation": []
+    }
+  },
   "postgresql_runtime": {
     "url": "https://github.com/empty-complete/ssearch/releases/download/build-inputs-v2/postgresql-18.6-pgvector-0.8.7-windows-x64-utf8.zip",
     "size": 64509250,

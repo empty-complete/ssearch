@@ -1,0 +1,223 @@
+name: Frontend candidate
+on:
+  pull_request:
+    paths: ['frontend/**', 'desktop/**', 'tools/build_frontend.ps1', '.github/workflows/frontend-checks.yml', 'LICENSE.txt', 'src/atom_search/content.py', 'src/atom_search/service/contracts.py', 'resources/branding/**']
+  workflow_dispatch:
+    inputs:
+      live_source:
+        description: Run admitted standard-user source TS/P2/Electron ownership proof
+        type: boolean
+        default: false
+      diagnostics_only:
+        description: Run only desktop diagnostics types and policy regressions (no Electron/Python/build)
+        type: boolean
+        default: false
+      electron_roundtrip:
+        description: Run only the pinned Electron source stdout roundtrip (no service/package)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  candidate:
+    if: inputs.diagnostics_only != true && inputs.electron_roundtrip != true
+    runs-on: windows-2025
+    timeout-minutes: ${{ inputs.live_source && 45 || 20 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+      - name: Pin npm
+        run: npm install --global npm@11.19.1 --ignore-scripts
+      - name: Resolve locked frontend dependencies and warm offline cache
+        working-directory: frontend
+        run: npm ci --ignore-scripts --cache .cache/npm --no-audit --no-fund
+      - name: Frontend types and behavior
+        working-directory: frontend
+        run: |
+          npm run typecheck
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm test
+      - name: Resolve locked desktop build dependencies
+        working-directory: desktop
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm ci --ignore-scripts --cache .cache/npm --no-audit --no-fund
+      - name: Missing and empty frontend cache fail before npm ci
+        shell: pwsh
+        run: |
+          $marker = Join-Path $PWD 'frontend/node_modules/.offline-negative-proof'
+          Set-Content -LiteralPath $marker -Value 'preserve-before-npm-ci'
+          $empty = Join-Path $PWD 'frontend/.cache/negative-empty'
+          New-Item -ItemType Directory -Path $empty | Out-Null
+          $cases = @(
+            @{ name='missing'; path=(Join-Path $PWD 'frontend/.cache/negative-missing'); error='Offline npm cache is missing.' },
+            @{ name='empty'; path=$empty; error='Offline locked cache incomplete:' }
+          )
+          $receipts = @()
+          foreach ($case in $cases) {
+            $message = ''
+            try {
+              ./tools/build_frontend.ps1 -CachePath $case.path -DesktopCachePath "$PWD/desktop/.cache/npm"
+              throw 'Unexpected success for incomplete cache'
+            } catch { $message = $_.Exception.Message }
+            if (!$message.StartsWith($case.error)) { throw "Unexpected cache failure: $message" }
+            if (!(Test-Path -LiteralPath $marker)) { throw 'npm ci ran before cache rejection' }
+            if (Test-Path -LiteralPath (Join-Path $case.path '_cacache/content-v2')) { throw 'Package content appeared in rejected cache' }
+            $receipts += @{ scenario=$case.name; rejected_before_npm_ci=$true; package_downloads=$false; error=$message }
+          }
+          Remove-Item -LiteralPath $marker
+          ConvertTo-Json -InputObject $receipts -Depth 6 | Set-Content frontend/.cache/offline-negative.json
+      - name: Offline rebuild of both locked dependency trees and frontend bundle
+        shell: pwsh
+        run: ./tools/build_frontend.ps1 -CachePath "$PWD/frontend/.cache/npm" -DesktopCachePath "$PWD/desktop/.cache/npm"
+      - name: Desktop types, safety and compile
+        working-directory: desktop
+        run: |
+          npm run typecheck
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./node_modules/.bin/tsc.cmd --project tsconfig.proof.json --noEmit
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build
+      - name: Pinned Electron binary for source security proof (GitHub only)
+        working-directory: desktop
+        run: node node_modules/electron/install.js
+      - name: Actual Electron interception and IPC sender proof (hidden/offscreen)
+        working-directory: desktop
+        run: npm run test:electron
+      - name: Headless browser scenarios (GitHub only)
+        working-directory: frontend
+        run: |
+          npx --no-install playwright install chromium
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run test:e2e
+      - name: Verify retained Electron source security evidence
+        shell: pwsh
+        run: |
+          $receiptPath = Join-Path $PWD 'desktop/artifacts/electron-security.json'
+          if (!(Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+            throw 'Electron source security receipt is missing after browser checks.'
+          }
+          $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+          $sourceSha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE) { throw 'Cannot resolve checked-out source SHA.' }
+          if ($receipt.schema_version -ne 1 -or $receipt.source_sha -cne $sourceSha) {
+            throw 'Electron source security receipt does not match this source SHA.'
+          }
+          if ($receipt.runtime_versions.electron -cne '45.0.0' -or
+              !$receipt.runtime_versions.node -or !$receipt.runtime_versions.chrome -or
+              $receipt.electron_binary_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'Electron source security receipt lacks actual pinned runtime identity.'
+          }
+      - name: Pinned Python for explicit live source proof
+        if: inputs.live_source == true
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+      - name: Prepare verified public live-source inputs
+        if: inputs.live_source == true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $null = New-Item -ItemType Directory -Path '.tools/ci-node' -Force
+          Copy-Item -LiteralPath (Get-Command node).Source -Destination '.tools/ci-node/node.exe'
+          python tools/prepare_ci.py --source
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Admitted standard-user TS to P2 and hidden Electron source lifecycle proof
+        if: inputs.live_source == true
+        shell: pwsh
+        env:
+          BUILD_MODE: source
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TEST_TARGETS_JSON: '["tests/test_desktop_source_bridge.py"]'
+          PYTHONUTF8: '1'
+        run: |
+          ./tools/run_ci_build.ps1 -TimeoutSeconds 1500
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($name in @('source-lifecycle', 'electron-source')) {
+            $path = Join-Path $PWD "desktop/artifacts/$name.json"
+            if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Missing live source receipt.' }
+            $receipt = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            if ($receipt.ok -ne $true -or $receipt.source_commit -cne $env:SOURCE_SHA) {
+              throw 'Live source receipt is incomplete or from another commit.'
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-candidate-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            frontend/dist
+            frontend/test-results
+            frontend/playwright-report
+            frontend/compatibility
+            desktop/dist
+            desktop/artifacts/electron-security.json
+            desktop/artifacts/source-lifecycle.json
+            desktop/artifacts/electron-source.json
+            artifacts/ci-source/test-receipt.json
+          retention-days: 14
+  diagnostics:
+    if: inputs.diagnostics_only == true
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+      - name: Pin npm
+        run: npm install --global npm@11.19.1 --ignore-scripts
+      - name: Resolve locked desktop types and test dependencies without binaries
+        working-directory: desktop
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm ci --ignore-scripts --cache .cache/npm --no-audit --no-fund
+      - name: Desktop diagnostics types and focused policy regressions
+        working-directory: desktop
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: |
+          ./node_modules/.bin/tsc.cmd --noEmit
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./node_modules/.bin/tsc.cmd --project tsconfig.proof.json --noEmit
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node node_modules/tsx/dist/cli.mjs --test tests/diagnostics*.test.ts tests/service-client.test.ts
+  electron-roundtrip:
+    if: inputs.electron_roundtrip == true
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+      - name: Pin npm
+        run: npm install --global npm@11.19.1 --ignore-scripts
+      - name: Resolve locked desktop types without implicit binary install
+        working-directory: desktop
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm ci --ignore-scripts --cache .cache/npm --no-audit --no-fund
+      - name: Compile desktop source for the isolated transport fixture
+        working-directory: desktop
+        run: ./node_modules/.bin/tsc.cmd
+      - name: Pinned Electron binary (GitHub only)
+        working-directory: desktop
+        run: node node_modules/electron/install.js
+      - name: Strict Electron MAIN to MAIN stdout roundtrip (no windows/service)
+        working-directory: desktop
+        run: node tests/electron-stdout-roundtrip.cjs

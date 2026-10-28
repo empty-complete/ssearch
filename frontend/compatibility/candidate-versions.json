@@ -1,0 +1,256 @@
+{
+  "schema_version": 1,
+  "status": "candidate",
+  "electron": {
+    "version": "45.0.0",
+    "embedded_node": "24.22.0",
+    "chromium": "156.0.8078.48",
+    "release": "https://www.electronjs.org/blog/electron-45-0",
+    "platform_source": "https://raw.githubusercontent.com/electron/electron/v45.0.0/README.md",
+    "documented_floor": "Windows 10 or later; exact Windows 10 1809 acceptance remains not_run"
+  },
+  "build": {
+    "node": "24.22.1",
+    "npm": "11.19.1",
+    "source": "https://nodejs.org/en/download/archive/v24.22.1",
+    "platform_source": "https://raw.githubusercontent.com/nodejs/node/v24.22.1/BUILDING.md"
+  },
+  "packages": {
+    "frontend": {
+      "name": "@ssearch/frontend",
+      "version": "0.1.1",
+      "private": true,
+      "type": "module",
+      "license": "MIT",
+      "engines": {
+        "node": "24.22.1",
+        "npm": "11.19.1"
+      },
+      "scripts": {
+        "dev": "vite",
+        "typecheck": "tsc --noEmit",
+        "test": "vitest run",
+        "build": "vite build && node tools/collect-licenses.mjs && node tools/check-bundle.mjs",
+        "test:e2e": "playwright test",
+        "preview": "vite preview"
+      },
+      "dependencies": {
+        "@heroui/react": "3.2.6",
+        "@heroui/styles": "3.2.6",
+        "react": "19.3.1",
+        "react-dom": "19.3.1",
+        "tailwind-variants": "3.3.1"
+      },
+      "devDependencies": {
+        "@playwright/test": "1.64.1",
+        "@tailwindcss/vite": "4.3.3",
+        "@testing-library/jest-dom": "7.0.1",
+        "@testing-library/react": "16.3.3",
+        "@testing-library/user-event": "14.6.8",
+        "@types/node": "24.19.2",
+        "@types/react": "19.3.0",
+        "@types/react-dom": "19.3.0",
+        "@vitejs/plugin-react": "6.1.2",
+        "jsdom": "30.1.3",
+        "tailwindcss": "4.3.3",
+        "typescript": "7.0.2",
+        "vite": "8.3.5",
+        "vitest": "5.0.5"
+      }
+    },
+    "desktop": {
+      "name": "ssearch-desktop",
+      "productName": "ssearch",
+      "version": "0.2.0",
+      "private": true,
+      "license": "MIT",
+      "description": "Simple Search local desktop shell",
+      "author": "Филипп Белобородов <filipp.beloborodoff@yandex.ru>",
+      "main": "dist/main.js",
+      "engines": {
+        "node": "24.22.1",
+        "npm": "11.19.1"
+      },
+      "scripts": {
+        "typecheck": "tsc --noEmit",
+        "build": "tsc",
+        "test": "tsx --test tests/*.test.ts",
+        "test:electron": "electron tests/electron-security.cjs",
+        "package": "npm run build && electron-forge package"
+      },
+      "devDependencies": {
+        "@electron-forge/cli": "8.0.1",
+        "@electron-forge/shared-types": "8.0.1",
+        "@types/node": "24.19.2",
+        "electron": "45.0.0",
+        "tsx": "4.23.15",
+        "typescript": "7.0.2"
+      },
+      "config": {
+        "forge": "./forge.config.cjs"
+      }
+    }
+  },
+  "upstream": {
+    "heroui": "31a6261590798d3c46f9cd0adf507653b3bc29ad",
+    "impeccable": "9fa16a06d8957fde5687984629fd028c9f2abf10",
+    "hallmark": "7ec868225c6caa040558c321ee0fefa0e73f83a8",
+    "catppuccin": "07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd",
+    "nord": "1cef71605416a222e57225b544540ce0fcec18d4",
+    "dracula": "e22ebcc048b8aff586f9bc94db30ff5347070b42"
+  },
+  "locks": [
+    {
+      "path": "frontend/package-lock.json",
+      "sha256": "0ccb477d0f0c02c7f583041bf07a8e0d1163a8f5401df63b50fe90cdfeedef84"
+    },
+    {
+      "path": "desktop/package-lock.json",
+      "sha256": "4495c9e3b1e5b9494ec00c4fc2302544f8ced2a7e6acf5989fb4f0d199a65a65"
+    }
+  ],
+  "snapshots": [
+    {
+      "sha256": "5095d1972c4f84a881e25b5be55868545687f0f39b2ef2489e3d80a8a4bd216f",
+      "file": "button.mdx"
+    },
+    {
+      "sha256": "814096d2c34cc216c624738a49356f32b7237733b4f7edb0685f4e50ef5074ba",
+      "file": "catppuccin-LICENSE"
+    },
+    {
+      "sha256": "ba6418bc9831c07e97fb3e2418ad421e31b78df24ef0b8db1312a7d2d33808ed",
+      "file": "client-only-0.0.1-evidence.json"
+    },
+    {
+      "sha256": "4d6342705767832f299b9a59c28e4275bcf02db19472732f93f67d979441df8f",
+      "file": "client-only-0.0.1-package.json"
+    },
+    {
+      "sha256": "808a50e0e6c74617a07b0eaf7fd80f58d8e48a13f48e47c658c7534b1724e5c2",
+      "file": "craft-floor.md"
+    },
+    {
+      "sha256": "45565a78e3c7fdc33791c5074c8640199e2f711e62131cd4ef1cb337010b6e85",
+      "file": "hallmark-flow.md"
+    },
+    {
+      "sha256": "06088a8b94598626f27612dea42300154bf7be967c85d9d3eee4490cb056af7d",
+      "file": "hallmark-LICENSE"
+    },
+    {
+      "sha256": "25a1ff92d925b2389e8409f42fb8ad7e033fceca8b5d1f07ed4ca4c28da53dc3",
+      "file": "hallmark-skill.md"
+    },
+    {
+      "sha256": "bd087c1ebd511adbab74705ec2b31d63d175e8d422f58c1af54754da02b1d329",
+      "file": "heroui-LICENSE"
+    },
+    {
+      "sha256": "4a57a4b2cc35abbcc991f443ae829fc2225135be3c76d9b74839561939cf4fda",
+      "file": "heroui-skill.md"
+    },
+    {
+      "sha256": "02bb8c3b4e70190e3986c0404ad2fd8d639b4f534252d82379cc1b502b6d1812",
+      "file": "impeccable-LICENSE"
+    },
+    {
+      "sha256": "4d0ed950c090526be96dbf541478da2198e52c55ae83ee52612404e090a33707",
+      "file": "input.mdx"
+    },
+    {
+      "sha256": "a9ccb5fda1e9ae66cc39dd58438d1ff08bb2219324877301f0d2d6781b37fc41",
+      "file": "list-box.mdx"
+    },
+    {
+      "sha256": "2ecb8674f239b5386faf955a52f9cc58c7a064a27d7c91bfc871b63d6a9c9c15",
+      "file": "new-work.md"
+    },
+    {
+      "sha256": "a9d2203acd45ca33a13d5c68b02b23ed512425ac15f0e8438318ed124b43729d",
+      "file": "operate.md"
+    },
+    {
+      "sha256": "3dcc4f2a1875ea999a774e3c9ee3fe34092187bb73c7d3a6857547a2904e0543",
+      "file": "select.mdx"
+    },
+    {
+      "sha256": "8e0073e9346bef430459995defd662714433eefbe7376c47353920942f32a561",
+      "file": "text-field.mdx"
+    },
+    {
+      "sha256": "1fc6112b1dfeb0f16953ba1b7ac04b1a7cad690ead4a74282718aa58dd4e7d4c",
+      "file": "tooltip.mdx"
+    },
+    {
+      "sha256": "4bc114bb6b3c9a9c9e156564aa84625aef32c5da514d9dd431cf1fcad433a05f",
+      "file": "catppuccin-palette.json"
+    },
+    {
+      "sha256": "b931ac3732582b2066b2d6cadec02d9820ba7081e6e3e404c31cb62d9315a962",
+      "file": "nord-palette.css"
+    },
+    {
+      "sha256": "25ac8188d670bd2ad2ce2f4f55ab88573010ee9f7a4502543cb1eea1e2274f8a",
+      "file": "nord-LICENSE"
+    },
+    {
+      "sha256": "3f798014d8e25a4c15f6ad26bc767d99bfc367ec3f9883bd4b5ce0fe562647d0",
+      "file": "dracula-palette.md"
+    },
+    {
+      "sha256": "38b806a7e799cca4e9821e6f8d65cf0d8bfaaddbe454b41f12e5baad52d310f1",
+      "file": "dracula-LICENSE"
+    }
+  ],
+  "open_gates": [
+    "GitHub targeted tests and production offline build",
+    "Independent combined review and screenshots",
+    "Task2 service bridge and ownership security",
+    "Task3 package frozen service installer offline native runtime",
+    "Win11 native IME Narrator high contrast DPI Snap crash recovery",
+    "Final Win10 1809+ acceptance only at the end",
+    "Full P4 and Stable acceptance",
+    "client-only0.0.1 actual frozen/package contents acceptance; source-only empty-marker disposition requires measured graph proof"
+  ],
+  "palette_inputs": {
+    "default_pair": [
+      "catppuccin-latte",
+      "catppuccin-mocha"
+    ],
+    "default_first_party_adaptations": {
+      "neutral_white": "#ffffff",
+      "light_warning": "#7f4f0b"
+    },
+    "serialization": "Closed no-argument build transform in the existing static stylesheet; no runtime custom ingestion",
+    "prepared": [
+      {
+        "id": "nord",
+        "availableModes": [
+          "dark"
+        ],
+        "lightComposition": "requires_explicit_choice",
+        "palette_source": "https://raw.githubusercontent.com/nordtheme/nord/1cef71605416a222e57225b544540ce0fcec18d4/src/nord.css",
+        "license_source": "https://raw.githubusercontent.com/nordtheme/nord/1cef71605416a222e57225b544540ce0fcec18d4/license",
+        "accessibility": "not_accepted"
+      },
+      {
+        "id": "dracula",
+        "availableModes": [
+          "dark"
+        ],
+        "lightComposition": "requires_explicit_choice",
+        "palette_source": "https://raw.githubusercontent.com/dracula/dracula-theme/e22ebcc048b8aff586f9bc94db30ff5347070b42/README.md",
+        "license_source": "https://raw.githubusercontent.com/dracula/dracula-theme/e22ebcc048b8aff586f9bc94db30ff5347070b42/LICENSE",
+        "accessibility": "not_accepted"
+      }
+    ],
+    "catppuccin_palette_source": "https://raw.githubusercontent.com/catppuccin/palette/07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd/palette.json",
+    "distributed_original_licenses": [
+      "licenses/palettes/catppuccin-LICENSE.txt",
+      "licenses/palettes/nord-LICENSE.txt",
+      "licenses/palettes/dracula-LICENSE.txt"
+    ],
+    "custom_contract": "Finite semantic roles and RGB byte tuples only; P5/P2 ingestion and settings ownership remain unimplemented"
+  }
+}

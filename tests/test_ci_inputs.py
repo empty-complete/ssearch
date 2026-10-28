@@ -22,6 +22,31 @@ prepare = load_tool('prepare_ci')
 exporter = load_tool('export_ci_artifacts')
 
 
+@pytest.mark.parametrize('entry', ['valid', 'wrong', 'missing', 'duplicate'])
+def test_electron_preparation_requires_pinned_archive_and_matching_upstream_entry(tmp_path, entry):
+    archive = tmp_path / 'electron-v45.0.0-win32-x64.zip'
+    archive.write_bytes(b'unit input bytes; not an executable qualification')
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    line = f'{digest} *{archive.name}\n'
+    if entry == 'wrong':
+        line = f'{"0" * 64} *{archive.name}\n'
+    elif entry == 'missing':
+        line = f'{digest} *other-platform.zip\n'
+    elif entry == 'duplicate':
+        line += line
+    checksums = tmp_path / 'SHASUMS256.txt'
+    checksums.write_text(line, encoding='utf-8')
+    config = dict(version='45.0.0', platform='win32', architecture='x64',
+                  archive=dict(size=archive.stat().st_size, sha256=digest),
+                  checksums=dict(size=checksums.stat().st_size,
+                                 sha256=hashlib.sha256(checksums.read_bytes()).hexdigest()))
+    if entry == 'valid':
+        prepare.verify_electron_inputs(config, archive, checksums)
+        archive.write_bytes(b'corrupt cache entry')
+    with pytest.raises(ValueError):
+        prepare.verify_electron_inputs(config, archive, checksums)
+
+
 def test_ci_pytest_preserves_module_invocation_cross_test_imports(tmp_path):
     """Match the real namespace tests/ tree, without a root test module."""
     (tmp_path / 'pytest.ini').write_text('[pytest]\ntestpaths = tests\n', encoding='utf-8')
@@ -223,3 +248,53 @@ def test_export_rejects_installer_changed_after_proof(tmp_path):
     with pytest.raises(ValueError, match='Installer'):
         exporter.export_artifacts(tmp_path, commit)
     assert not (tmp_path / 'artifacts/ci-export').exists()
+
+
+@pytest.mark.parametrize('fault', [None, 'index_hash', 'source', 'version', 'model_count', 'missing_ui', 'proof_hash'])
+def test_desktop_export_requires_bound_proofs_and_keeps_private_reports_out(tmp_path, fault):
+    commit, _ = fixture_build(tmp_path)
+    base = tmp_path / 'artifacts/development' / commit
+    manifest_path = base / 'build-manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    manifest.update(payload_kind='electron-service', core_version='0.2.0', frontend_test_targets=[], desktop_test_targets=[],
+                    executable={'sha256': 'b' * 64}, service_executable={'sha256': 'c' * 64})
+    receipt_path = base / 'qa/test-receipt.json'
+    receipt = json.loads(receipt_path.read_text())
+    receipt.update(frontend_test_targets=[], desktop_test_targets=[])
+    receipt_path.write_text(json.dumps(receipt))
+    proof_files = ['frozen-self-test.json', 'postgres-runtime-proof.json', 'test-receipt.json',
+                   'service-owner-proof.json', 'frozen-service-proof.json',
+                   *[f'ui-{name}.json' for name in ('load', 'security', 'lifecycle', 'empty-profile')]]
+    for name in proof_files[3:]:
+        (base / 'qa' / name).write_text('{"private_path":"PRIVATE_SENTINEL"}')
+    index = dict(schema_version=1, source_commit=commit, app_version='0.2.0', core_version='0.2.0', payload_kind='electron-service',
+                 test_scope='full', full_suite_passed=True, required_frozen_proofs_passed=True,
+                 stage_accepted=False, windows_validation=[],
+                 hashes=dict(desktop_sha256='b' * 64, service_sha256='c' * 64),
+                 scoped_backend_counts=dict.fromkeys(('model_constructions', 'runtime_starts',
+                                                      'runtime_stops', 'core_closes'), 1),
+                 ui={name: dict(scenario=name, proof_scope='packaged_hidden_offscreen')
+                     for name in ('load', 'security', 'lifecycle', 'empty-profile')},
+                 proof_sha256={name: exporter.digest(base / 'qa' / name) for name in proof_files})
+    if fault == 'source': index['source_commit'] = 'f' * 40
+    if fault == 'version': index['core_version'] = '0.1.0'
+    if fault == 'model_count': index['scoped_backend_counts']['model_constructions'] = 0
+    if fault == 'missing_ui': index['ui'].pop('security')
+    if fault == 'proof_hash': index['proof_sha256']['service-owner-proof.json'] = 'f' * 64
+    index_path = base / 'qa/desktop-proof-index.json'
+    index_path.write_text(json.dumps(index))
+    manifest['desktop'] = dict(required_frozen_proofs_passed=True, stage_accepted=False,
+                              proof_index_sha256=exporter.digest(index_path),
+                              open_gates=['qt_upgrade', 'native_windows_11', 'windows_10', 'full_p4_acceptance'])
+    if fault == 'index_hash': manifest['desktop']['proof_index_sha256'] = 'f' * 64
+    manifest_path.write_text(json.dumps(manifest))
+    if fault:
+        with pytest.raises(ValueError): exporter.export_artifacts(tmp_path, commit, desktop_stack=True)
+        assert not (tmp_path / 'artifacts/ci-export').exists()
+    else:
+        output = exporter.export_artifacts(tmp_path, commit, desktop_stack=True)
+        assert len(list(output.iterdir())) == 5
+        assert all(b'PRIVATE_SENTINEL' not in path.read_bytes() for path in output.iterdir())
+        evidence = json.loads((output / 'ci-evidence.json').read_text())
+        assert evidence['desktop']['stage_accepted'] is False
+        assert evidence['desktop']['scoped_backend_counts']['model_constructions'] == 1

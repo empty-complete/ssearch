@@ -1,0 +1,32 @@
+{
+  "name": "ssearch-desktop",
+  "productName": "ssearch",
+  "version": "0.2.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Simple Search local desktop shell",
+  "author": "Филипп Белобородов <filipp.beloborodoff@yandex.ru>",
+  "main": "dist/main.js",
+  "engines": {
+    "node": "24.22.1",
+    "npm": "11.19.1"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "test": "tsx --test tests/*.test.ts",
+    "test:electron": "electron tests/electron-security.cjs",
+    "package": "npm run build && electron-forge package"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "8.0.1",
+    "@electron-forge/shared-types": "8.0.1",
+    "@types/node": "24.19.2",
+    "electron": "45.0.0",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  },
+  "config": {
+    "forge": "./forge.config.cjs"
+  }
+}

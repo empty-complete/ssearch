@@ -1,0 +1,43 @@
+ssearch frontend — local dependency notices
+
+First-party code: MIT, Филипп Белобородов. See LICENSE.txt.
+Original application icon is preserved byte-for-byte in assets/ssearch.png.
+
+React and React DOM — MIT, Meta Platforms, Inc. and affiliates.
+https://github.com/facebook/react
+HeroUI React and styles — MIT, NextUI Inc. / HeroUI contributors.
+https://github.com/heroui-inc/heroui
+React Aria / React Stately / React Spectrum utilities — Apache-2.0, Adobe.
+https://github.com/adobe/react-spectrum
+Tailwind CSS — MIT, Tailwind Labs, Inc.
+https://github.com/tailwindlabs/tailwindcss
+Tailwind Variants — MIT, NextUI Inc.
+https://github.com/heroui-inc/tailwind-variants
+Catppuccin palette — MIT, Catppuccin contributors.
+https://github.com/catppuccin/palette
+Nord palette — MIT, Copyright (c) 2016-present Sven Greb.
+https://github.com/nordtheme/nord
+Dracula palette — MIT, Copyright (c) 2023 Dracula Theme.
+https://github.com/dracula/dracula-theme
+Nord and Dracula are prepared source inputs, not active UI presets or accepted
+accessibility combinations. Exact palette pins and complete originals are in
+the candidate evidence. Original palette license texts ship in licenses/palettes/.
+
+The CI artifact licenses/ contains available original production dependency
+license texts and the exact package identity/integrity inventory. Build/test dependencies
+retain their licenses in npm packages and the exact package-lock.json.
+Upstream design/skill snapshots are development references only; their source
+licenses are included alongside snapshots in compatibility/upstream/.
+
+client-only 0.0.1: the exact npm package declares MIT and contains an empty
+browser entry, index.js (0 bytes). It supplies no LICENSE text or copyright
+notice. No copyright holder is inferred here. The collector permits only its
+known locked tarball integrity and all three original file hashes. Its original
+package metadata and provenance are preserved in licenses/client-only/.
+Source-bundle acceptance also requires the actual Vite/Rolldown graph receipt:
+the marker is either absent from a supported complete graph or resolves to its
+empty default entry, with zero rendered implementation, no server branch,
+external marker import or package asset. The receipt binds every current browser
+chunk and input/source SHA. This is a source-bundle-only disposition; no original
+license text or copyright notice is fabricated. Actual frozen/package acceptance
+remains open.

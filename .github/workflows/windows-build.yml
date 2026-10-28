@@ -10,10 +10,22 @@ on:
       mode:
         description: Scope; source runs selected tests without packaging
         type: choice
-        options: [full, quick, source]
+        options: [full, quick, source, installer]
         default: full
       test_targets:
-        description: 'Quick/source: nonempty JSON array of existing test files/nodeids'
+        description: 'Python targets: JSON array of existing test files/nodeids'
+        type: string
+        default: '[]'
+      desktop_stack:
+        description: Build the Electron package and frozen headless service candidate
+        type: boolean
+        default: false
+      frontend_test_targets:
+        description: 'Electron Quick: JSON array of frontend test files'
+        type: string
+        default: '[]'
+      desktop_test_targets:
+        description: 'Electron Quick: JSON array of desktop test files'
         type: string
         default: '[]'
       publish:
@@ -40,6 +52,7 @@ jobs:
       tested_sha: ${{ steps.scope.outputs.tested_sha }}
       pr_number: ${{ steps.scope.outputs.pr_number }}
       pr_head_repository: ${{ steps.scope.outputs.pr_head_repository }}
+      route: ${{ steps.scope.outputs.route }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -67,6 +80,7 @@ jobs:
             return $response | ConvertFrom-Json
           }
           $required = $true
+          $route = 'binary'
           $prNumber = [int]$env:PR_NUMBER
           $testedSha = $env:SOURCE_SHA
           $headRepository = $env:GH_REPO
@@ -92,11 +106,14 @@ jobs:
             $headRepository = $pr.head.repo.full_name
             # Publisher-only changes must preserve the exact base/head workflow
             # header and binary build job. Unknown files still require Full.
-            $classification = & python tools/ci_publish.py classify --pr-number $prNumber --head-sha $testedSha
-            if ($LASTEXITCODE -ne 0 -or $classification -notin @('true', 'false')) {
+            $scopeArguments = @('tools/ci_publish.py', 'classify', '--pr-number', $prNumber, '--head-sha', $testedSha)
+            if ($env:EVENT_NAME -eq 'push') { $scopeArguments += @('--merge-sha', $env:SOURCE_SHA) }
+            $classification = & python @scopeArguments
+            if ($LASTEXITCODE -ne 0 -or $classification -notin @('true', 'false', 'candidate-source')) {
               throw 'Could not safely classify the exact PR head.'
             }
-            $required = $classification -eq 'true'
+            $required = $classification -in @('true', 'candidate-source')
+            if ($classification -eq 'candidate-source') { $route = 'candidate-source' }
           }
           if ($testedSha -notmatch '^[0-9a-f]{40}$' -or $headRepository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
             throw 'Invalid source identity returned by GitHub.'
@@ -105,17 +122,24 @@ jobs:
           "tested_sha=$testedSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "pr_number=$prNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "pr_head_repository=$headRepository" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "route=$route" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
   build:
     needs: changes
     if: needs.changes.outputs.build == 'true' && github.event_name != 'push'
     runs-on: windows-2025
     timeout-minutes: 355
+    permissions:
+      contents: read
+      actions: read
     env:
       PYTHONUTF8: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
-      BUILD_MODE: ${{ inputs.mode || 'full' }}
-      TEST_TARGETS_JSON: ${{ inputs.test_targets || '[]' }}
+      BUILD_MODE: ${{ needs.changes.outputs.route == 'candidate-source' && 'source' || inputs.mode || 'full' }}
+      TEST_TARGETS_JSON: ${{ needs.changes.outputs.route == 'candidate-source' && '["tests/test_ci_p4_candidate.py","tests/test_ci_publish.py","tests/test_ci_inputs.py","tests/test_installer_qa.py","tests/test_resources.py"]' || inputs.test_targets || '[]' }}
+      DESKTOP_STACK: ${{ inputs.desktop_stack && 'true' || 'false' }}
+      FRONTEND_TEST_TARGETS_JSON: ${{ inputs.frontend_test_targets || '[]' }}
+      DESKTOP_TEST_TARGETS_JSON: ${{ inputs.desktop_test_targets || '[]' }}
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -128,24 +152,79 @@ jobs:
           architecture: x64
           cache: pip
           cache-dependency-path: requirements.lock.txt
+      - name: Authenticate the unchanged candidate proofs before exact-head source tests
+        if: needs.changes.outputs.route == 'candidate-source'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & python tools/ci_p4_candidate.py --head-sha $env:SOURCE_SHA --pr-number '${{ needs.changes.outputs.pr_number }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate requested build scope
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = ConvertFrom-Json -InputObject $env:TEST_TARGETS_JSON -NoEnumerate
-          if ($targets -isnot [array] -or @($targets | Where-Object { $_ -isnot [string] }).Count) {
-            throw 'test_targets must be a JSON array of strings.'
+          $count = 0
+          foreach ($name in @('TEST_TARGETS_JSON', 'FRONTEND_TEST_TARGETS_JSON', 'DESKTOP_TEST_TARGETS_JSON')) {
+            $targets = ConvertFrom-Json -InputObject ([Environment]::GetEnvironmentVariable($name)) -NoEnumerate
+            if ($targets -isnot [array] -or @($targets | Where-Object { $_ -isnot [string] }).Count) {
+              throw 'Test targets must be JSON arrays of strings.'
+            }
+            if ($name -ne 'TEST_TARGETS_JSON' -and $env:DESKTOP_STACK -ne 'true' -and $targets.Count) {
+              throw 'UI targets require the desktop stack.'
+            }
+            $count += $targets.Count
           }
-          if ($env:BUILD_MODE -eq 'full' -and $targets.Count -ne 0) { throw 'Full does not accept test targets.' }
-          if ($env:BUILD_MODE -in @('quick', 'source') -and $targets.Count -eq 0) { throw 'Quick/source requires explicit targets.' }
-          if ($env:BUILD_MODE -notin @('full', 'quick', 'source')) { throw 'Unknown build mode.' }
+          if ($env:BUILD_MODE -eq 'full' -and $count -ne 0) { throw 'Full does not accept test targets.' }
+          if ($env:BUILD_MODE -in @('quick', 'source') -and $count -eq 0) { throw 'Quick/source requires explicit targets.' }
+          if ($env:BUILD_MODE -notin @('full', 'quick', 'source', 'installer')) { throw 'Unknown build mode.' }
+          if ($env:BUILD_MODE -eq 'installer' -and ('${{ github.event_name }}' -ne 'workflow_dispatch' -or
+              $env:DESKTOP_STACK -ne 'false' -or $count -ne 0 -or '${{ inputs.publish }}' -eq 'true')) {
+            throw 'Installer proof is manual only, without packaging, publication or test targets.'
+          }
           if ($env:BUILD_MODE -eq 'source' -and '${{ inputs.publish }}' -eq 'true') { throw 'Source tests cannot publish a build.' }
+          if ($env:BUILD_MODE -eq 'source' -and $env:DESKTOP_STACK -eq 'true') { throw 'Source mode cannot package the desktop stack.' }
+      - name: Pinned Node for the explicit desktop candidate
+        if: env.DESKTOP_STACK == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.22.1'
+      - name: Prepare pinned npm and locked offline desktop caches
+        if: env.DESKTOP_STACK == 'true'
+        shell: pwsh
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & npm install --global npm@11.19.1 --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($project in @('frontend', 'desktop')) {
+            Push-Location -LiteralPath $project
+            try {
+              & npm ci --ignore-scripts --cache .cache/npm --no-audit --no-fund
+              if ($LASTEXITCODE -ne 0) { throw 'Locked cache preparation failed.' }
+            } finally { Pop-Location }
+          }
+          & ./tools/prepare_desktop_ci.ps1
       - name: Prepare verified public inputs
+        if: env.BUILD_MODE != 'installer'
         shell: pwsh
         run: |
           $arguments = @('tools/prepare_ci.py')
           if ($env:BUILD_MODE -eq 'source') { $arguments += '--source' }
+          if ($env:DESKTOP_STACK -eq 'true') { $arguments += '--desktop' }
           & python @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Admit the exact existing installer without rebuilding
+        if: env.BUILD_MODE == 'installer'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python tools/ci_installer.py fetch --harness-commit $env:SOURCE_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & python -m venv .venv
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run selected scope under the verified standard user
         shell: pwsh
@@ -154,7 +233,7 @@ jobs:
           & ./tools/run_ci_build.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain reviewed build outputs
-        if: env.BUILD_MODE != 'source'
+        if: env.BUILD_MODE != 'source' && env.BUILD_MODE != 'installer'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-${{ env.SOURCE_SHA }}-${{ inputs.mode || 'full' }}
@@ -166,6 +245,14 @@ jobs:
             artifacts/ci-export/SHA256SUMS.txt
           if-no-files-found: error
           compression-level: 0
+          retention-days: 7
+      - name: Retain the closed installation receipt only
+        if: always() && env.BUILD_MODE == 'installer'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: electron-service-installer-proof-${{ env.SOURCE_SHA }}
+          path: artifacts/ci-installer/installation-receipt.json
+          if-no-files-found: warn
           retention-days: 7
       - name: Retain source test receipt only
         if: always() && env.BUILD_MODE == 'source'
@@ -193,6 +280,7 @@ jobs:
     needs: [changes, build]
     if: >-
       always() && !cancelled() && needs.changes.outputs.build == 'true' &&
+      needs.changes.outputs.route != 'candidate-source' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
         inputs.publish && inputs.mode == 'full' && needs.build.result == 'success'))

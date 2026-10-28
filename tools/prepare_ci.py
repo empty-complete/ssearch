@@ -26,7 +26,12 @@ def sha256(path: Path) -> str:
 
 def no_links(path: Path) -> None:
     for item in (path, *path.parents):
-        if item.is_symlink() or (hasattr(item, 'is_junction') and item.is_junction()):
+        try:
+            attributes = getattr(item.lstat(), 'st_file_attributes', 0)
+        except FileNotFoundError:
+            attributes = 0
+        if (attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT or item.is_symlink()
+                or (hasattr(item, 'is_junction') and item.is_junction())):
             raise ValueError(f'Build input path is a link: {item.name}')
 
 
@@ -37,6 +42,25 @@ def relative_name(name: str) -> str:
                    for part in name.split('/'))):
         raise ValueError('Unsafe runtime archive path')
     return PurePosixPath(name).as_posix()
+
+
+def verify_electron_inputs(config: dict, archive: Path, checksums: Path) -> None:
+    """Bind the offline ZIP to both pinned bytes and the upstream checksum entry."""
+    if (config['platform'] != 'win32' or config['architecture'] != 'x64'
+            or not re.fullmatch(r'\d+\.\d+\.\d+', config['version'])
+            or archive.name != f"electron-v{config['version']}-win32-x64.zip"
+            or checksums.name != 'SHASUMS256.txt'):
+        raise ValueError('Unexpected Electron input target')
+    for path, record in ((archive, config['archive']), (checksums, config['checksums'])):
+        no_links(path)
+        if (not path.is_file() or path.stat().st_size != record['size']
+                or sha256(path) != record['sha256']):
+            raise ValueError('Electron input checksum mismatch')
+    entries = [line.split() for line in checksums.read_text(encoding='utf-8').splitlines()]
+    matches = [fields[0] for fields in entries if len(fields) == 2
+               and fields[1].removeprefix('*') == archive.name]
+    if matches != [config['archive']['sha256']]:
+        raise ValueError('Electron archive does not match the pinned upstream checksum entry')
 
 
 def download(spec: dict, target: Path) -> Path:
@@ -136,6 +160,7 @@ def run(*arguments: str | Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', action='store_true', help='Prepare source tests without Inno Setup')
+    parser.add_argument('--desktop', action='store_true', help='Prepare pinned offline Electron input')
     args = parser.parse_args()
     config = json.loads((ROOT / 'resources/ci/build-inputs.json').read_text(encoding='utf-8'))
     if (config['schema_version'] != 1 or os.name != 'nt'
@@ -143,6 +168,12 @@ def main() -> None:
             or sys.maxsize <= 2**32):
         raise ValueError('Windows x64 and the pinned CPython patch version are required')
     cache = ROOT / '.tools/ci-downloads'
+    if args.desktop:
+        electron = config['electron_runtime']
+        electron_cache = ROOT / '.tools/electron-cache'
+        archive = download(electron['archive'], electron_cache / f"electron-v{electron['version']}-win32-x64.zip")
+        checksums = download(electron['checksums'], electron_cache / 'SHASUMS256.txt')
+        verify_electron_inputs(electron, archive, checksums)
     runtime = config['postgresql_runtime']
     restore_runtime(download(runtime, cache / 'postgresql-runtime.zip'),
                     ROOT / 'resources/postgresql', runtime['manifest_sha256'])

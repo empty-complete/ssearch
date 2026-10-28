@@ -1,0 +1,79 @@
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams, type ChildProcess } from 'node:child_process';
+import { isAbsolute, join, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { encodeBrokerFrame } from './brokerFrames.js';
+import { decodeProfileIdentity, type ProfileIdentity, type ServiceRuntime } from './runtime.js';
+export type { ProfileIdentity } from './runtime.js';
+
+export interface SourceRuntimeOptions {
+  repositoryRoot: string;
+  python: string;
+  modelDirectory: string;
+}
+
+export class SourceRuntime implements ServiceRuntime {
+  readonly root: string;
+  readonly python: string;
+  readonly modelDirectory: string;
+  constructor(options: SourceRuntimeOptions) {
+    for (const path of [options.repositoryRoot, options.python, options.modelDirectory]) {
+      if (!isAbsolute(path)) throw new Error('source_absolute_path_required');
+    }
+    this.root = realpathSync(options.repositoryRoot);
+    this.python = realpathSync(options.python);
+    this.modelDirectory = resolve(options.modelDirectory);
+  }
+
+  private environment(profile?: ProfileIdentity): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      PYTHONPATH: [join(this.root, 'src'), join(this.root, 'packages/atom-search-core/src')].join(';'),
+      PYTHONNOUSERSITE: '1', PYTHONUTF8: '1',
+      ...(profile ? { __PYVENV_LAUNCHER__: profile.pythonVenv } : {}),
+    };
+  }
+
+  spawnBroker(profile: ProfileIdentity): ChildProcessWithoutNullStreams {
+    return spawn(profile.pythonBase, [join(this.root, 'desktop/src/ssearch_service_adapter.py'), 'broker',
+      '--profile', profile.profile], { cwd: this.root, env: this.environment(profile), windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'] });
+  }
+
+  spawnOwner(profile: ProfileIdentity): ChildProcess {
+    if (profile.parent.pid !== process.pid
+      || realpathSync(profile.parent.executable).toLowerCase() !== realpathSync(process.execPath).toLowerCase()) {
+      throw new Error('source_parent_identity_mismatch');
+    }
+    const child = spawn(profile.pythonBase, [join(this.root, 'desktop/src/ssearch_service_adapter.py'),
+      'owner', '--profile', profile.profile, '--model-dir', this.modelDirectory], {
+      // Avoid libuv's Windows kill-on-parent-close job so the verified lease can drain P2.
+      // UV_PROCESS_DETACHED does not request CREATE_BREAKAWAY_FROM_JOB: outer CI containment remains.
+      // Keep the retained child/stdin referenced; release still awaits its clean exit.
+      detached: process.platform === 'win32',
+      cwd: this.root, env: this.environment(profile), windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'],
+    });
+    child.stdin!.on('error', () => {});
+    child.stdin!.write(encodeBrokerFrame({ schema_version: 1, session_id: randomUUID(),
+      challenge: randomUUID(), parent: profile.parent }));
+    return child;
+  }
+
+  /** Before Electron ready, so userData/lock identity cannot race browser initialization. */
+  profileIdentitySync(profilePath?: string): ProfileIdentity {
+    const session = randomUUID();
+    const challenge = randomUUID();
+    const result = spawnSync(this.python, [join(this.root, 'desktop/src/ssearch_service_adapter.py'), 'profile',
+      ...(profilePath ? ['--profile', resolve(profilePath)] : [])], {
+      cwd: this.root, env: this.environment(), windowsHide: true, timeout: 20_000, maxBuffer: 65_536,
+      input: encodeBrokerFrame({ schema_version: 1, session_id: session, challenge,
+        parent_pid: process.pid, parent_executable: realpathSync(process.execPath) }),
+    });
+    if (result.error || result.status !== 0) throw new Error('service_unavailable');
+    return decodeProfileIdentity(result.stdout, session, challenge);
+  }
+
+  async profileIdentity(profilePath?: string): Promise<ProfileIdentity> {
+    return this.profileIdentitySync(profilePath);
+  }
+}

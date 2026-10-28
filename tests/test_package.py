@@ -29,7 +29,11 @@ class PackageTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt" and shutil.which("pwsh.exe"), "PowerShell 7 unavailable")
     def test_installer_descendant_completion_under_powershell7(self):
-        self._exercise_installer_tree_wait(15000, False, shutil.which("pwsh.exe"))
+        # Independent samples expose the observed race; any failed subtest keeps
+        # this test failed, even when later samples complete successfully.
+        for sample in range(12):
+            with self.subTest(sample=sample):
+                self._exercise_installer_tree_wait(15000, False, shutil.which("pwsh.exe"))
 
     @unittest.skipUnless(os.name == "nt" and shutil.which("pwsh.exe"), "PowerShell 7 unavailable")
     def test_installer_timeout_under_powershell7(self):
@@ -65,24 +69,40 @@ $node.Name -eq 'Start-HiddenAndWait'
 Invoke-Expression $function.Extent.Text
 function Start-Process {
     param($FilePath, $ArgumentList, $WorkingDirectory, $WindowStyle, [switch]$PassThru)
-    $script:ownedWaiter = Microsoft.PowerShell.Management\Start-Process @PSBoundParameters
-    return $script:ownedWaiter
+    $created = Microsoft.PowerShell.Management\Start-Process @PSBoundParameters
+    # Retain a separate handle to this exact newly-created waiter. The real
+    # helper closes its Process before kernel drain; no discovered PID is used
+    # as cleanup authority and neither handle ever kills a process.
+    $createdTicks=$created.StartTime.Ticks
+    $script:ownedWaiter=[Diagnostics.Process]::GetProcessById($created.Id)
+    $null=$script:ownedWaiter.Handle
+    if ($script:ownedWaiter.StartTime.Ticks -ne $createdTicks) { throw 'owned_waiter_identity_changed' }
+    return $created
 }
 $script:processCompletionConfirmed = $false
 $caught = $false
+$caughtType = $null
 try {
     try {
         Start-HiddenAndWait -Program $Python -Arguments @($Toy, 'parent', $Marker) `
             -Label 'owned toy tree' -TimeoutMilliseconds $Limit
-    } catch { $caught = $true }
+    } catch { $caught = $true; $caughtType = $_.Exception.GetType().Name }
+    $observation = @{caught=$caught; confirmed=$script:processCompletionConfirmed;
+        marker_present=(Test-Path -LiteralPath $Marker); caught_type=$caughtType;
+        reason=$script:processCompletionReason; waiter=$script:processWaitObservation;
+        payload=$script:processCompletionPayload}
     if ($ExpectTimeout) {
         if (-not $caught -or $script:processCompletionConfirmed -or
-            (Test-Path -LiteralPath $Marker)) {
+            (Test-Path -LiteralPath $Marker) -or -not $script:processWaitObservation.admitted -or
+            $script:processWaitObservation.job_drained) {
+            [Console]::Error.WriteLine('owned_tree_observation=' + ($observation | ConvertTo-Json -Depth 4 -Compress))
             throw 'Timed-out descendant tree was marked complete.'
         }
     } else {
         if ($caught -or -not $script:processCompletionConfirmed -or
-            -not (Test-Path -LiteralPath $Marker)) {
+            -not (Test-Path -LiteralPath $Marker) -or -not $script:processWaitObservation.admitted -or
+            -not $script:processWaitObservation.job_drained) {
+            [Console]::Error.WriteLine('owned_tree_observation=' + ($observation | ConvertTo-Json -Depth 4 -Compress))
             throw 'Initial process exit was mistaken for descendant completion.'
         }
 }
@@ -91,6 +111,7 @@ try {
     if ($script:ownedWaiter -and -not $script:ownedWaiter.WaitForExit(15000)) {
         throw 'Owned toy waiter did not finish.'
 }
+    if ($script:ownedWaiter) { $script:ownedWaiter.Dispose() }
 }
 @{shell=$PSVersionTable.PSVersion.ToString(); timeout=[bool]$ExpectTimeout;
   completion=$script:processCompletionConfirmed; descendant_finished=(Test-Path -LiteralPath $Marker)} |
@@ -154,6 +175,10 @@ $Label = 'pure completion matrix'
 $testPath = $PSScriptRoot
 $passed = 0
 foreach ($case in $cases) {
+    # The extracted suffix executes after admitted kernel drain in production.
+    # Supply only its original-deadline context, without bypassing any numeric
+    # identity/range/type assertion under test.
+    $clock=[Diagnostics.Stopwatch]::StartNew(); $TimeoutMilliseconds=15000
     $completion = ('{"id":"expected","completed":true,"exit_code":' + $case.json + '}') |
         ConvertFrom-Json
     $script:processCompletionConfirmed = $false
@@ -313,6 +338,36 @@ foreach ($case in $cases) {
         self.assertEqual(self.module.validate_test_selection(
             self.root, development=True, quick=True, test_targets=["tests/test_sample.py::test_ok"]),
             {"scope": "targeted", "test_targets": ["tests/test_sample.py::test_ok"]})
+
+    def test_ui_only_quick_reserves_and_records_combined_selection(self):
+        commit = self.make_git_source()
+        target = self.root / 'frontend/tests/candidate.test.tsx'
+        target.parent.mkdir(parents=True)
+        target.write_text('// selected UI contract', encoding='utf-8')
+        options = dict(quick=True, desktop_stack=True,
+                       frontend_test_targets=['tests/candidate.test.tsx'])
+        layout = self.module.prepare_development_build(self.root, **options)
+        # Electron creates its shell directories before the service performs
+        # its own strict profile check. Every such child must inherit the
+        # actual private Windows DACL, not Node's unsupported mode0700 hint.
+        from atom_search.runtime import _windows
+        self.assertTrue(layout['qa'].is_dir())
+        _windows.assert_private(layout['qa'])
+        profile = layout['qa'] / 'UI profile Кириллица with spaces'
+        profile.mkdir()
+        capture = layout['qa'] / 'private-native.stdout'
+        capture.write_bytes(b'private QA fixture')
+        _windows.assert_private(profile)
+        _windows.assert_private(capture)
+        receipt = self.module.write_test_receipt(self.root, commit, exit_code=0, **options)
+        data = json.loads(receipt.read_text(encoding='utf-8'))
+        self.assertEqual(data['test_targets'], [])
+        self.assertEqual(data['frontend_test_targets'], ['tests/candidate.test.tsx'])
+        self.assertEqual(data['desktop_test_targets'], [])
+        self.assertEqual(data['scope'], 'targeted')
+        self.assertFalse(data['full_suite_passed'])
+        with self.assertRaises(self.module.BuildError):
+            self.module.write_test_receipt(self.root, commit, exit_code=1, **options)
 
     def test_embedded_identity_is_generated_from_clean_source_and_rejects_dirty_source(self):
         commit = self.make_git_source()
@@ -887,6 +942,91 @@ foreach ($name in $before.Keys) {
 
     def test_complete_onedir_layout_is_accepted(self):
         self.module.validate_bundle(self.make_bundle())
+
+    def test_service_only_bundle_requires_service_executable_and_excludes_qt(self):
+        bundle = self.make_bundle()
+        (bundle / 'ssearch.exe').rename(bundle / 'ssearch-service.exe')
+        shutil.rmtree(bundle / '_internal/PySide6')
+        notice = bundle / '_internal/resources/licenses/dependencies/shiboken6/LICENSE.txt'
+        notice.parent.mkdir(parents=True)
+        notice.write_text('Retained third-party notice')
+        self.module.validate_bundle(bundle, service_only=True)
+        leaked = bundle / '_internal/PySide6/Qt6Core.dll'
+        leaked.parent.mkdir()
+        leaked.write_bytes(b'GUI toolkit is not a service dependency')
+        with self.assertRaisesRegex(self.module.BuildError, 'GUI'):
+            self.module.validate_bundle(bundle, service_only=True)
+
+    def test_service_only_bundle_keeps_driver_model_and_private_data_guards(self):
+        bundle = self.make_bundle()
+        (bundle / 'ssearch.exe').rename(bundle / 'ssearch-service.exe')
+        shutil.rmtree(bundle / '_internal/PySide6')
+        driver = bundle / '_internal/psycopg_binary/pq.cp312-win_amd64.pyd'
+        original = driver.read_bytes()
+        driver.unlink()
+        with self.assertRaises(self.module.BuildError):
+            self.module.validate_bundle(bundle, service_only=True)
+        driver.write_bytes(original)
+        shutil.copy(bundle / '_internal/models/model_quantized.onnx', bundle)
+        with self.assertRaisesRegex(self.module.BuildError, 'model_quantized.onnx'):
+            self.module.validate_bundle(bundle, service_only=True)
+        (bundle / 'model_quantized.onnx').unlink()
+        (bundle / 'owner.json').write_text('{}')
+        with self.assertRaises(self.module.BuildError):
+            self.module.validate_bundle(bundle, service_only=True)
+
+    def test_combined_desktop_payload_binds_identity_and_has_one_model_copy(self):
+        original = self.make_bundle()
+        bundle = self.root / 'dist/desktop'
+        shutil.copytree(original, bundle / 'service')
+        (bundle / 'service/ssearch.exe').rename(bundle / 'service/ssearch-service.exe')
+        shutil.rmtree(bundle / 'service/_internal/PySide6')
+        for relative in ('ssearch.exe', 'resources/app.asar', 'LICENSE',
+                         'LICENSES.chromium.html', 'locales/en-US.pak'):
+            target = bundle / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b'local Electron fixture')
+        metadata = dict(schema_version=1, source_commit='a' * 40, app_version='0.1.0', core_version='0.1.1',
+                        product=dict(product_name='ssearch', product_name_ru='Simple Search',
+                                     support_email='author@example.invalid', author_name='Author',
+                                     author_title='developer', organization_group='upstream', copyright_holder='Author'))
+        target = bundle / 'resources/product-metadata.json'
+        target.write_text(json.dumps(metadata), encoding='utf-8')
+        options = dict(source_commit='a' * 40, app_version='0.1.0', core_version='0.1.1')
+        inventory = self.module.validate_desktop_bundle(bundle, **options)
+        assert inventory['ssearch.exe']['sha256'] == hashlib.sha256(b'local Electron fixture').hexdigest()
+        assert 'service/ssearch-service.exe' in inventory
+        inventory_path = self.root / 'payload-inventory.json'
+        document = dict(schema_version=1, **options, files=inventory, inventory_only=True)
+        inventory_path.write_text(json.dumps(document), encoding='utf-8')
+        self.module.verify_desktop_inventory(bundle, inventory_path, **options)
+        document['files']['ssearch.exe']['sha256'] = '0' * 64
+        inventory_path.write_text(json.dumps(document), encoding='utf-8')
+        with self.assertRaisesRegex(self.module.BuildError, 'inventory'):
+            self.module.verify_desktop_inventory(bundle, inventory_path, **options)
+        metadata['source_commit'] = 'b' * 40
+        target.write_text(json.dumps(metadata), encoding='utf-8')
+        with self.assertRaises(self.module.BuildError):
+            self.module.validate_desktop_bundle(bundle, **options)
+        metadata['source_commit'] = 'a' * 40
+        target.write_text(json.dumps(metadata), encoding='utf-8')
+        shutil.copy(bundle / 'service/_internal/models/model_quantized.onnx', bundle)
+        with self.assertRaisesRegex(self.module.BuildError, 'model_quantized.onnx'):
+            self.module.validate_desktop_bundle(bundle, **options)
+
+    def test_combined_payload_rejects_other_reparse_tags_before_traversal(self):
+        from types import SimpleNamespace
+        original_lstat = Path.lstat
+        def reparse_metadata(path):
+            details = original_lstat(path)
+            if path == self.root:
+                return SimpleNamespace(st_mode=details.st_mode, st_file_attributes=0x400)
+            return details
+        with patch.object(Path, 'lstat', reparse_metadata), \
+                patch.object(Path, 'iterdir', side_effect=AssertionError('must not traverse reparse entry')):
+            with self.assertRaisesRegex(self.module.BuildError, 'reparse'):
+                self.module.validate_desktop_bundle(self.root, source_commit='a' * 40,
+                                                    app_version='0.1.0', core_version='0.1.1')
 
     def test_packaged_runtime_is_complete_without_user_database_or_credentials(self):
         bundle = self.make_bundle()
