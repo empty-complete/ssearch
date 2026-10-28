@@ -22,6 +22,15 @@ for ($entry = Get-Item -LiteralPath $repository; $null -ne $entry; $entry = $ent
     if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'CI_WORKSPACE_REPARSE' }
 }
 
+function Test-InstallerPublicLine {
+    param([string]$Line)
+    return ($Line -cmatch '^CI_INSTALLER_PHASE (fresh_install|ui_security|ui_load|ui_lifecycle|ui_empty_profile|ordinary_serve|service_owner|application|pg_seed|reinstall|uninstall|post_uninstall_app|post_uninstall_pg) (started|pass|fail)$' -or
+        $Line -cmatch '^CI_INSTALLER_FRESH (policy|install_process|registration|inno_records|inventory|shortcuts|reference_copy|reference_inventory) (started|pass|fail)$' -or
+        $Line -cmatch '^CI_INSTALLER_FAILURE substep=(policy|install_process|registration|inno_records|inventory|shortcuts|reference_copy|reference_inventory) hresult=-?[0-9]{1,10} wait_reason=(preparing_waiter|waiting|capture_limit|waiter_timeout|reading_waiter_exit|checking_completion_file|waiter_exit_unavailable|waiter_exit_nonzero|completion_missing|reading_completion|completion_payload_invalid|child_exit_nonzero|complete|unavailable) exit_integer=(true|false) exit_zero=(true|false)$' -or
+        $Line -cmatch '^CI_INSTALLER_INVENTORY files=[0-9]{1,6} desktop_match=(true|false) service_match=(true|false) inventory_match=(true|false|unavailable)$' -or
+        $Line -cmatch '^CI_INSTALLER_HELPER code=(installer_inventory_boundary|installer_inno_inventory_invalid|installer_non_file|installer_duplicate_file|installer_inno_identity_changed|installer_inno_file_missing|installer_payload_image_mismatch|installer_inventory_mismatch|installer_reparse_refused|installer_report_unavailable|installer_object_required|unavailable)$')
+}
+
 function Invoke-CiChild {
     if ($ExpectedSid -notmatch '^S-1-5-21-\d+-\d+-\d+-\d+$' -or
         [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($RunDirectory)) -ine (Join-Path $repository '.local') -or
@@ -426,7 +435,7 @@ exit $LASTEXITCODE
     while (-not $process.WaitForExit(1000)) {
         foreach ($reader in $readers) { while (-not $reader.EndOfStream) {
             $line=$reader.ReadLine()
-            if ($env:BUILD_MODE -ne 'installer' -or $line -cmatch '^CI_INSTALLER_PHASE (fresh_install|ui_security|ui_load|ui_lifecycle|ui_empty_profile|ordinary_serve|service_owner|application|pg_seed|reinstall|uninstall|post_uninstall_app|post_uninstall_pg) (started|pass|fail)$') { Write-Host $line }
+            if ($env:BUILD_MODE -ne 'installer' -or (Test-InstallerPublicLine $line)) { Write-Host $line }
         } }
         if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
             $exitCode = 124
@@ -436,7 +445,7 @@ exit $LASTEXITCODE
     $childStopped = $true
     foreach ($reader in $readers) { while (-not $reader.EndOfStream) {
         $line=$reader.ReadLine()
-        if ($env:BUILD_MODE -ne 'installer' -or $line -cmatch '^CI_INSTALLER_PHASE (fresh_install|ui_security|ui_load|ui_lifecycle|ui_empty_profile|ordinary_serve|service_owner|application|pg_seed|reinstall|uninstall|post_uninstall_app|post_uninstall_pg) (started|pass|fail)$') { Write-Host $line }
+        if ($env:BUILD_MODE -ne 'installer' -or (Test-InstallerPublicLine $line)) { Write-Host $line }
     } }
     $exitCode = $process.ExitCode
     $process.Dispose()

@@ -3,7 +3,9 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
+import sys
 
 import pytest
 
@@ -357,3 +359,85 @@ def test_uncertain_cleanup_or_identity_never_produces_success_receipt(controller
     receipt = controller.sanitize_installation_receipt(raw, pins=pins, harness_commit=HARNESS,
                                                       exit_code=1 if fault == 'nonzero' else 0)
     assert receipt['ok'] is False
+
+
+@pytest.mark.parametrize('fault', ['desktop', 'service', 'extra', 'malformed'])
+def test_inventory_cli_failure_exposes_only_fixed_predicates(tmp_path, fault):
+    payload, manifest, owned, _, _ = inventory_fixture(tmp_path)
+    if fault in ('desktop', 'service'):
+        relative = 'ssearch.exe' if fault == 'desktop' else 'service/ssearch-service.exe'
+        (payload / relative).write_bytes(b'PRIVATE_SENTINEL')
+    elif fault == 'extra':
+        (payload / 'PRIVATE_SENTINEL').write_bytes(b'PRIVATE_SENTINEL')
+    manifest_path = tmp_path / 'manifest.json'
+    manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+    owned_path = tmp_path / 'owned.json'
+    owned_path.write_text('{PRIVATE_SENTINEL' if fault == 'malformed' else json.dumps(owned), encoding='utf-8')
+    result = subprocess.run([sys.executable, str(ROOT / 'tools/ci_installer.py'), 'inventory',
+        '--directory', str(payload), '--manifest', str(manifest_path), '--owned', str(owned_path),
+        '--output', str(tmp_path / 'observed.json')], capture_output=True, timeout=30)
+    assert result.returncode == 1, 'Inventory diagnostic must retain the original failure'
+    output = result.stdout.decode('ascii')
+    private_absent = all(value not in output for value in ('PRIVATE_SENTINEL', str(tmp_path), 'Traceback'))
+    assert private_absent, 'Inventory diagnostic disclosed private data'
+    lines = output.splitlines()
+    code = ('installer_payload_image_mismatch' if fault in ('desktop', 'service') else
+            'installer_inventory_mismatch' if fault == 'extra' else 'unavailable')
+    valid_code = bool(lines) and lines[-1] == 'CI_INSTALLER_HELPER code=' + code
+    assert valid_code, 'Inventory failure did not produce its closed machine code'
+    if fault == 'malformed':
+        assert len(lines) == 1, 'Malformed input must not export partial private evidence'
+    else:
+        desktop = 'false' if fault == 'desktop' else 'true'
+        service = 'false' if fault == 'service' else 'true'
+        inventory = 'false' if fault == 'extra' else 'unavailable'
+        valid_observation = len(lines) == 2 and re.fullmatch(
+            f'CI_INSTALLER_INVENTORY files={4 if fault == "extra" else 3} desktop_match={desktop} '
+            f'service_match={service} inventory_match={inventory}', lines[0]) is not None
+        assert valid_observation, 'Inventory observation must contain only bounded count and match flags'
+    clean_stderr = result.stderr in (b'INSTALLER_PROOF_FAILED\n', b'INSTALLER_PROOF_FAILED\r\n')
+    assert clean_stderr, 'Inventory stderr must contain only the fixed failure code'
+
+
+def test_installer_parent_output_filter_rejects_private_and_unknown_lines(tmp_path):
+    inputs = [
+        ('CI_INSTALLER_PHASE fresh_install fail', True),
+        ('CI_INSTALLER_FRESH inventory started', True),
+        ('CI_INSTALLER_FRESH reference_inventory pass', True),
+        ('CI_INSTALLER_FAILURE substep=inventory hresult=-2146233087 wait_reason=complete exit_integer=true exit_zero=true', True),
+        ('CI_INSTALLER_INVENTORY files=5001 desktop_match=true service_match=true inventory_match=false', True),
+        ('CI_INSTALLER_HELPER code=installer_inventory_mismatch', True),
+        ('CI_INSTALLER_HELPER code=unavailable', True),
+        ('PRIVATE_SENTINEL', False),
+        ('CI_INSTALLER_FRESH PRIVATE_SENTINEL fail', False),
+        ('CI_INSTALLER_HELPER code=PRIVATE_SENTINEL', False),
+        ('CI_INSTALLER_HELPER code=installer_inventory_mismatch PRIVATE_SENTINEL', False),
+        ('CI_INSTALLER_FAILURE substep=inventory hresult=PRIVATE_SENTINEL wait_reason=complete exit_integer=true exit_zero=true', False),
+        ('CI_INSTALLER_FAILURE substep=inventory hresult=1 wait_reason=PRIVATE_SENTINEL exit_integer=true exit_zero=true', False),
+        ('CI_INSTALLER_INVENTORY files=1234567 desktop_match=true service_match=true inventory_match=false', False),
+        ('CI_INSTALLER_INVENTORY files=5 desktop_match=PRIVATE_SENTINEL service_match=true inventory_match=false', False),
+        ('CI_INSTALLER_PHASE fresh_install pass\nPRIVATE_SENTINEL', False),
+    ]
+    data = tmp_path / 'inputs.json'
+    data.write_text(json.dumps([line for line, _ in inputs]), encoding='utf-8')
+    script = tmp_path / 'filter.ps1'
+    script.write_text(r'''
+param($Source,$InputFile)
+$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($Source,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'filter_syntax_invalid'}
+$fn=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -ceq 'Test-InstallerPublicLine'},$true)
+. ([scriptblock]::Create($fn.Extent.Text))
+$values=Get-Content -LiteralPath $InputFile -Raw -Encoding UTF8 | ConvertFrom-Json
+@(foreach($value in $values) {[bool](Test-InstallerPublicLine $value)}) | ConvertTo-Json -Compress
+''', encoding='utf-8-sig')
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(script),
+        str(ROOT / 'tools/run_ci_build.ps1'), str(data)], capture_output=True, timeout=30)
+    assert result.returncode == 0, 'Actual parent output policy probe failed'
+    try:
+        observed = json.loads(result.stdout)
+    except (ValueError, UnicodeError):
+        pytest.fail('parent_output_policy_result_invalid', pytrace=False)
+    assert observed == [expected for _, expected in inputs]

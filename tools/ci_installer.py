@@ -23,6 +23,10 @@ CHECKS = ('fresh_install_verified', 'same_version_reinstall_verified', 'owned_un
     'installed_proofs_passed', 'runtime_cleanup_confirmed', 'process_completion_confirmed',
     'registered_installation_removed', 'owned_shortcuts_removed', 'standard_user_profile_verified', 'parent_job_drained')
 OPEN_GATES = ['qt_upgrade', 'native_windows_11', 'windows_10', 'full_p4_acceptance']
+INVENTORY_CODES = frozenset(('installer_inventory_boundary', 'installer_inno_inventory_invalid',
+    'installer_non_file', 'installer_duplicate_file', 'installer_inno_identity_changed',
+    'installer_inno_file_missing', 'installer_payload_image_mismatch', 'installer_inventory_mismatch',
+    'installer_reparse_refused', 'installer_report_unavailable', 'installer_object_required'))
 
 
 def require(value, code):
@@ -85,7 +89,7 @@ def validate_application_preservation(first, restored):
              'model_manifest_digest', 'index_fingerprint')), 'installer_application_not_preserved')
 
 
-def verify_installed_payload(payload, manifest, *, owned_inno_files, inventory_output):
+def verify_installed_payload(payload, manifest, *, owned_inno_files, inventory_output, diagnostic=False):
     no_links(payload)
     no_links(inventory_output)
     require(not inventory_output.exists() and payload.is_dir(), 'installer_inventory_boundary')
@@ -109,14 +113,21 @@ def verify_installed_payload(payload, manifest, *, owned_inno_files, inventory_o
             files[name] = record
     require(all(name.casefold() in folded for name in owned_inno_files), 'installer_inno_file_missing')
     files = dict(sorted(files.items()))
-    require(manifest.get('payload_kind') == 'electron-service'
-        and files.get('ssearch.exe') == {key: manifest['executable'][key] for key in ('size', 'sha256')}
-        and files.get('service/ssearch-service.exe') == {key: manifest['service_executable'][key] for key in ('size', 'sha256')},
-        'installer_payload_image_mismatch')
+    desktop_match = files.get('ssearch.exe') == {key: manifest['executable'][key] for key in ('size', 'sha256')}
+    service_match = files.get('service/ssearch-service.exe') == {key: manifest['service_executable'][key] for key in ('size', 'sha256')}
+    images_match = manifest.get('payload_kind') == 'electron-service' and desktop_match and service_match
+    if diagnostic and not images_match:
+        print(f'CI_INSTALLER_INVENTORY files={min(len(files), 999999)} desktop_match={str(desktop_match).lower()} '
+              f'service_match={str(service_match).lower()} inventory_match=unavailable', flush=True)
+    require(images_match, 'installer_payload_image_mismatch')
     # Preserve the original Windows json.dump text writer, including CRLF.
     write_json(inventory_output, dict(schema_version=1, source_commit=manifest['source_commit'],
         app_version=manifest['app_version'], core_version=manifest['core_version'], files=files, inventory_only=True))
-    require(digest(inventory_output) == manifest['desktop']['inventory_sha256'], 'installer_inventory_mismatch')
+    inventory_match = digest(inventory_output) == manifest['desktop']['inventory_sha256']
+    if diagnostic:
+        print(f'CI_INSTALLER_INVENTORY files={min(len(files), 999999)} desktop_match={str(desktop_match).lower()} '
+              f'service_match={str(service_match).lower()} inventory_match={str(inventory_match).lower()}', flush=True)
+    require(inventory_match, 'installer_inventory_mismatch')
     return files
 
 
@@ -287,7 +298,7 @@ def main(argv=None):
             _windows.private_directory(args.directory)
         elif args.command == 'inventory':
             verify_installed_payload(args.directory, read_json(args.manifest),
-                owned_inno_files=read_json(args.owned), inventory_output=args.output)
+                owned_inno_files=read_json(args.owned), inventory_output=args.output, diagnostic=True)
             # The published digest binds every file; also retain the existing
             # full desktop/service closure and offline resource checks.
             manifest = read_json(args.manifest)
@@ -356,7 +367,12 @@ def main(argv=None):
             write_json(args.output, receipt)
             return 0 if receipt['ok'] else 1
         return 0
-    except BaseException:
+    except BaseException as error:
+        # Match only our own closed machine codes; unknown error arguments and
+        # exception types/messages never cross the private-output boundary.
+        code = error.args[0] if type(error) is ValueError and len(error.args) == 1 else None
+        code = code if type(code) is str and code in INVENTORY_CODES else 'unavailable'
+        print('CI_INSTALLER_HELPER code=' + code, flush=True)
         print('INSTALLER_PROOF_FAILED', file=sys.stderr)
         return 1
 

@@ -422,6 +422,12 @@ function Assert-ShortcutTargets {
 function Invoke-InstallerHelper {
     param([string[]]$Arguments)
     $value = & $Python (Join-Path $repository 'tools/ci_installer.py') @Arguments
+    foreach ($line in @($value)) {
+        if ($line -cmatch '^CI_INSTALLER_INVENTORY files=[0-9]{1,6} desktop_match=(true|false) service_match=(true|false) inventory_match=(true|false|unavailable)$' -or
+            $line -cmatch '^CI_INSTALLER_HELPER code=(installer_inventory_boundary|installer_inno_inventory_invalid|installer_non_file|installer_duplicate_file|installer_inno_identity_changed|installer_inno_file_missing|installer_payload_image_mismatch|installer_inventory_mismatch|installer_reparse_refused|installer_report_unavailable|installer_object_required|unavailable)$') {
+            Write-Host $line
+        }
+    }
     if ($LASTEXITCODE -ne 0) { throw 'INSTALLER_CONTRACT_FAILED' }
     return $value
 }
@@ -552,16 +558,33 @@ if ($Electron) {
         postgres_seed=$null; error_code=$null}
     $ownedInno=$null; $shortcutRecords=@(); $uninstalled=$false; $failed=$false
     $phase='fresh_install'
+    $freshStep='policy'
     Write-Host "CI_INSTALLER_PHASE $phase started"
     try {
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
         $uiPolicy=(Invoke-InstallerHelper @('ui-policy')) | ConvertFrom-Json
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
         $installArguments=@('/VERYSILENT','/SUPPRESSMSGBOXES','/CURRENTUSER','/NORESTART','/SP-',
             '/NOCLOSEAPPLICATIONS','/NORESTARTAPPLICATIONS','/MERGETASKS=!desktopicon',
             ('/DIR=' + $appPath),('/GROUP=' + $groupName))
+        $freshStep='install_process'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
         Start-HiddenAndWait $installerPath ($installArguments + @('/LOG=' + (Join-Path $testPath 'fresh.log'))) 'Fresh install' 600000
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='registration'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
         Assert-OwnedInstallation
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='inno_records'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
         $ownedInno=Get-OwnedInnoFiles
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='inventory'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
         Assert-ElectronInventory 'fresh'
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='shortcuts'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
         Assert-ShortcutTargets
         $links=@(Get-ChildItem -LiteralPath $groupPath -Force)
         if ($links.Count -ne 3) { throw 'INSTALLER_SHORTCUT_INVENTORY' }
@@ -570,6 +593,9 @@ if ($Electron) {
             @{path=$link.FullName;sha256=(Get-FileHash -LiteralPath $link.FullName -Algorithm SHA256).Hash}
         })
         $checks.fresh_install_verified=$true
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='reference_copy'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
         # Copy only the verified first installed closure; no dist/source fallback.
         $inventory=Get-Content -LiteralPath (Join-Path $testPath 'fresh-inventory.json') -Raw | ConvertFrom-Json
         $null=New-Item -ItemType Directory -Path $referencePath
@@ -578,7 +604,11 @@ if ($Electron) {
             $null=New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force
             Copy-Item -LiteralPath (Join-Path $appPath $record.Name) -Destination $target
         }
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
+        $freshStep='reference_inventory'
+        Write-Host "CI_INSTALLER_FRESH $freshStep started"
         Assert-ElectronInventory 'reference-first' -Reference
+        Write-Host "CI_INSTALLER_FRESH $freshStep pass"
         Write-Host "CI_INSTALLER_PHASE $phase pass"
         foreach ($scenario in @('security','load','lifecycle','empty-profile')) {
             $phase='ui_' + $scenario.Replace('-','_')
@@ -670,6 +700,20 @@ if ($Electron) {
             'postgres_restart_verified','installed_proofs_passed','registered_installation_removed','owned_shortcuts_removed')) { $checks[$name]=$true }
         $summary.ok=$true
     } catch {
+        if ($phase -ceq 'fresh_install') {
+            # Capture the failed operation before cleanup can replace the last
+            # retained waiter's completion observation with a successful one.
+            $hresult=[int]$_.Exception.HResult
+            $waitReason=Get-Variable -Name processCompletionReason -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+            if ($waitReason -cnotin @('preparing_waiter','waiting','capture_limit','waiter_timeout',
+                'reading_waiter_exit','checking_completion_file','waiter_exit_unavailable','waiter_exit_nonzero',
+                'completion_missing','reading_completion','completion_payload_invalid','child_exit_nonzero','complete')) { $waitReason='unavailable' }
+            $payload=Get-Variable -Name processCompletionPayload -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+            $integer=($null -ne $payload -and $payload.exit_integer -eq $true).ToString().ToLowerInvariant()
+            $zero=($null -ne $payload -and $payload.exit_zero -eq $true).ToString().ToLowerInvariant()
+            Write-Host "CI_INSTALLER_FRESH $freshStep fail"
+            Write-Host "CI_INSTALLER_FAILURE substep=$freshStep hresult=$hresult wait_reason=$waitReason exit_integer=$integer exit_zero=$zero"
+        }
         Write-Host "CI_INSTALLER_PHASE $phase fail"
         $failed=$true
         $summary.error_code='INSTALLER_LIFECYCLE_FAILED'
