@@ -14,9 +14,9 @@ from atom_search.service.projects import project_resolution_dtos
 from .demo_memory import ReadOnlyMemoryCatalog, ReadOnlyMemoryProjection, ReadOnlyMemoryRetrieval
 
 
-# This versioned compatibility recipe was specified for manifest v2. Changing it
-# would break persisted tutorial result/project identities, so retain its URI.
-_ID_PREFIX = 'urn:atom:onboarding-demo:v2:'
+# Canonical IDs for the never-deployed v2 demo. These identities are separate
+# from the working catalogue/profile/IPC registry and require no legacy alias.
+_ID_PREFIX = 'urn:ssearch:onboarding-demo:v2:'
 
 
 def demo_id(kind):

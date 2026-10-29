@@ -479,3 +479,71 @@ def test_mapped_or_nonfixed_owned_volume_is_rejected_before_any_anchor_open(tmp_
             demo_files.open_demo_session(MANIFEST, Path('Z:/ssearch-owned-demo'), ())
     assert observed, 'drive classification must precede native mapped-anchor operations'
     assert touched == []
+
+
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows local-volume contract')
+@pytest.mark.parametrize('target', ['', r'\Device\Mup\server\share', r'\Device\LanmanRedirector\mapped', r'\??\C:\alias'])
+def test_fixed_letter_with_nonlocal_or_alias_device_is_rejected_before_native_open(tmp_path, monkeypatch, target):
+    from contextlib import contextmanager
+    from atom_search.onboarding import demo_files
+    from atom_search.onboarding import _windows_files
+
+    original_library = _windows_files.c.WinDLL
+    observed, touched = [], []
+
+    class Device:
+        def __call__(self, name, buffer, size):
+            observed.append(str(name))
+            buffer.value = target
+            return len(target) + 2 if target else 0
+
+    class Kernel:
+        def __init__(self, actual):
+            self.actual = actual
+            self.QueryDosDeviceW = Device()
+
+        def __getattr__(self, name):
+            return getattr(self.actual, name)
+
+    def library(name, *args, **kwargs):
+        actual = original_library(name, *args, **kwargs)
+        return Kernel(actual) if str(name).lower() == 'kernel32' else actual
+
+    @contextmanager
+    def no_native_open(self, parent, name, **kwargs):
+        touched.append(name)
+        pytest.fail('untrusted DOS device mapping reached native filesystem operations')
+        yield
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_windows_files.c, 'WinDLL', library)
+        patch.setattr(_windows_files.WindowsFiles, '_handle', no_native_open)
+        with pytest.raises(ValueError, match='unsafe_demo_volume'):
+            demo_files.open_demo_session(MANIFEST, tmp_path / 'owned', ())
+    assert observed
+    assert touched == []
+
+
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows local-volume contract')
+def test_native_anchor_is_pinned_local_device_instead_of_mutable_drive_letter(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    import re
+    from atom_search.onboarding import _windows_files
+
+    module = api()
+    original_handle = _windows_files.WindowsFiles._handle
+    anchors = []
+
+    @contextmanager
+    def record_anchor(self, parent, name, **kwargs):
+        if kwargs.get('anchor'):
+            anchors.append(name)
+        with original_handle(self, parent, name, **kwargs) as handle:
+            yield handle
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_windows_files.WindowsFiles, '_handle', record_anchor)
+        session = module.open_demo_session(MANIFEST, tmp_path / 'owned', ())
+        module.close_demo_session(session.session_id)
+    assert anchors
+    assert all(re.fullmatch(r'\\Device\\HarddiskVolume[0-9]+\\', anchor, re.IGNORECASE) for anchor in anchors)

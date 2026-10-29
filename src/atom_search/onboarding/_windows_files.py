@@ -12,6 +12,7 @@ from contextlib import contextmanager, ExitStack
 import ctypes as c
 from ctypes import wintypes as w
 import os
+import re
 from pathlib import Path
 
 
@@ -73,6 +74,12 @@ class WindowsFiles:
             raise RuntimeError('unsupported_demo_platform')
         self.kernel = c.WinDLL('kernel32', use_last_error=True)
         self.native = c.WinDLL('ntdll', use_last_error=True)
+        self._drive_type = self.kernel.GetDriveTypeW
+        self._drive_type.argtypes = [w.LPCWSTR]
+        self._drive_type.restype = w.UINT
+        self._dos_device = self.kernel.QueryDosDeviceW
+        self._dos_device.argtypes = [w.LPCWSTR, w.LPWSTR, w.DWORD]
+        self._dos_device.restype = w.DWORD
         self._create = self.native.NtCreateFile
         self._create.argtypes = [c.POINTER(w.HANDLE), w.ULONG, c.POINTER(_ObjectAttributes),
             c.POINTER(_IoStatus), c.c_void_p, w.ULONG, w.ULONG, w.ULONG, w.ULONG, c.c_void_p, w.ULONG]
@@ -155,16 +162,32 @@ class WindowsFiles:
         finally:
             self._close(handle.value)
 
+    def validate_local_path(self, path):
+        directory = Path(os.path.abspath(path))
+        if (not directory.drive or directory.drive.startswith('\\')
+                or len(directory.drive) != 2 or directory.drive[1] != ':'):
+            raise ValueError('unsafe_demo_volume')
+        # A letter can name SMB/DFS or a removable drive. Classify it before
+        # opening any filesystem anchor, then pin its local device name so a
+        # later DOS drive-letter remap cannot redirect a retained operation.
+        if self._drive_type(directory.anchor) != 3:  # DRIVE_FIXED
+            raise ValueError('unsafe_demo_volume')
+        device = c.create_unicode_buffer(32768)
+        if (not self._dos_device(directory.drive, device, len(device))
+                or re.fullmatch(r'\\Device\\HarddiskVolume[0-9]+', device.value, re.IGNORECASE) is None):
+            raise ValueError('unsafe_demo_volume')
+        # Reject redirectors, MUP, SUBST aliases and unknown devices. Native
+        # children are relative to this physical local root, never the letter.
+        return device.value + '\\'
+
     @contextmanager
     def _parents(self, directory, *, receipts=None, create=False, owned_root=None, delete_last=False):
         directory = Path(os.path.abspath(directory))
-        if (not directory.drive or directory.drive.startswith('\\\\')
-                or len(directory.drive) != 2 or directory.drive[1] != ':'):
-            raise ValueError('unsafe_demo_path')
+        local_anchor = self.validate_local_path(directory)
         with ExitStack() as stack:
-            # The sole absolute Native name is the local volume root. Every
+            # The sole absolute Native name is the pinned local device root. Every
             # subsequent lookup is one component relative to a retained parent.
-            parent = stack.enter_context(self._handle(None, '\\??\\' + directory.anchor,
+            parent = stack.enter_context(self._handle(None, local_anchor,
                                                      directory=True, anchor=True))
             current = Path(directory.anchor)
             for index, part in enumerate(directory.parts[1:], 1):

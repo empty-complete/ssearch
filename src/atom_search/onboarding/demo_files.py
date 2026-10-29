@@ -160,10 +160,10 @@ def open_demo_session(manifest_path: Path, owned_base: Path, capabilities: tuple
         raise ValueError('invalid_demo_capabilities')
     backend = _backend()
     manifest_path = Path(os.path.abspath(manifest_path))
-    manifest, files = _manifest(manifest_path)
     owned_base = Path(os.path.abspath(owned_base))
-    if str(owned_base).startswith(('\\\\', '//')):
-        raise ValueError('unsafe_demo_path')
+    # Reject mapped/network/nonfixed staging before even reading the dataset.
+    backend.validate_local_path(owned_base)
+    manifest, files = _manifest(manifest_path)
     session_id = str(uuid.uuid4())
     root = owned_base / ('v2-' + session_id)
     owned = _OwnedSession(root)

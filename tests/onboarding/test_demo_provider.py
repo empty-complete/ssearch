@@ -14,7 +14,7 @@ from atom_search.service.contracts import ResultMetadata, SearchRequest, SearchR
 
 MANIFEST = Path(__file__).resolve().parents[2] / 'examples/onboarding-demo/manifest.json'
 MANIFEST_DATA = json.loads(MANIFEST.read_text(encoding='utf-8'))
-SOURCE_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, 'urn:atom:onboarding-demo:v2:source'))
+SOURCE_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, 'urn:ssearch:onboarding-demo:v2:source'))
 
 
 def api():
@@ -80,7 +80,7 @@ def test_demo_scope_and_ids_are_public_dto(session):
         assert isinstance(row, ResultMetadata)
         assert row.source_id == SOURCE_ID
         assert str(uuid.UUID(row.result_id)) == row.result_id
-        expected = uuid.uuid5(uuid.NAMESPACE_URL, 'urn:atom:onboarding-demo:v2:file:' + row.relative_path)
+        expected = uuid.uuid5(uuid.NAMESPACE_URL, 'urn:ssearch:onboarding-demo:v2:file:' + row.relative_path)
         assert row.result_id == str(expected)
         fetched = session.provider.fetch(row.result_id)
         for field in ('result_id', 'source_id', 'name', 'relative_path', 'full_path', 'size', 'modified_ns', 'stale'):
@@ -104,7 +104,7 @@ def test_demo_project_pipeline_includes_short_branch_and_explains_ambiguity(tmp_
     opened = module.open_demo_session(MANIFEST, tmp_path / 'demo-cache', ('project_search', 'project_aliases', 'unknown'))
     try:
         assert set(opened.capabilities) == {'project_search', 'project_aliases'}
-        project = str(uuid.uuid5(uuid.NAMESPACE_URL, 'urn:atom:onboarding-demo:v2:project:perm-motors'))
+        project = str(uuid.uuid5(uuid.NAMESPACE_URL, 'urn:ssearch:onboarding-demo:v2:project:perm-motors'))
         for lesson_id in ('future_full_project_to_short_branch', 'future_scoped_project_alias'):
             lesson = next(item for item in MANIFEST_DATA['lessons'] if item['id'] == lesson_id)
             selected = project if lesson_id == 'future_scoped_project_alias' else None
