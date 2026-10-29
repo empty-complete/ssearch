@@ -190,9 +190,9 @@ def test_corrupt_replay_state_fails_closed(tmp_path, key, corruption):
 
 
 def test_concurrent_accept_never_loses_high_water(tmp_path, key):
+    checker = verifier(tmp_path, key)
     def accept(sequence):
         try:
-            checker = verifier(tmp_path, key)
             verify(checker, key.envelope(encode(payload() | {'sequence': sequence})))
             return sequence
         except api('contracts').UpdateError as error:
@@ -322,3 +322,89 @@ def test_empty_production_trust_store_never_uses_test_key(tmp_path, key):
     checker = api('manifest').ManifestVerifier(trust, api('trust').ReplayLedger(tmp_path / 'replay.json'))
     with pytest.raises(api('contracts').UpdateError, match='update_key'):
         verify(checker, key.envelope(encode(payload())))
+
+
+@pytest.mark.parametrize('field,limit', [('size', 4194304), ('entry_count', 20000),
+                                       ('unpacked_bytes', 34359738368)])
+def test_inventory_reference_exact_limit_and_one_extra(tmp_path, key, field, limit):
+    data = payload()
+    data['artifacts'][0]['inventory'][field] = limit
+    checker = verifier(tmp_path, key)
+    assert verify(checker, key.envelope(encode(data))).sequence == 10
+    data['sequence'] = 11
+    data['artifacts'][0]['inventory'][field] = limit + 1
+    rejected(checker, key, data, 'update_limit')
+
+
+def test_single_and_total_artifact_sizes_exact_limits_and_one_extra(tmp_path, key):
+    data = payload()
+    data['artifacts'][0]['size'] = 4294967296
+    checker = verifier(tmp_path, key)
+    assert verify(checker, key.envelope(encode(data))).artifacts[0].size == 4294967296
+    second = dict(id='extension', relative_path='payload/extension.bin', size=4294967296,
+                  sha256='f' * 64, kind='extension', format='file', inventory=None)
+    data['sequence'] = 11
+    data['artifacts'].append(second)
+    assert sum(item.size for item in verify(checker, key.envelope(encode(data))).artifacts) == 8589934592
+    data['sequence'] = 12
+    data['artifacts'].append(second | dict(id='extra', relative_path='extra.bin', size=1))
+    rejected(checker, key, data, 'update_limit')
+    data['artifacts'] = [data['artifacts'][0] | dict(size=4294967297)]
+    rejected(checker, key, data, 'update_limit')
+
+
+def test_path_and_clock_skew_exact_limits_and_one_extra(tmp_path, key):
+    data = payload()
+    data['artifacts'][0]['relative_path'] = '/'.join(['a' * 200, 'b' * 200, 'c' * 106 + '.zip'])
+    assert len(data['artifacts'][0]['relative_path']) == 512
+    data['issued_at'] = '2026-10-29T12:05:00Z'
+    checker = verifier(tmp_path, key)
+    assert verify(checker, key.envelope(encode(data))).sequence == 10
+    too_long = deepcopy(data)
+    too_long['sequence'] = 11
+    too_long['artifacts'][0]['relative_path'] += 'x'
+    rejected(checker, key, too_long, 'update_limit')
+    too_late = data | dict(sequence=11, issued_at='2026-10-29T12:05:01Z')
+    rejected(checker, key, too_late, 'update_time')
+
+
+def test_total_unpacked_size_exact_limit_and_one_extra(tmp_path, key):
+    data = payload()
+    data['artifacts'][0]['inventory']['unpacked_bytes'] = 34359738367
+    data['artifacts'].append(dict(id='extension', relative_path='extension.bin', size=1,
+                                  sha256='f' * 64, kind='extension', format='file', inventory=None))
+    checker = verifier(tmp_path, key)
+    assert verify(checker, key.envelope(encode(data))).sequence == 10
+    data['sequence'] = 11
+    data['artifacts'][1]['size'] = 2
+    rejected(checker, key, data, 'update_limit')
+
+
+@pytest.mark.parametrize('path', ['x/COM¹.txt', 'x/COM².txt', 'x/COM³.txt', 'x/LPT¹.txt',
+                                 'x/LPT².txt', 'x/LPT³.txt', './a.zip', 'a/./b.zip', 'x/..'])
+def test_windows_aliases_and_dot_segments_are_rejected(tmp_path, key, path):
+    data = payload()
+    data['artifacts'][0]['relative_path'] = path
+    rejected(verifier(tmp_path, key), key, data, 'update_manifest')
+
+
+def test_artifact_inventory_names_share_collision_namespace(tmp_path, key):
+    data = payload()
+    data['artifacts'][0]['inventory']['relative_path'] = 'PAYLOAD/APPLICATION.ZIP'
+    rejected(verifier(tmp_path, key), key, data, 'update_manifest')
+
+
+def test_failed_replay_commit_never_issues_verified_manifest(tmp_path, key, monkeypatch):
+    import os
+    checker = verifier(tmp_path, key)
+    raw = key.envelope(encode(payload()))
+    verify(checker, raw)
+    ledger = tmp_path / 'runtime/update-replay.json'
+    committed = ledger.read_bytes()
+    def fail(_):
+        raise OSError('test disk flush failure')
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'fsync', fail)
+        rejected(checker, key, payload() | {'sequence': 11}, 'update_replay')
+    assert ledger.read_bytes() == committed
+    assert verify(verifier(tmp_path, key), raw).sequence == 10
