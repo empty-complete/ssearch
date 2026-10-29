@@ -2,7 +2,6 @@
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, asdict, replace
 from datetime import datetime, timedelta, timezone
-import hashlib
 import json
 from pathlib import Path
 import socket
@@ -30,7 +29,7 @@ NOW = datetime(2026, 10, 29, 7, tzinfo=timezone.utc)
 
 def principal(*, subject='agent-a', revision=3, sources=(A,), capabilities=None):
     return AgentPrincipal(AccessContext(subject, frozenset(capabilities if capabilities is not None else
-        {'search', 'fetch', 'status', 'settings_get', 'agent_repair', 'settings_update'}), sources), revision)
+        {'search', 'fetch', 'status', 'settings_get', 'agent_repair', 'owner'}), sources), revision)
 
 
 def policy(**overrides):
@@ -71,7 +70,7 @@ def test_default_policy_denies_mutations_but_keeps_search():
     disabled = RepairPolicy()
     assert disabled.enabled is False and disabled.allowed_actions == frozenset()
     caller = principal(revision=0)
-    for action in ('retry_source_probe', 'settings_update'):
+    for action in ('retry_source_probe', 'settings_validate'):
         assert_error('access_denied', lambda: disabled.authorize(
             caller, action=action, source_id=A), 403)
     # The grant layer does not alter the existing read capability projection.
@@ -124,7 +123,7 @@ def validator_for(current):
 
 def validate(patch, *, selected_policy=None, caller=None, current=None, expected=7):
     current = current or current_settings()
-    return (selected_policy or policy()).validate_settings(patch, expected_revision=expected,
+    return (selected_policy or policy()).settings_validate(patch, expected_revision=expected,
         principal=caller or principal(), current=current, validator=validator_for(current))
 
 
@@ -163,7 +162,7 @@ def test_validate_has_no_disk_network_or_settings_side_effects(tmp_path, monkeyp
         blocked.setattr(Path, 'open', forbidden)
         blocked.setattr('builtins.open', forbidden)
         blocked.setattr(socket, 'create_connection', forbidden)
-        result = policy().validate_settings({'indexing': {'interval_seconds': 172800}},
+        result = policy().settings_validate({'indexing': {'interval_seconds': 172800}},
             expected_revision=7, principal=principal(), current=current, validator=validate_port)
     assert path.read_bytes() == before
     assert current.revision == current.settings['revision'] == 7
@@ -182,12 +181,26 @@ def test_settings_validate_requires_current_grant_and_revision_before_port():
     def forbidden(*args):
         pytest.fail('rejected request reached validation port')
     for caller in (principal(capabilities={'agent_repair'}), principal(revision=2)):
-        assert_error('access_denied', lambda: policy().validate_settings(
+        assert_error('access_denied', lambda: policy().settings_validate(
             {'indexing': {'interval_seconds': 172800}}, expected_revision=7,
             principal=caller, current=current, validator=forbidden), 403)
-    assert_error('revision_conflict', lambda: policy().validate_settings(
+    assert_error('revision_conflict', lambda: policy().settings_validate(
         {'indexing': {'interval_seconds': 172800}}, expected_revision=6,
         principal=principal(), current=current, validator=forbidden), 409)
+
+
+@pytest.mark.parametrize('sources', [(), (B,)])
+def test_global_interval_validation_requires_explicit_coverage_of_enabled_sources(sources):
+    assert_error('access_denied', lambda: validate({'indexing': {'interval_seconds': 172800}},
+        caller=principal(sources=sources)), 403)
+
+
+@pytest.mark.parametrize('limit', [NumericSettingLimit('storage.quota_bytes', 1, 99999999999),
+    NumericSettingLimit('indexing.interval_seconds', True, 604800),
+    NumericSettingLimit('indexing.interval_seconds', 1, 604800),
+    NumericSettingLimit('indexing.interval_seconds', 86400, 31536001)])
+def test_owner_numeric_limits_cannot_widen_active_schema_or_fields(limit):
+    assert_error('invalid_argument', lambda: policy(setting_limits=(limit,)))
 
 
 def test_plan_binds_uuid_source_principal_policy_revision_generation_fact_and_ttl():
@@ -240,6 +253,53 @@ def test_foreign_health_ref_or_free_text_reason_is_rejected_without_action(reaso
     planner, plan = planned()
     assert_error('invalid_argument', lambda: planner.validate_plan(plan, expected_revision=7,
         principal=principal(), health=health(), reason=reason))
+
+
+@pytest.mark.parametrize('changes', [
+    {'actions': ()},
+    {'peak_extra_bytes': 1}, {'peak_extra_bytes': False},
+    {'rollback_mode': 'automatic'}, {'code': 'SOURCE_ACCESS_DENIED'},
+    {'source_id': B},
+    {'expires_at': NOW + timedelta(seconds=601)},
+    {'idempotency_key': 'agent-chosen-key'},
+])
+def test_preflight_rejects_tampered_plan_descriptors(changes):
+    planner, plan = planned()
+    assert_error('stale_plan', lambda: planner.validate_plan(replace(plan, **changes),
+        expected_revision=7, principal=principal(), health=health(),
+        reason=AgentReason(plan.code, ('health:' + plan.health_fact_hash,))), 409)
+
+
+@pytest.mark.parametrize('changes', [
+    {'kind': 'shell'}, {'timeout_seconds': 6}, {'max_attempts': 2},
+    {'max_attempts': True}, {'reversible': True}, {'reversible': 0},
+])
+def test_preflight_rejects_tampered_action_limits(changes):
+    planner, plan = planned()
+    forged = replace(plan, actions=(replace(plan.actions[0], **changes),))
+    assert_error('stale_plan', lambda: planner.validate_plan(forged, expected_revision=7,
+        principal=principal(), health=health(),
+        reason=AgentReason(plan.code, ('health:' + plan.health_fact_hash,))), 409)
+
+
+def test_access_denied_plan_uses_only_scoped_pause_descriptor():
+    selected_policy = policy(allowed_actions=frozenset({'pause_source_job'}))
+    planner = RepairPlanner(selected_policy, clock=lambda: NOW)
+    snapshot = health()
+    source = replace(snapshot.components.sources[0], state='access_denied', error_code='source_access_denied')
+    snapshot = replace(snapshot, components=replace(snapshot.components, sources=(source,)))
+    plan = planner.plan('SOURCE_ACCESS_DENIED', source_id=A, expected_revision=7,
+        principal=principal(), health=snapshot)
+    assert [action.kind for action in plan.actions] == ['pause_source_job']
+    assert plan.source_id == A and plan.idempotency_key is None
+
+
+@pytest.mark.parametrize('code', ['DATABASE_UNAVAILABLE', 'DATABASE_PORT_CONFLICT',
+    'DB_BUSY', 'DB_CORRUPT', 'MODEL_MISSING', 'CONFIG_INVALID', 'STORAGE_LIMIT', 'JOB_STALLED'])
+def test_global_runtime_repairs_stay_unsupported_without_owner_integration(code):
+    planner = RepairPlanner(policy(), clock=lambda: NOW)
+    assert_error('unsupported_repair', lambda: planner.plan(code, source_id=None,
+        expected_revision=7, principal=principal(), health=health()))
 
 
 @pytest.mark.parametrize('source', [1, True, 'C:/private', B, None])
