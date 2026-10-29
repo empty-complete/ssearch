@@ -145,9 +145,9 @@ def test_replay_stable_ids_and_no_work_state_changes(tmp_path, monkeypatch):
     assert all((work / name).read_bytes() == content for name, content in files.items())
 
 
-@pytest.mark.parametrize('request', [SearchRequest(''), SearchRequest('a', limit=0), SearchRequest('a', mode='unknown')])
-def test_invalid_requests_fail_explicitly(session, request):
-    assert_error('invalid_request', lambda: session.provider.search(request))
+@pytest.mark.parametrize('search_request', [SearchRequest(''), SearchRequest('a', limit=0), SearchRequest('a', mode='unknown')])
+def test_invalid_requests_fail_explicitly(session, search_request):
+    assert_error('invalid_request', lambda: session.provider.search(search_request))
 
 
 def test_memory_ports_reject_writes_and_have_no_vector_channel():
