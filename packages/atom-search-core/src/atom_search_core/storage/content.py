@@ -10,8 +10,10 @@ context identity as well as the planned versions/fingerprint: a token cannot
 relabel previously admitted work. The supplied post-read stat is a host claim;
 the host still owns the real before/after read, access and process proofs.
 """
+from collections.abc import Callable
 import hashlib
 import json
+from typing import Any
 
 from ..content_models import (ChunkDraft, ChunkWrite, ContentPublishResult,
                               ContentWorkToken, ExtractionResult, ExtractionSegment)
@@ -158,7 +160,7 @@ class PostgresContent:
     by this source slice.
     """
 
-    def __init__(self, connection_factory, *, model=None):
+    def __init__(self, connection_factory: Callable[[], Any], *, model: EmbeddingModel | None = None):
         self._factory = connection_factory
         self._model = model
         if model is not None:
@@ -199,8 +201,8 @@ class PostgresContent:
             if row != (384, _INPUT_SCHEMA, model.manifest_digest):
                 raise ValueError('content_model_identity_collision')
 
-    def prepare(self, file_id, *, catalog_generation, profile, profile_generation,
-                context_revision, extractor_version, chunker_version):
+    def prepare(self, file_id: int, *, catalog_generation: int, profile: str, profile_generation: int,
+                context_revision: int, extractor_version: str, chunker_version: str) -> ContentWorkToken:
         """Stage work only against the current active source/file/configuration."""
         _integer(file_id)
         _integer(catalog_generation, minimum=0)
@@ -247,7 +249,7 @@ class PostgresContent:
             return ContentWorkToken(file_id, file[0], file[1], file[2], file[3], file[4], catalog_generation,
                                     generation, profile_generation, context_revision, extractor_version, chunker_version, profile)
 
-    def cancel_source(self, source_id):
+    def cancel_source(self, source_id: int) -> None:
         """Invalidate only this active source's desired work; retain last good data."""
         _integer(source_id)
         with self._factory() as connection:
@@ -269,7 +271,8 @@ class PostgresContent:
                 connection.execute("""UPDATE atom_search.file_content_state SET desired_generation=%s,status='cancelled'
                     WHERE file_id=%s""", (next_generation, file_id))
 
-    def publish(self, token, extraction, records, *, current_stat):
+    def publish(self, token: ContentWorkToken, extraction: ExtractionResult, records: tuple[ChunkWrite, ...], *,
+                current_stat: tuple[int, int]) -> ContentPublishResult:
         """Publish an entire generation, or leave every old row unchanged."""
         canonical, prepared = _validate_publication(token, extraction, records, self._model)
         if not isinstance(current_stat, tuple) or len(current_stat) != 2:
