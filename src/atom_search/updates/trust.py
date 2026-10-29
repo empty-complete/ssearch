@@ -144,7 +144,18 @@ class ReplayLedger:
             raise UpdateError('update_replay')
         try:
             path = _windows.reject_reparse(self.path)
-            identity = 'ssearch:update-replay:' + str(path)
+            # Guard the lexical input before resolving it: resolving first would
+            # hide a junction. Expand existing directory/file aliases before
+            # choosing the shared lock, including 8.3 names when available.
+            parent = _windows.private_directory(path.parent)
+            path = _windows.reject_reparse(parent / path.name).resolve()
+            canonical_identity = str(path)
+            # Python preserves an explicitly supplied Win32 extended prefix.
+            # Fixed local storage was checked above; normalize the lock identity
+            # while retaining the extended IO path for long-path support.
+            if canonical_identity.startswith('\\\\?\\'):
+                canonical_identity = canonical_identity[4:]
+            identity = 'ssearch:update-replay:' + canonical_identity
             with _windows.mutex(identity):
                 _windows.private_directory(path.parent)
                 _windows.reject_reparse(path)
