@@ -26,6 +26,13 @@ def file(file_id=1, source_id=10, **changes):
 
 @pytest.fixture
 def queue():
+    class Boundary:
+        def __iter__(self):
+            return iter(make_queue())
+    return Boundary()
+
+
+def make_queue():
     c = surface('atom_search.content_indexing.contracts', 'ContentScheduleState')
     s = surface('atom_search.content_indexing.scheduler', 'ContentScheduler')
     states = {}

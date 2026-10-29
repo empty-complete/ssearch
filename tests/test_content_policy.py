@@ -21,10 +21,15 @@ def surface(module, *names):
 
 @pytest.fixture
 def api():
-    contracts = surface('atom_search.content_indexing.contracts', 'ContentAccessPolicy',
-                        'ContentFileRef', 'FileReadResult')
-    access = surface('atom_search.content_indexing.access', 'ContentAccessGate', 'ContentCheckBudget')
-    return contracts, access
+    class Boundary:
+        def __iter__(self):
+            # Resolve inside the test body: absent surfaces are assertion FAILs,
+            # never missing-import collection/setup errors.
+            return iter((surface('atom_search.content_indexing.contracts', 'ContentAccessPolicy',
+                                 'ContentFileRef', 'FileReadResult'),
+                         surface('atom_search.content_indexing.access', 'ContentAccessGate',
+                                 'ContentCheckBudget')))
+    return Boundary()
 
 
 def rig(api, *, status='readable', policy=None, policy_present=True, outcome_change=None, check_delay=0):
