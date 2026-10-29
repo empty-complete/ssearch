@@ -82,7 +82,14 @@ def test_demo_scope_and_ids_are_public_dto(session):
         assert str(uuid.UUID(row.result_id)) == row.result_id
         expected = uuid.uuid5(uuid.NAMESPACE_URL, 'urn:atom:onboarding-demo:v2:file:' + row.relative_path)
         assert row.result_id == str(expected)
-        assert session.provider.fetch(row.result_id) == row
+        fetched = session.provider.fetch(row.result_id)
+        for field in ('result_id', 'source_id', 'name', 'relative_path', 'full_path', 'size', 'modified_ns', 'stale'):
+            assert getattr(fetched, field) == getattr(row, field)
+        assert fetched.score is None
+        assert fetched.match_kind == 'metadata'
+        assert fetched.matched_fields == ()
+        # P2 fetch reads catalogue metadata without query/project decoration.
+        assert fetched.project_id is None
     assert session.provider.search(SearchRequest('Пермские моторы', source_ids=())).results == ()
     row = response.results[0]
     assert_error('result_not_found', lambda: session.provider.fetch(row.result_id, source_ids=()))
@@ -140,7 +147,7 @@ def test_replay_stable_ids_and_no_work_state_changes(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('request', [SearchRequest(''), SearchRequest('a', limit=0), SearchRequest('a', mode='unknown')])
 def test_invalid_requests_fail_explicitly(session, request):
-    assert_error('invalid_search_request', lambda: session.provider.search(request))
+    assert_error('invalid_request', lambda: session.provider.search(request))
 
 
 def test_memory_ports_reject_writes_and_have_no_vector_channel():
