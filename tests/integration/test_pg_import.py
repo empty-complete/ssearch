@@ -550,6 +550,21 @@ def test_invalid_target_and_global_collision_leave_catalog_unchanged(pg_connecti
     assert rows(pg_connections, 'SELECT count(*) FROM atom_search.catalogs') == [(1,)]
     assert rows(pg_connections, 'SELECT manifest_digest FROM atom_search.embedding_models') == [('a' * 64,)]
 
+
+def test_future_pg_target_schema_is_rejected_without_partial_import(pg_connections, tmp_path):
+    assert apply_catalog_migrations(pg_connections['maintenance']) == 6
+    source = legacy(tmp_path / 'legacy-future-target.sqlite')
+    rows(pg_connections, 'INSERT INTO atom_search.schema_migrations(version) VALUES (7)')
+    tables = ('schema_migrations', 'catalogs', 'sources', 'directories', 'files', 'embedding_models',
+              'file_embeddings', 'legacy_imports', 'legacy_source_map', 'legacy_file_map')
+    before = {table: rows(pg_connections, f'SELECT * FROM atom_search.{table} ORDER BY 1') for table in tables}
+    source_digest = digest(source)
+    report = stage(source, pg_connections)
+    assert report.status == 'failed' and report.error_code == 'target_schema_unsupported'
+    assert {table: rows(pg_connections, f'SELECT * FROM atom_search.{table} ORDER BY 1') for table in tables} == before
+    assert digest(source) == source_digest
+
+
 def test_schema_dump_restore_keeps_search_without_local_runtime_paths(tmp_path):
     """IT handoff: only the application schema, with separately verified model assets."""
     from contextlib import contextmanager
