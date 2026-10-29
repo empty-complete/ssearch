@@ -251,3 +251,73 @@ def test_replaced_session_root_is_not_adopted_for_search_or_cleanup(tmp_path):
     assert substitute.is_file()
     assert (detached / relative).is_file()
     assert result.preserved
+
+
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows handle race contract')
+def test_cleanup_leaf_swap_during_fingerprint_never_deletes_replacement(tmp_path, monkeypatch):
+    import hashlib
+    from atom_search.onboarding import demo_files
+
+    module = api()
+    session = module.open_demo_session(MANIFEST, tmp_path / 'owned', ())
+    relative = json.loads(MANIFEST.read_text(encoding='utf-8'))['files'][0]
+    leaf = session.root / relative
+    content = leaf.read_bytes()
+    original_hash = hashlib.sha256
+    attempted = []
+    replaced = []
+
+    def racing_hash(data=b'', *args, **kwargs):
+        digest = original_hash(data, *args, **kwargs)
+        if data == content and not attempted:
+            attempted.append(True)
+            try:
+                leaf.unlink()
+                leaf.write_text('foreign replacement during cleanup', encoding='utf-8')
+                replaced.append(True)
+            except OSError:
+                pass  # A held Windows leaf handle must deny replacement.
+        return digest
+
+    with monkeypatch.context() as patch:
+        patch.setattr(demo_files.hashlib, 'sha256', racing_hash)
+        module.close_demo_session(session.session_id)
+    assert attempted, 'race must run at the actual fingerprint boundary'
+    if replaced:
+        assert leaf.read_text(encoding='utf-8') == 'foreign replacement during cleanup'
+
+
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows handle race contract')
+def test_creation_receipt_never_adopts_replacement_after_write(tmp_path, monkeypatch):
+    import hashlib
+    from atom_search.onboarding import demo_files
+
+    module = api()
+    owned = tmp_path / 'owned'
+    relative = json.loads(MANIFEST.read_text(encoding='utf-8'))['files'][0]
+    content = (MANIFEST.parent / relative).read_bytes()
+    original_hash = hashlib.sha256
+    occurrences, attempted, replacements = [], [], []
+
+    def racing_hash(data=b'', *args, **kwargs):
+        digest = original_hash(data, *args, **kwargs)
+        if data == content:
+            occurrences.append(True)
+            if len(occurrences) == 2:
+                attempted.append(True)
+                leaf, = tuple(owned.glob('v2-*/' + relative))
+                try:
+                    leaf.unlink()
+                    leaf.write_text('foreign replacement before receipt', encoding='utf-8')
+                    replacements.append(leaf)
+                except OSError:
+                    pass  # Receipt must be computed while the created handle is held.
+        return digest
+
+    with monkeypatch.context() as patch:
+        patch.setattr(demo_files.hashlib, 'sha256', racing_hash)
+        session = module.open_demo_session(MANIFEST, owned, ())
+    assert attempted, 'race must run at the created file fingerprint boundary'
+    module.close_demo_session(session.session_id)
+    for leaf in replacements:
+        assert leaf.read_text(encoding='utf-8') == 'foreign replacement before receipt'
