@@ -127,6 +127,17 @@ def test_retry_is_bounded_uses_backoff_and_preserves_token_identity(queue):
     assert scheduler.next_work() is None
 
 
+def test_durable_exhausted_attempts_prevent_repeat_scan_or_restart_retry(queue):
+    scheduler, states, state, _, _, _ = queue
+    states[1] = replace(state, attempted_fingerprint=(100, 200), attempts=2,
+                         retry_not_before=0.0)
+    assert scheduler.on_metadata_commit((file(),), catalog_generation=1) == ()
+    assert scheduler.on_metadata_commit((file(),), catalog_generation=2) == ()
+    # A new metadata fingerprint is eligible independently of the failed one.
+    assert len(scheduler.on_metadata_commit((file(size=101, revision=2),),
+                                            catalog_generation=3)) == 1
+
+
 def test_cancel_removes_only_target_source_and_never_resurrects_retry(queue):
     scheduler, _, _, _, clock, _ = queue
     a, b = scheduler.on_metadata_commit((file(), file(2, 20)), catalog_generation=1)
