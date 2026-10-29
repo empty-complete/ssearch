@@ -7,6 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 import threading
+import time
 
 import psycopg
 import pytest
@@ -377,3 +378,66 @@ def test_content_mutations_wait_for_catalog_fence(pg_connections, operation):
                 locked.execute('SELECT pg_sleep(0.01)')
             assert waiting and not future.done()
         future.result(timeout=10)
+
+
+@pytest.mark.parametrize('change,available', [
+    ('schema6', True), ('schema5', True), ('future_schema7', False), ('settings_revision', False),
+    ('context_revision', False), ('configuration_hash', False), ('unsupported_settings', False),
+    ('structural_support', False)])
+def test_real_pg_database_probe_preserves_project_capabilities_on_supported_catalogs(pg_connections, pg_runtime, change, available):
+    """Actual owned runtime/projection/core/cache; no SQL or capability doubles."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from atom_search.service.contracts import AccessContext, SettingsSnapshot
+    from atom_search.service.health import HealthCache, database_probe
+    from atom_search_core.project_context import INPUT_SCHEMA
+    from atom_search_core.service import SearchService
+    from atom_search_core.storage.postgres_retrieval import PostgresRetrieval
+    from atom_search_core.storage.public_ids import PostgresPublicIds
+
+    catalog, source, _, _ = seed(pg_connections)
+    identity = '00000000-0000-4000-8000-000000000041'
+    root = 'C:/fictional/content-fixture'
+    assert PostgresPublicIds(catalog).bind_many(((identity, root),)) == (source,)
+    projection = ProjectProjection(pg_connections['application'])
+    projection.sync((), (), expected_settings_revision=7, source_labels={source: 'Проекты'})
+    core = SearchService(catalog=catalog, retrieval=PostgresRetrieval(pg_connections['application']),
+                         projection=projection, input_schema=INPUT_SCHEMA)
+    health = HealthCache()
+    health.configure(SettingsSnapshot(1 if change == 'unsupported_settings' else 2, 7,
+        {'sources': [dict(id=identity, path=root, enabled=True)]}, ()))
+    # This owner boundary shares the fixture's real runtime. No extra service,
+    # model session or ambient/user profile is started for the probe.
+    owner = SimpleNamespace(health=health, runtime=pg_runtime[0], core=core)
+    try:
+        if change == 'schema5':
+            sql(pg_connections, 'DELETE FROM atom_search.schema_migrations WHERE version=6')
+        elif change == 'future_schema7':
+            sql(pg_connections, 'INSERT INTO atom_search.schema_migrations(version) VALUES (7)')
+        elif change == 'settings_revision':
+            sql(pg_connections, 'UPDATE atom_search.project_context_state SET settings_revision=8 WHERE id=1')
+        elif change == 'context_revision':
+            sql(pg_connections, 'UPDATE atom_search.project_context_state SET context_revision=0 WHERE id=1')
+        elif change == 'configuration_hash':
+            sql(pg_connections, "UPDATE atom_search.project_context_state SET configuration_hash='invalid' WHERE id=1")
+        elif change == 'structural_support':
+            core.projection = None
+        result = database_probe(owner, time.monotonic() + 5, threading.Event())
+        checked = datetime.now(timezone.utc)
+        for component, value in result.items():
+            if component == 'counts':
+                health.record_counts(**value, checked_at=checked)
+            elif component == 'project_support':
+                health.record_project_support(**value, checked_at=checked)
+            else:
+                health.record(component, value, checked_at=checked)
+        reader = AccessContext('reader', frozenset({'search', 'status'}), (identity,))
+        cached = health.snapshot(now=checked, access=reader)
+        assert cached.components.database.runtime_state == 'ready'
+        assert cached.components.sources[0].catalogued_files == 1
+        assert result['project_support']['available'] is available
+        assert ({'project_search', 'project_aliases'} <= set(cached.capabilities)) is available
+        assert not {'project_search', 'project_aliases'} & set(health.snapshot(now=checked,
+            access=AccessContext('status-only', frozenset({'status'}), (identity,))).capabilities)
+    finally:
+        core.close()
