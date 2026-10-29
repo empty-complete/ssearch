@@ -108,6 +108,7 @@ def current_settings():
     candidate = default_settings()
     candidate['revision'] = 7
     candidate['sources'] = [dict(id=A, path='C:/private', label='', enabled=True)]
+    candidate['updates']['source']['credential_ref'] = 'private-credential-reference'
     return SettingsSnapshot(3, 7, candidate, ())
 
 
@@ -170,7 +171,10 @@ def test_validate_has_no_disk_network_or_settings_side_effects(tmp_path, monkeyp
     assert result.valid and result.expected_revision == 7
     assert [(change.path, change.before, change.after) for change in result.diff] == [
         ('indexing.interval_seconds', 86400, 172800)]
-    assert result.normalized['revision'] == 8
+    assert result.normalized == {'indexing': {'interval_seconds': 172800}}
+    assert result.idempotency_key is None
+    assert 'private-credential-reference' not in repr(result)
+    assert 'C:/private' not in repr(result)
 
 
 def test_settings_validate_requires_current_grant_and_revision_before_port():
