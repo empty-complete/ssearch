@@ -2,7 +2,8 @@
 
 Extraction SHA-256 is computed over UTF-8 JSON ordered ``[[locator,text],...]``
 using ensure_ascii=False and separators=(',', ':'). Chunk hashes cover their
-exact UTF-8 text; embedding hashes cover the exact prepared passage input.
+exact UTF-8 text; embedding hashes cover the shared preparer's unprefixed text.
+Its token count includes the E5 prefix/specials; the encoder adds that prefix.
 
 All mutations take the active catalog fence first, then the project context
 fence and source/file rows. The desired state persists profile, catalog and
@@ -132,7 +133,7 @@ def _validate_publication(token, extraction, records, model):
             if not isinstance(item, PreparedEmbeddingInput):
                 raise ValueError('invalid_prepared_content')
             _text(item.text)
-            if (not item.text.startswith('passage: ') or chunk.text not in item.text
+            if (chunk.text not in item.text
                     or _hash(item.input_hash) != _digest(item.text)
                     or type(item.token_count) is not int or not 1 <= item.token_count <= 512):
                 raise ValueError('invalid_prepared_content')

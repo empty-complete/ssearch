@@ -312,8 +312,8 @@ def stage_legacy_catalog(snapshot: Path, maintenance_factory: Callable[[], Any],
                 connection.execute('SELECT pg_advisory_lock(%s)', (_IMPORT_LOCK,))
                 try:
                     # Registry target 3 records the historical import contract.
-                    # Additive schemas 4/5 preserve this v3/v1 import contract.
-                    if connection.execute('SELECT max(version) FROM atom_search.schema_migrations').fetchone()[0] not in (4, 5):
+                    # Additive schemas 4/5/6 preserve this v3/v1 import contract.
+                    if connection.execute('SELECT max(version) FROM atom_search.schema_migrations').fetchone()[0] not in (4, 5, 6):
                         raise _ImportError('target_schema_unsupported')
                     registry = _load(connection, digest)
                     if registry:
