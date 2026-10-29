@@ -136,7 +136,7 @@ export function SearchApp({ service, preview = false, mode = 'application' }: Se
         </section>
       )}
       <footer className="app-footer">
-        <span>{devPreview ? 'Предпросмотр' : 'Подключение к локальному поиску ожидается'}</span>
+        <span>{devPreview ? 'Предпросмотр' : 'Локальный поиск'}</span>
         <label className="theme-control">
           Тема
           <select aria-label="Тема предпросмотра" value={theme}
