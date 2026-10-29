@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import importlib.util
 import json
+from pathlib import Path
 import threading
 
 import psycopg
@@ -48,7 +49,9 @@ def extraction(text='Согласованный бюджет', *, status='comple
 
 
 def records(text='Согласованный бюджет', *, vector=False):
-    prepared = PreparedEmbeddingInput('passage: ' + text, digest('passage: ' + text), 12) if vector else None
+    # P3 hashes unprefixed text. PinnedTokenizer counts the E5 prefix/specials;
+    # the encoder adds that prefix later, never in the stored prepared text.
+    prepared = PreparedEmbeddingInput(text, digest(text), 12) if vector else None
     return (ChunkWrite(ChunkDraft(0, 'page:1', text, digest(text), prepared),
                        MODEL.model_key if vector else None, VECTOR if vector else None),)
 
@@ -139,6 +142,30 @@ def test_lexical_only_publication_and_monotonic_desired_generation_survive_new_a
     assert active(pg_connections) == [(next_token.content_generation, 'Новый бюджет', next_token.content_generation)]
     assert sql(pg_connections, 'SELECT * FROM atom_search.file_embeddings') == before
     assert catalog.status(scope=catalog.resolve_scope(None))['files'] == 1
+
+
+def test_real_pinned_tokenizer_prepared_input_publishes_without_duplicating_e5_prefix(pg_connections):
+    from atom_search_core.tokenization import PinnedTokenizer
+    directory = Path(__file__).resolve().parents[2] / 'models'
+    preparer = PinnedTokenizer(directory)
+    text = 'Согласованный бюджет'
+    raw = 'project: Пермские моторы\ntext: ' + text
+    bounded = preparer.prepare_input(raw, kind='passage')
+    assert bounded.text == raw and not bounded.text.startswith('passage: ')
+    assert bounded.input_hash == digest(raw)
+    # Exercise the shared real tokenizer's encoder seam without model inference.
+    encoded, = preparer.encode_batch([bounded.text], kind='passage')
+    assert bounded.token_count == len(encoded.ids) <= 512
+    _, _, file_id, content = seed(pg_connections, vector=True)
+    token = prepare(pg_connections, content, file_id)
+    chunk = ChunkDraft(0, 'page:1', text, digest(text), bounded)
+    result = content.publish(token, extraction(text), (ChunkWrite(chunk, MODEL.model_key, VECTOR),),
+                             current_stat=(120, 123))
+    assert result.accepted and result.chunks_written == 1
+    assert sql(pg_connections, 'SELECT input_hash,input_schema FROM atom_search.content_chunks') == [
+        (digest(raw), 'content-context-v1')]
+    assert sql(pg_connections, 'SELECT input_hash FROM atom_search.chunk_embeddings') == [(digest(raw),)]
+    assert digest(raw) != digest('passage: ' + raw)
 
 
 @pytest.mark.parametrize('change,reason', [
@@ -262,7 +289,9 @@ def test_active_pointer_and_chunk_parent_are_enforced_by_database(pg_connections
     assert publish(content, token).accepted
     before = snapshot(pg_connections)
     with pytest.raises(psycopg.errors.ForeignKeyViolation):
-        sql(pg_connections, 'UPDATE atom_search.file_content_state SET active_generation=99999 WHERE file_id=%s', (file_id,))
+        # Keep the ordering CHECK satisfied so this isolates the composite FK.
+        sql(pg_connections, '''UPDATE atom_search.file_content_state SET desired_generation=99999,
+            active_generation=99999 WHERE file_id=%s''', (file_id,))
     with pytest.raises(psycopg.errors.ForeignKeyViolation):
         sql(pg_connections, 'DELETE FROM atom_search.content_generations WHERE file_id=%s', (file_id,))
     assert snapshot(pg_connections) == before
