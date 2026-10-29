@@ -128,8 +128,9 @@ def test_retry_is_bounded_uses_backoff_and_preserves_logical_work_fields(queue):
     assert scheduler.finish_work(token, status='failed', retryable=True)
     assert scheduler.next_work() is None
     clock[0] += 1.0
-    assert scheduler.next_work() == token
-    assert scheduler.finish_work(token, status='failed', retryable=True)
+    retry = scheduler.next_work()
+    assert retry == token
+    assert scheduler.finish_work(retry, status='failed', retryable=True)
     clock[0] += 100.0
     assert scheduler.next_work() is None
 
