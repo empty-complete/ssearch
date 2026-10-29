@@ -5,7 +5,7 @@ snapshot. The host's is_current validates current file/revision/stat/generations
 and deletion/cancellation authority. Global metadata_pending includes ALL sources.
 No source is opened here. Production host integration and PG CAS remain separate.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import threading
 import time
@@ -131,6 +131,9 @@ class ContentScheduler:
                 del self._work[token.file_id]
                 return False
             if status in ('failed', 'timeout') and retryable and work.attempts < self._max_attempts:
+                # A new attempt has distinct local admission identity. A delayed
+                # duplicate ack from the previous attempt cannot release it.
+                work.token = replace(work.token)
                 work.not_before = self._clock() + self._retry_delay * work.attempts
             else:
                 del self._work[token.file_id]
