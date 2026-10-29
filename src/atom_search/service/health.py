@@ -330,7 +330,7 @@ def database_probe(owner, deadline, stop):
             result['project_support']['available'] = bool(config.schema_version in (2, 3)
                 and project and project[0] == config.revision
                 and type(project[1]) is int and project[1] > 0
-                and isinstance(project[2], str) and len(project[2]) == 64 and project[3] == 5)
+                and isinstance(project[2], str) and len(project[2]) == 64 and project[3] in (5, 6))
         # Logical size is independent of physical allocation and reservations.
         # It shares this observation's SQL deadline, never a status request.
         logical = connection.execute('SELECT pg_database_size(current_database())').fetchone()[0]
