@@ -258,6 +258,23 @@ def test_unknown_code_and_unobserved_or_stale_fault_are_not_repaired():
             expected_revision=7, principal=principal(), health=snapshot), 409)
 
 
+def test_cached_fact_freshness_is_checked_at_planning_time_not_only_stale_flag():
+    snapshot = health()
+    RepairPlanner(policy(), clock=lambda: NOW + timedelta(seconds=300)).plan(
+        'SOURCE_UNREACHABLE', source_id=A, expected_revision=7,
+        principal=principal(), health=snapshot)
+    assert_error('stale_plan', lambda: RepairPlanner(policy(),
+        clock=lambda: NOW + timedelta(seconds=301)).plan('SOURCE_UNREACHABLE',
+            source_id=A, expected_revision=7, principal=principal(), health=snapshot), 409)
+
+
+@pytest.mark.parametrize('revision', [True, '7', -1, None])
+def test_invalid_revision_does_not_coerce_to_owner_revision(revision):
+    planner = RepairPlanner(policy(), clock=lambda: NOW)
+    assert_error('invalid_argument', lambda: planner.plan('SOURCE_UNREACHABLE',
+        source_id=A, expected_revision=revision, principal=principal(), health=health()))
+
+
 def test_planning_and_preflight_have_no_io_and_ignore_response_timestamp(monkeypatch):
     snapshot = health()
     before = asdict(snapshot)
