@@ -426,3 +426,56 @@ def test_unsupported_platform_never_falls_back_to_path_based_mutation(tmp_path, 
         with pytest.raises(RuntimeError, match='unsupported_demo_platform'):
             demo_files.open_demo_session(MANIFEST, owned, ())
     assert not owned.exists()
+
+
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows local-volume contract')
+@pytest.mark.parametrize('drive_type', [4, 2, 0])
+def test_mapped_or_nonfixed_owned_volume_is_rejected_before_any_anchor_open(tmp_path, monkeypatch, drive_type):
+    from contextlib import contextmanager
+    from atom_search.onboarding import demo_files
+    from atom_search.onboarding import _windows_files
+
+    module = api()
+    original_library = _windows_files.c.WinDLL
+    original_handle = _windows_files.WindowsFiles._handle
+    observed, touched = [], []
+
+    class DriveType:
+        def __init__(self, kernel):
+            self.actual = kernel.GetDriveTypeW
+            self.actual.argtypes = [_windows_files.w.LPCWSTR]
+            self.actual.restype = _windows_files.w.UINT
+
+        def __call__(self, anchor):
+            if str(anchor).upper().startswith('Z:'):
+                observed.append(str(anchor))
+                return drive_type
+            return self.actual(anchor)
+
+    class Kernel:
+        def __init__(self, actual):
+            self.actual = actual
+            self.GetDriveTypeW = DriveType(actual)
+
+        def __getattr__(self, name):
+            return getattr(self.actual, name)
+
+    def library(name, *args, **kwargs):
+        actual = original_library(name, *args, **kwargs)
+        return Kernel(actual) if str(name).lower() == 'kernel32' else actual
+
+    @contextmanager
+    def reject_mapped_file_operation(self, parent, name, **kwargs):
+        if kwargs.get('anchor') and 'Z:' in name.upper():
+            touched.append(name)
+            pytest.fail('mapped drive anchor was opened before rejecting its nonlocal volume')
+        with original_handle(self, parent, name, **kwargs) as handle:
+            yield handle
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_windows_files.c, 'WinDLL', library)
+        patch.setattr(_windows_files.WindowsFiles, '_handle', reject_mapped_file_operation)
+        with pytest.raises(ValueError, match='unsafe_demo_volume'):
+            demo_files.open_demo_session(MANIFEST, Path('Z:/ssearch-owned-demo'), ())
+    assert observed, 'drive classification must precede native mapped-anchor operations'
+    assert touched == []
