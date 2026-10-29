@@ -42,11 +42,14 @@ def candidate(ui=False):
 
 
 def receipt(gate, binding):
-    return dict(gate_id=gate, status='pass', artifact_sha256=binding['desktop_sha256'],
+    result = dict(gate_id=gate, status='pass', artifact_sha256=binding['desktop_sha256'],
                 environment_id='fixture', report_path='unit-fixture.json', reason=None,
                 binding=copy.deepcopy(binding),
                 evidence_kind='pilot' if gate == 'ux.primary-flow' else
                     'native' if gate == 'platform.windows-11' else 'automated')
+    if gate == 'ux.primary-flow':
+        result['observation'] = pilot_observation()
+    return result
 
 
 def check(matrix, evidence):
@@ -210,3 +213,41 @@ def test_schema_is_published_and_describes_exact_binding():
     schema = json.loads(path.read_text(encoding='utf-8'))
     assert schema['$schema'] == 'https://json-schema.org/draft/2020-12/schema'
     assert {'candidate', 'environments', 'gates', 'capabilities'}.issubset(schema['required'])
+
+PRIMARY_SCENARIOS = ('add-source', 'find-duplicate', 'reveal-in-explorer',
+                     'open-progress', 'restore-from-tray', 'skip-replay-onboarding')
+
+
+def pilot_observation():
+    return dict(independent=True, unresolved_failures=0, participants=[
+        dict(participant_id=f'participant-{index}', first_time=True, scenarios=[
+            dict(scenario_id=scenario, success=True, assistance_requested=False,
+                 errors=0, duration_seconds=1.0, recovery='none')
+            for scenario in PRIMARY_SCENARIOS]) for index in range(3)])
+
+
+@pytest.mark.parametrize('mutation', ['missing', 'too_few', 'not_independent',
+    'unresolved', 'failed', 'missing_scenario', 'missing_time', 'repeated_participant'])
+def test_primary_flow_requires_actual_structured_observation(matrix, mutation):
+    data = candidate(ui=True)
+    pilot = next(g for g in data['gates'] if g['gate_id'] == 'ux.primary-flow')
+    pilot['observation'] = pilot_observation()
+    observation = pilot['observation']
+    if mutation == 'missing':
+        del pilot['observation']
+    elif mutation == 'too_few':
+        observation['participants'] = observation['participants'][:2]
+    elif mutation == 'not_independent':
+        observation['independent'] = False
+    elif mutation == 'unresolved':
+        observation['unresolved_failures'] = 1
+    elif mutation == 'failed':
+        observation['participants'][0]['scenarios'][0]['success'] = False
+    elif mutation == 'missing_scenario':
+        observation['participants'][0]['scenarios'].pop()
+    elif mutation == 'missing_time':
+        del observation['participants'][0]['scenarios'][0]['duration_seconds']
+    else:
+        observation['participants'][1]['participant_id'] = 'participant-0'
+    assert check(matrix, data)['eligible'] is False
+
