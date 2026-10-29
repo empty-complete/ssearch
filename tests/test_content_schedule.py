@@ -121,7 +121,7 @@ def test_queue_capacity_does_not_mark_dropped_files_processed(queue):
     assert later[0].file_id == 3
 
 
-def test_retry_is_bounded_uses_backoff_and_preserves_token_identity(queue):
+def test_retry_is_bounded_uses_backoff_and_preserves_logical_work_fields(queue):
     scheduler, _, _, _, clock, _ = queue
     token = scheduler.on_metadata_commit((file(),), catalog_generation=1)[0]
     assert scheduler.next_work() == token
@@ -132,6 +132,20 @@ def test_retry_is_bounded_uses_backoff_and_preserves_token_identity(queue):
     assert scheduler.finish_work(token, status='failed', retryable=True)
     clock[0] += 100.0
     assert scheduler.next_work() is None
+
+
+def test_late_ack_from_previous_attempt_cannot_release_running_retry(queue):
+    scheduler, _, _, _, clock, _ = queue
+    first, other = scheduler.on_metadata_commit((file(), file(2, 20)), catalog_generation=1)
+    assert scheduler.next_work() is first
+    assert scheduler.finish_work(first, status='failed', retryable=True)
+    clock[0] += 1.0
+    retry = scheduler.next_work()
+    assert retry == first  # Logical file/generations remain unchanged.
+    assert scheduler.finish_work(first, status='complete') is False
+    assert scheduler.next_work() is None  # Retry still occupies the only slot.
+    assert scheduler.finish_work(retry, status='complete') is True
+    assert scheduler.next_work() == other
 
 
 def test_durable_exhausted_attempts_prevent_repeat_scan_or_restart_retry(queue):
