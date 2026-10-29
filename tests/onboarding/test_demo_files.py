@@ -180,3 +180,74 @@ def test_busy_owned_file_is_deferred_and_cleanup_retry_is_safe(tmp_path, monkeyp
     assert busy.is_file()
     module.close_demo_session(session.session_id)
     assert not busy.exists()
+
+
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows junction contract')
+def test_windows_junction_cleanup_never_follows_external_target(tmp_path):
+    import subprocess
+
+    module = api()
+    session = module.open_demo_session(MANIFEST, tmp_path / 'owned', ())
+    target = tmp_path / 'external'
+    target.mkdir()
+    sentinel = target / 'Спецификация.txt'
+    sentinel.write_text('external sentinel', encoding='utf-8')
+    branch = session.root / 'Учебный архив/Пермские моторы/Зенитные фонари'
+    assert branch.resolve().is_relative_to(session.root.resolve())
+    shutil.rmtree(branch)
+    subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(branch), str(target)],
+                   check=True, capture_output=True)
+    try:
+        result = module.close_demo_session(session.session_id)
+        assert sentinel.read_text(encoding='utf-8') == 'external sentinel'
+        assert result.preserved
+        assert branch.is_junction()
+    finally:
+        branch.rmdir()  # Remove only the test-created junction, never its target.
+
+
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows junction contract')
+def test_windows_junction_manifest_source_is_rejected_without_copying(tmp_path):
+    import subprocess
+
+    module = api()
+    manifest = copied_manifest(tmp_path)
+    branch = manifest.parent / 'Учебный архив/Пермские моторы/Зенитные фонари'
+    assert branch.resolve().is_relative_to(manifest.parent.resolve())
+    shutil.rmtree(branch)
+    target = tmp_path / 'external'
+    target.mkdir()
+    sentinel = target / 'Спецификация.txt'
+    sentinel.write_text('Учебные данные. Вымышленный external sentinel', encoding='utf-8')
+    subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(branch), str(target)],
+                   check=True, capture_output=True)
+    try:
+        with pytest.raises(ValueError, match='invalid_demo_manifest'):
+            module.open_demo_session(manifest, tmp_path / 'owned', ())
+        assert sentinel.read_text(encoding='utf-8') == 'Учебные данные. Вымышленный external sentinel'
+        assert not (tmp_path / 'owned').exists()
+    finally:
+        branch.rmdir()
+
+
+def test_replaced_session_root_is_not_adopted_for_search_or_cleanup(tmp_path):
+    from atom_search.service.contracts import ServiceError
+
+    module = api()
+    session = module.open_demo_session(MANIFEST, tmp_path / 'owned', ())
+    detached = tmp_path / 'detached-original'
+    assert session.root.resolve().is_relative_to(tmp_path.resolve())
+    assert detached.resolve().is_relative_to(tmp_path.resolve())
+    session.root.rename(detached)
+    session.root.mkdir()
+    relative = json.loads(MANIFEST.read_text(encoding='utf-8'))['files'][0]
+    substitute = session.root / relative
+    substitute.parent.mkdir(parents=True)
+    substitute.write_bytes((detached / relative).read_bytes())
+    with pytest.raises(ServiceError) as failure:
+        session.provider.search(SearchRequest('Пермские моторы'))
+    assert failure.value.code == 'result_not_found'
+    result = module.close_demo_session(session.session_id)
+    assert substitute.is_file()
+    assert (detached / relative).is_file()
+    assert result.preserved
