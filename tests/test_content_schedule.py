@@ -31,17 +31,19 @@ def queue():
     states = {}
     metadata = [False]
     clock = [100.0]
+    current = [True]
     default = c.ContentScheduleState(profile='balanced', content_generation=1,
         profile_generation=1, context_revision=1, extractor_version='fixture-v1',
         chunker_version='fixture-v1', successful_fingerprint=None)
     scheduler = s.ContentScheduler(state_for=lambda f: states.get(f.file_id, default),
         metadata_pending=lambda: metadata[0], clock=lambda: clock[0],
+        is_current=lambda token: current[0],
         max_pending=2, max_attempts=2, retry_delay=1.0)
-    return scheduler, states, default, metadata, clock
+    return scheduler, states, default, metadata, clock, current
 
 
 def test_new_or_changed_file_queues_once_after_all_metadata_across_sources(queue):
-    scheduler, _, _, metadata, _ = queue
+    scheduler, _, _, metadata, _, _ = queue
     first, second = file(), file(2, 20)
     tokens = scheduler.on_metadata_commit((first, second), catalog_generation=3)
     assert len(tokens) == 2
@@ -59,7 +61,7 @@ def test_new_or_changed_file_queues_once_after_all_metadata_across_sources(queue
 
 @pytest.mark.parametrize('change', [{'size': 101}, {'modified_ns': 201}])
 def test_size_or_mtime_change_admits_exactly_one_new_token(queue, change):
-    scheduler, states, state, _, _ = queue
+    scheduler, states, state, _, _, _ = queue
     states[1] = replace(state, successful_fingerprint=(100, 200))
     assert scheduler.on_metadata_commit((file(),), catalog_generation=1) == ()
     changed = file(revision=2, **change)
@@ -70,7 +72,7 @@ def test_size_or_mtime_change_admits_exactly_one_new_token(queue, change):
 
 
 def test_successful_unchanged_file_never_reopens_for_profile_context_or_parser_changes(queue):
-    scheduler, states, state, _, _ = queue
+    scheduler, states, state, _, _, _ = queue
     states[1] = replace(state, successful_fingerprint=(100, 200), profile='detailed',
                          profile_generation=8, context_revision=9, extractor_version='new-v2')
     # Durable successful fingerprint remains authoritative even if derived cache
@@ -80,7 +82,7 @@ def test_successful_unchanged_file_never_reopens_for_profile_context_or_parser_c
 
 
 def test_move_is_delete_add_and_cancelled_work_cannot_complete_replacement(queue):
-    scheduler, _, _, _, _ = queue
+    scheduler, _, _, _, _, _ = queue
     old = scheduler.on_metadata_commit((file(),), catalog_generation=1)[0]
     assert scheduler.next_work() == old
     scheduler.cancel_source(10)
@@ -92,7 +94,7 @@ def test_move_is_delete_add_and_cancelled_work_cannot_complete_replacement(queue
 
 
 def test_changed_file_supersedes_old_token_without_stale_ack_removing_new_work(queue):
-    scheduler, _, _, _, _ = queue
+    scheduler, _, _, _, _, _ = queue
     old = scheduler.on_metadata_commit((file(),), catalog_generation=1)[0]
     assert scheduler.next_work() == old
     new = scheduler.on_metadata_commit((file(size=111, revision=2),), catalog_generation=2)[0]
@@ -101,7 +103,7 @@ def test_changed_file_supersedes_old_token_without_stale_ack_removing_new_work(q
 
 
 def test_queue_capacity_does_not_mark_dropped_files_processed(queue):
-    scheduler, _, _, _, _ = queue
+    scheduler, _, _, _, _, _ = queue
     batch = (file(), file(2), file(3))
     admitted = scheduler.on_metadata_commit(batch, catalog_generation=1)
     assert len(admitted) == 2
@@ -113,7 +115,7 @@ def test_queue_capacity_does_not_mark_dropped_files_processed(queue):
 
 
 def test_retry_is_bounded_uses_backoff_and_preserves_token_identity(queue):
-    scheduler, _, _, _, clock = queue
+    scheduler, _, _, _, clock, _ = queue
     token = scheduler.on_metadata_commit((file(),), catalog_generation=1)[0]
     assert scheduler.next_work() == token
     assert scheduler.finish_work(token, status='failed', retryable=True)
@@ -126,7 +128,7 @@ def test_retry_is_bounded_uses_backoff_and_preserves_token_identity(queue):
 
 
 def test_cancel_removes_only_target_source_and_never_resurrects_retry(queue):
-    scheduler, _, _, _, clock = queue
+    scheduler, _, _, _, clock, _ = queue
     a, b = scheduler.on_metadata_commit((file(), file(2, 20)), catalog_generation=1)
     assert scheduler.next_work() == a
     assert scheduler.finish_work(a, status='failed', retryable=True)
@@ -138,9 +140,21 @@ def test_cancel_removes_only_target_source_and_never_resurrects_retry(queue):
 
 
 def test_profile_off_has_no_extraction_work(queue):
-    scheduler, states, state, _, _ = queue
+    scheduler, states, state, _, _, _ = queue
     states[1] = replace(state, profile='off')
     assert scheduler.on_metadata_commit((file(),), catalog_generation=1) == ()
+
+
+@pytest.mark.parametrize('running', [False, True])
+def test_deleted_or_replaced_file_fails_owner_freshness_before_dequeue_or_ack(queue, running):
+    scheduler, _, _, _, _, current = queue
+    token = scheduler.on_metadata_commit((file(),), catalog_generation=1)[0]
+    if running:
+        assert scheduler.next_work() == token
+    current[0] = False
+    if running:
+        assert scheduler.finish_work(token, status='complete') is False
+    assert scheduler.next_work() is None
 
 
 def test_core_chunk_dto_reuses_prepared_embedding_input_without_service_imports():

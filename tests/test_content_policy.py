@@ -27,7 +27,7 @@ def api():
     return contracts, access
 
 
-def rig(api, *, status='readable', policy=None, policy_present=True, outcome_change=None):
+def rig(api, *, status='readable', policy=None, policy_present=True, outcome_change=None, check_delay=0):
     c, a = api
     clock = [100.0]
     events = []
@@ -49,6 +49,7 @@ def rig(api, *, status='readable', policy=None, policy_present=True, outcome_cha
         # The fake is deterministic; it does not claim Windows ACL enforcement.
         def check(self, file, *, deadline):
             events.append(('check', file, deadline))
+            clock[0] += check_delay
             result = c.FileReadResult(source_id=file.source_id, result_id=file.result_id,
                                       file_revision=file.file_revision, status=status)
             return replace(result, **(outcome_change or {}))
@@ -157,6 +158,13 @@ def test_request_deadline_is_monotonic_and_closed_before_further_io(api):
     denied(lambda: gate.authorize('source-a', operation='fetch_content', access=caller,
                                   result_id='result-a'), 'content_check_budget_exhausted')
     assert events == []
+
+
+def test_late_checker_success_is_not_authority_after_request_deadline(api):
+    gate, caller, events, _, _ = rig(api, check_delay=2.01)
+    denied(lambda: gate.authorize('source-a', operation='fetch_content', access=caller,
+                                  result_id='result-a'), 'content_check_budget_exhausted')
+    assert sum(e[0] == 'check' for e in events) == 1
 
 
 def test_lookup_binding_and_unknown_operations_fail_before_file_read(api):
