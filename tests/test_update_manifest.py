@@ -182,8 +182,8 @@ def test_replay_high_water_is_separate_for_explicit_channels(tmp_path, key):
 @pytest.mark.parametrize('corruption', [b'{', b'{}', b'{"format_version":1,"channels":{"stable":{"sequence":true,"payload_sha256":"a"}}}'])
 def test_corrupt_replay_state_fails_closed(tmp_path, key, corruption):
     checker = verifier(tmp_path, key)
+    verify(checker, key.envelope(encode(payload())))
     ledger = tmp_path / 'runtime/update-replay.json'
-    ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_bytes(corruption)
     rejected(checker, key, payload(), 'update_replay')
     assert ledger.read_bytes() == corruption
@@ -408,3 +408,45 @@ def test_failed_replay_commit_never_issues_verified_manifest(tmp_path, key, monk
         rejected(checker, key, payload() | {'sequence': 11}, 'update_replay')
     assert ledger.read_bytes() == committed
     assert verify(verifier(tmp_path, key), raw).sequence == 10
+
+
+def test_alias_ledger_instances_preserve_one_monotonic_high_water(tmp_path, key, monkeypatch):
+    """Win32 normal and extended paths address one real file, with no 8.3 dependency."""
+    import threading
+    from atom_search.runtime import _windows
+
+    ordinary = verifier(tmp_path, key)
+    verify(ordinary, key.envelope(encode(payload() | {'sequence': 9})))
+    ledger_path = (tmp_path / 'runtime/update-replay.json').resolve()
+    extended_path = Path('\\\\?\\' + str(ledger_path))
+    alternate = api('manifest').ManifestVerifier(
+        api('trust').TrustStore.from_file(tmp_path / 'trusted-keys.json'),
+        api('trust').ReplayLedger(extended_path))
+    lower_at_write, higher_committed = threading.Event(), threading.Event()
+    real_write = _windows.atomic_json
+
+    def schedule_write(path, state):
+        sequence = state['channels']['stable']['sequence']
+        if sequence == 10:
+            lower_at_write.set()
+            # With one lock, the high writer waits, then runs after this bounded
+            # delay. With alias locks it commits during the delay and is lost.
+            higher_committed.wait(3)
+        real_write(path, state)
+        if sequence == 11:
+            higher_committed.set()
+
+    lower = key.envelope(encode(payload() | {'sequence': 10}))
+    higher = key.envelope(encode(payload() | {'sequence': 11}))
+    monkeypatch.setattr(_windows, 'atomic_json', schedule_write)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        low = pool.submit(verify, ordinary, lower)
+        try:
+            assert lower_at_write.wait(10), 'low admission did not reach the real durable writer'
+            high = pool.submit(verify, alternate, higher)
+            assert low.result(timeout=15).sequence == 10
+            assert high.result(timeout=15).sequence == 11
+        finally:
+            higher_committed.set()
+    with pytest.raises(api('contracts').UpdateError, match='update_replay'):
+        verify(verifier(tmp_path, key), lower)
