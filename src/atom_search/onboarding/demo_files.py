@@ -1,8 +1,9 @@
-"""Validate and materialize only fictional manifest-owned TXT in host staging.
+"""Validate fictional TXT and own files through retained Windows handles.
 
-No source registry or service owner is created here. The host must register
-owned_base in the existing protected owned-exclusions seam before work scans.
-Cleanup enumerates only this session's receipts, never an arbitrary directory.
+The host must register owned_base in the protected owned-exclusions seam before
+work scans. This module neither creates an owner nor writes work settings.
+Non-Windows lifecycle is deliberately unsupported until it has equivalent
+race-safe ownership proof; the pure memory search ports remain portable.
 """
 from dataclasses import dataclass, field
 import hashlib
@@ -11,7 +12,6 @@ import ntpath
 import os
 from pathlib import Path
 import re
-import stat
 import threading
 import unicodedata
 import uuid
@@ -20,44 +20,20 @@ from .contracts import CleanupResult, DemoSession
 from .demo_provider import DemoSearchProvider
 
 
-_MAX_BYTES = 65536
 _FILE_COUNT = 8
 _sessions_lock = threading.RLock()
 _sessions = {}
 
 
-def _linked(info):
-    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, 'st_file_attributes', 0) & 0x400)
-
-
-def _check_chain(path, *, directory=False):
-    """Reject every symlink/reparse ancestor, including junctions on Windows."""
-    path = Path(os.path.abspath(path))
-    for item in (*reversed(path.parents), path):
-        info = item.lstat()
-        if _linked(info) or item != path and not stat.S_ISDIR(info.st_mode):
-            raise ValueError('unsafe_demo_path')
-    if directory and not stat.S_ISDIR(info.st_mode):
-        raise ValueError('unsafe_demo_path')
-    return info
+def _backend():
+    if os.name != 'nt':
+        raise RuntimeError('unsupported_demo_platform')
+    from ._windows_files import WindowsFiles
+    return WindowsFiles()
 
 
 def _read_file(path):
-    before = _check_chain(path)
-    if not stat.S_ISREG(before.st_mode) or not 0 <= before.st_size <= _MAX_BYTES:
-        raise ValueError('unsafe_demo_path')
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0))
-    with os.fdopen(descriptor, 'rb') as stream:
-        info = os.fstat(stream.fileno())
-        if (info.st_dev, info.st_ino) != (before.st_dev, before.st_ino):
-            raise ValueError('unsafe_demo_path')
-        data = stream.read(_MAX_BYTES + 1)
-    after = _check_chain(path)
-    if (len(data) > _MAX_BYTES or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
-            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
-        raise ValueError('unsafe_demo_path')
-    return data, (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, hashlib.sha256(data).digest())
-
+    return _backend().read_file(path, hashlib.sha256)
 
 def _relative(value, *, txt=False):
     if (type(value) is not str or not value or len(value) > 1024 or '\\' in value
@@ -139,20 +115,6 @@ def _manifest(path):
         raise ValueError('invalid_demo_manifest') from None
 
 
-def _mkdir(path):
-    missing = []
-    current = path
-    while not current.exists():
-        if current.is_symlink():
-            raise ValueError('unsafe_demo_path')
-        missing.append(current)
-        current = current.parent
-    _check_chain(current, directory=True)
-    for directory in reversed(missing):
-        directory.mkdir()
-        _check_chain(directory, directory=True)
-
-
 @dataclass
 class _OwnedSession:
     root: Path
@@ -160,19 +122,10 @@ class _OwnedSession:
     directories: dict = field(default_factory=dict)
     provider: DemoSearchProvider | None = None
 
-    def verify_parent(self, path):
-        if not path.is_relative_to(self.root):
-            raise ValueError('unsafe_demo_path')
-        for directory in (self.root, *(parent for parent in reversed(path.parents)
-                                      if parent != self.root and parent.is_relative_to(self.root))):
-            info = _check_chain(directory, directory=True)
-            if self.directories.get(directory) != (info.st_dev, info.st_ino):
-                raise ValueError('unsafe_demo_path')
-
     def unchanged(self, relative):
         try:
-            self.verify_parent(self.root.joinpath(*relative.split('/')))
-            _, fingerprint = _read_file(self.root.joinpath(*relative.split('/')))
+            _, fingerprint = _backend().read_file(self.root.joinpath(*relative.split('/')), hashlib.sha256,
+                                                  receipts=self.directories, owned_root=self.root)
             return fingerprint == self.files.get(relative)
         except (OSError, ValueError):
             return False
@@ -180,71 +133,47 @@ class _OwnedSession:
 
 def _cleanup(owned):
     removed, deferred, preserved = [], [], []
+    backend = _backend()
     for relative in tuple(owned.files):
         path = owned.root.joinpath(*relative.split('/'))
         try:
-            owned.verify_parent(path)
-            _, fingerprint = _read_file(path)
-            if fingerprint != owned.files[relative]:
-                preserved.append(path)
-                continue
-            # Recheck ancestors immediately before unlink, including junctions.
-            owned.verify_parent(path)
-            _check_chain(path)
-            path.unlink()
+            backend.delete_file(path, owned.files[relative], owned.directories, owned.root, hashlib.sha256)
             removed.append(path)
             del owned.files[relative]
         except FileNotFoundError:
             del owned.files[relative]
-        except PermissionError:
-            deferred.append(path)
         except OSError:
             deferred.append(path)
         except ValueError:
             preserved.append(path)
     for directory in sorted(owned.directories, key=lambda path: len(path.parts), reverse=True):
         try:
-            owned.verify_parent(directory / '_cleanup')
-            directory.rmdir()  # Empty directories only; unknown files always survive.
+            backend.delete_directory(directory, owned.directories, owned.root)
         except (OSError, ValueError):
-            pass
+            pass  # Unknown entries, occupied directories and replacements survive.
     return CleanupResult(tuple(removed), tuple(deferred), tuple(preserved))
 
 
 def open_demo_session(manifest_path: Path, owned_base: Path, capabilities: tuple[str, ...]) -> DemoSession:
-    """Host-only explicit demo creation, with no work settings or owner authority."""
+    """Host-only explicit demo creation; supported only by the Windows adapter."""
     if type(capabilities) is not tuple or any(type(item) is not str for item in capabilities):
         raise ValueError('invalid_demo_capabilities')
+    backend = _backend()
     manifest_path = Path(os.path.abspath(manifest_path))
     manifest, files = _manifest(manifest_path)
     owned_base = Path(os.path.abspath(owned_base))
     if str(owned_base).startswith(('\\\\', '//')):
         raise ValueError('unsafe_demo_path')
-    _mkdir(owned_base)
     session_id = str(uuid.uuid4())
     root = owned_base / ('v2-' + session_id)
-    root.mkdir()  # Exclusive, never adopt or overwrite an existing user directory.
     owned = _OwnedSession(root)
-    root_info = _check_chain(root, directory=True)
-    owned.directories[root] = (root_info.st_dev, root_info.st_ino)
     try:
         for relative, data in files:
-            owned.verify_parent(root / '_create')
             target = root.joinpath(*relative.split('/'))
-            _mkdir(target.parent)
-            for directory in target.parents:
-                if directory.is_relative_to(root):
-                    info = _check_chain(directory, directory=True)
-                    previous = owned.directories.setdefault(directory, (info.st_dev, info.st_ino))
-                    if previous != (info.st_dev, info.st_ino):
-                        raise ValueError('unsafe_demo_path')
-            owned.verify_parent(target)
-            descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY
-                                 | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0), 0o600)
-            with os.fdopen(descriptor, 'wb') as stream:
-                stream.write(data)
-            _, owned.files[relative] = _read_file(target)
-        owned.provider = DemoSearchProvider(root, manifest, capabilities, validate_file=owned.unchanged)
+            owned.files[relative] = backend.create_file(target, data, owned.directories, root, hashlib.sha256)
+        owned.provider = DemoSearchProvider(root, manifest, capabilities, validate_file=owned.unchanged,
+            file_stats={relative: (receipt[1], (receipt[2] - 116444736000000000) * 100)
+                        for relative, receipt in owned.files.items()})
     except Exception:
         _cleanup(owned)
         raise
@@ -260,8 +189,6 @@ def close_demo_session(session_id: str) -> CleanupResult:
             return CleanupResult()
         owned.provider.close()
         result = _cleanup(owned)
-        # Keep busy receipts for an explicit cleanup retry. Unknown/changed files
-        # retain their directory and never become another session's owned files.
         if not result.deferred:
             _sessions.pop(session_id, None)
         return result

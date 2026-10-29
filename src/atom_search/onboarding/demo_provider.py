@@ -24,7 +24,7 @@ def demo_id(kind):
 
 
 class DemoSearchProvider:
-    def __init__(self, root, manifest, capabilities, *, validate_file):
+    def __init__(self, root, manifest, capabilities, *, validate_file, file_stats):
         self.root = Path(root)
         self._lock = threading.RLock()
         self._closed = False
@@ -45,9 +45,9 @@ class DemoSearchProvider:
         self._result_ids = {}
         for index, relative in enumerate(manifest['files'], 1):
             path = self.root.joinpath(*relative.split('/'))
-            info = path.stat()
+            size, modified_ns = file_stats[relative]
             files.append(CatalogFile(index, 1, str(self.root), relative, path.name,
-                                     info.st_size, info.st_mtime_ns, 'complete', 1))
+                                     size, modified_ns, 'complete', 1))
             self._result_ids[demo_id('file:' + relative)] = index
         self.catalog = ReadOnlyMemoryCatalog(files)
         self._projects, self._aliases = projects, aliases

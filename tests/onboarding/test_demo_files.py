@@ -162,25 +162,32 @@ def test_closed_session_provider_cannot_return_paths_for_deleted_files(tmp_path)
         session.provider.search(SearchRequest('спецификация'))
 
 
-def test_busy_owned_file_is_deferred_and_cleanup_retry_is_safe(tmp_path, monkeypatch):
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows sharing contract')
+def test_busy_owned_file_is_deferred_and_cleanup_retry_is_safe(tmp_path):
+    import ctypes as c
+    from ctypes import wintypes as w
+
     module = api()
     session = module.open_demo_session(MANIFEST, tmp_path / 'owned', ())
     relative = json.loads(MANIFEST.read_text(encoding='utf-8'))['files'][0]
     busy = session.root / relative
-    original_unlink = Path.unlink
-
-    def occupied(path, *args, **kwargs):
-        if path == busy:
-            raise PermissionError('file is occupied')
-        return original_unlink(path, *args, **kwargs)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(Path, 'unlink', occupied)
-        module.close_demo_session(session.session_id)
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, c.c_void_p, w.DWORD, w.DWORD, w.HANDLE]
+    create.restype = w.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [w.HANDLE]
+    close.restype = w.BOOL
+    handle = create(str(busy), 0x80000000, 1, None, 3, 0x200000, None)
+    assert handle and handle != c.c_void_p(-1).value, c.WinError(c.get_last_error())
+    try:
+        result = module.close_demo_session(session.session_id)
+        assert busy in result.deferred
+    finally:
+        close(handle)
     assert busy.is_file()
     module.close_demo_session(session.session_id)
     assert not busy.exists()
-
 
 @pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows junction contract')
 def test_windows_junction_cleanup_never_follows_external_target(tmp_path):
@@ -318,6 +325,104 @@ def test_creation_receipt_never_adopts_replacement_after_write(tmp_path, monkeyp
         patch.setattr(demo_files.hashlib, 'sha256', racing_hash)
         session = module.open_demo_session(MANIFEST, owned, ())
     assert attempted, 'race must run at the created file fingerprint boundary'
+    assert not replacements, 'the created file handle must deny replacement until its receipt is retained'
     module.close_demo_session(session.session_id)
     for leaf in replacements:
         assert leaf.read_text(encoding='utf-8') == 'foreign replacement before receipt'
+
+
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows handle race contract')
+def test_cleanup_parent_junction_swap_at_fingerprint_boundary_is_blocked_or_preserved(tmp_path, monkeypatch):
+    import hashlib
+    import subprocess
+    from atom_search.onboarding import demo_files
+
+    module = api()
+    session = module.open_demo_session(MANIFEST, tmp_path / 'owned', ())
+    relative = json.loads(MANIFEST.read_text(encoding='utf-8'))['files'][0]
+    leaf = session.root / relative
+    branch = leaf.parent
+    detached = tmp_path / 'detached-race'
+    target = tmp_path / 'external'
+    target.mkdir()
+    sentinel = target / leaf.name
+    sentinel.write_text('external parent-race sentinel', encoding='utf-8')
+    content = leaf.read_bytes()
+    original_hash = hashlib.sha256
+    attempted, moved = [], []
+
+    def racing_hash(data=b'', *args, **kwargs):
+        digest = original_hash(data, *args, **kwargs)
+        if data == content and not attempted:
+            attempted.append(True)
+            try:
+                assert branch.resolve().is_relative_to(tmp_path.resolve())
+                assert detached.resolve().is_relative_to(tmp_path.resolve())
+                branch.rename(detached)
+            except OSError:
+                pass
+            else:
+                moved.append(True)
+                subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(branch), str(target)],
+                               check=True, capture_output=True)
+        return digest
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(demo_files.hashlib, 'sha256', racing_hash)
+            module.close_demo_session(session.session_id)
+        assert attempted, 'parent race must run at the actual fingerprint boundary'
+        assert sentinel.read_text(encoding='utf-8') == 'external parent-race sentinel'
+        if moved:
+            assert branch.is_junction()
+            assert (detached / leaf.name).is_file()
+    finally:
+        if branch.is_junction():
+            branch.rmdir()
+
+
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows handle creation contract')
+def test_new_session_directory_identity_is_retained_before_receipt(tmp_path, monkeypatch):
+    from atom_search.onboarding._windows_files import WindowsFiles
+
+    module = api()
+    owned = tmp_path / 'owned'
+    detached = tmp_path / 'detached-directory-race'
+    original_identity = WindowsFiles._identity
+    attempted, moved = [], []
+
+    def racing_identity(self, handle, *, directory):
+        identity = original_identity(self, handle, directory=directory)
+        roots = tuple(owned.glob('v2-*')) if owned.exists() else ()
+        if directory and roots and not attempted:
+            attempted.append(True)
+            root, = roots
+            try:
+                assert root.resolve().is_relative_to(tmp_path.resolve())
+                assert detached.resolve().is_relative_to(tmp_path.resolve())
+                root.rename(detached)
+            except OSError:
+                pass
+            else:
+                moved.append(True)
+                root.mkdir()
+                (root / 'foreign.txt').write_text('replacement directory', encoding='utf-8')
+        return identity
+
+    with monkeypatch.context() as patch:
+        patch.setattr(WindowsFiles, '_identity', racing_identity)
+        session = module.open_demo_session(MANIFEST, owned, ())
+    assert attempted, 'directory race must run while the newly created identity is observed'
+    assert not moved, 'new directory must be pinned by its same creation handle'
+    module.close_demo_session(session.session_id)
+
+
+def test_unsupported_platform_never_falls_back_to_path_based_mutation(tmp_path, monkeypatch):
+    from atom_search.onboarding import demo_files
+
+    owned = tmp_path / 'owned'
+    with monkeypatch.context() as patch:
+        patch.setattr(demo_files.os, 'name', 'posix')
+        with pytest.raises(RuntimeError, match='unsupported_demo_platform'):
+            demo_files.open_demo_session(MANIFEST, owned, ())
+    assert not owned.exists()
