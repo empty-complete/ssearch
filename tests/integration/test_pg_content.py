@@ -111,8 +111,10 @@ def test_schema5_to6_preserves_metadata_public_ids_and_vectors_and_is_idempotent
     assert all(not values for values in snapshot(pg_connections).values())
     assert sql(pg_connections, 'SELECT version FROM atom_search.schema_migrations ORDER BY version') == [(i,) for i in range(1, 7)]
     for table in TABLES:
-        assert sql(pg_connections, "SELECT has_table_privilege('atom_app',%s,'SELECT,INSERT,UPDATE,DELETE')",
-                   ('atom_search.' + table,)) == [(True,)]
+        for privilege in ('SELECT', 'INSERT', 'UPDATE', 'DELETE'):
+            assert sql(pg_connections, "SELECT has_table_privilege('atom_app',%s,%s)",
+                       ('atom_search.' + table, privilege)) == [(True,)]
+    assert sql(pg_connections, "SELECT has_sequence_privilege('atom_app','atom_search.content_chunks_id_seq','USAGE')") == [(True,)]
     with pg_connections['application']() as connection:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             connection.execute('ALTER TABLE atom_search.content_chunks ADD COLUMN forbidden text')
@@ -168,7 +170,8 @@ def test_stale_publication_preserves_last_good_chunks_and_current_metadata(pg_co
     before = snapshot(pg_connections)
     metadata = sql(pg_connections, 'SELECT * FROM atom_search.files')
     old_vectors = sql(pg_connections, 'SELECT * FROM atom_search.file_embeddings')
-    result = content.publish(token, extraction('Устаревшее'), records('Устаревшее'), current_stat=current_stat)
+    data = replace(extraction('Устаревшее'), extractor_version=token.extractor_version)
+    result = content.publish(token, data, records('Устаревшее'), current_stat=current_stat)
     assert (result.accepted, result.chunks_written, result.reason) == (False, 0, reason)
     assert snapshot(pg_connections) == before
     assert active(pg_connections) == [(first.content_generation, 'Согласованный бюджет', first.content_generation)]

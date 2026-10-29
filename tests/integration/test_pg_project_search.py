@@ -92,8 +92,8 @@ def test_context_schema4_to5_preserves_metadata_ids_and_old_vectors(pg_connectio
             (71,'old|filename-parent-v1',4,%s,%s::vector)""", ('c' * 64, str(list(VECTOR))))
     before = sql(pg_connections, 'SELECT * FROM atom_search.files')
     identities = sql(pg_connections, 'SELECT * FROM atom_search.file_public_ids')
-    assert apply_catalog_migrations(pg_connections['maintenance']) == 5
-    assert apply_catalog_migrations(pg_connections['maintenance']) == 5
+    assert apply_catalog_migrations(pg_connections['maintenance']) == 6
+    assert apply_catalog_migrations(pg_connections['maintenance']) == 6
     assert sql(pg_connections, 'SELECT * FROM atom_search.files') == before
     assert sql(pg_connections, 'SELECT * FROM atom_search.file_public_ids') == identities
     assert sql(pg_connections, 'SELECT model_key,file_revision FROM atom_search.file_embeddings') == [

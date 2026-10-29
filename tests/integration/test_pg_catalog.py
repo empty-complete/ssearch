@@ -59,9 +59,9 @@ def test_pg_schema_and_extension_versions(pg_connections):
     assert rows(pg_connections, "SHOW server_version") == [("18.6",)]
     assert rows(pg_connections, "SELECT extversion FROM pg_extension WHERE extname='vector'") == [("0.8.7",)]
     migrate, Catalog = api()
-    assert migrate(pg_connections["maintenance"]) == 5
+    assert migrate(pg_connections["maintenance"]) == 6
     before = state(pg_connections)
-    assert migrate(pg_connections["maintenance"]) == 5
+    assert migrate(pg_connections["maintenance"]) == 6
     assert state(pg_connections) == before
     assert rows(pg_connections, "SELECT current_user") == [("atom_bootstrap",)]
     with pg_connections["application"]() as connection:
@@ -150,8 +150,8 @@ def test_int64_mtime_and_quoted_unicode_paths_round_trip(pg_catalog, pg_connecti
 def test_concurrent_schema_migration_runs_once(pg_connections):
     migrate, _ = api()
     with ThreadPoolExecutor(max_workers=4) as executor:
-        assert list(executor.map(lambda _: migrate(pg_connections["maintenance"]), range(4))) == [5]*4
-    assert rows(pg_connections, "SELECT version FROM atom_search.schema_migrations ORDER BY version") == [(1,), (2,), (3,), (4,), (5,)]
+        assert list(executor.map(lambda _: migrate(pg_connections["maintenance"]), range(4))) == [6]*4
+    assert rows(pg_connections, "SELECT version FROM atom_search.schema_migrations ORDER BY version") == [(1,), (2,), (3,), (4,), (5,), (6,)]
     assert rows(pg_connections, "SELECT state,generation FROM atom_search.catalogs") == [("active", 0)]
 
 
@@ -402,7 +402,7 @@ def test_reopen_restores_intended_grants_and_active_uniqueness(pg_catalog, pg_co
     migrate, Catalog = api()
     source = seed(pg_catalog)
     rows(pg_connections, "REVOKE SELECT ON atom_search.files FROM atom_app")
-    assert migrate(pg_connections["maintenance"]) == 5
+    assert migrate(pg_connections["maintenance"]) == 6
     reopened = Catalog(pg_connections["application"], model=MODEL)
     assert reopened.status(scope=SearchScope((source,)))["files"] == 1
     with pg_connections["maintenance"]() as connection:

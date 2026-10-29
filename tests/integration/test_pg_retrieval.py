@@ -283,10 +283,10 @@ def test_v1_backfill_is_atomic_and_idempotent(pg_connections):
     assert rows(pg_connections, 'SELECT version FROM atom_search.schema_migrations') == [(1,)]
     assert rows(pg_connections, "SELECT column_name FROM information_schema.columns WHERE table_schema='atom_search' AND table_name='files' AND column_name='compact_path'") == []
     rows(pg_connections, 'DROP TRIGGER reject_backfill ON atom_search.files')
-    assert migration.apply_catalog_migrations(pg_connections['maintenance']) == 5
+    assert migration.apply_catalog_migrations(pg_connections['maintenance']) == 6
     before = rows(pg_connections, 'SELECT compact_name,compact_stem,compact_path,fts_russian::text,fts_simple::text FROM atom_search.files')
     assert before[0][:3] == ('елкаpdf', 'елка', 'пермскиемоторыелкаpdf')
-    assert migration.apply_catalog_migrations(pg_connections['maintenance']) == 5
+    assert migration.apply_catalog_migrations(pg_connections['maintenance']) == 6
     assert rows(pg_connections, 'SELECT compact_name,compact_stem,compact_path,fts_russian::text,fts_simple::text FROM atom_search.files') == before
     scope = SearchScope(tuple(row[0] for row in rows(pg_connections, 'SELECT id FROM atom_search.sources')))
     assert retrieval(pg_connections).lexical_candidates('пермского мотора', scope=scope, limit=1)

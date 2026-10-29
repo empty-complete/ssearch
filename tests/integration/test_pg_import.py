@@ -529,7 +529,7 @@ def test_v2_upgrades_without_rewriting_catalog_rows(pg_connections):
         migrations._backfill_v2(connection)
         connection.execute('INSERT INTO atom_search.schema_migrations(version) VALUES (1),(2)')
         connection.execute("INSERT INTO atom_search.sources(catalog_id,path,status) VALUES (1,'retained','unavailable')")
-    assert apply_catalog_migrations(pg_connections['maintenance']) == 5
+    assert apply_catalog_migrations(pg_connections['maintenance']) == 6
     assert rows(pg_connections, 'SELECT id,path,status FROM atom_search.sources') == [(1, 'retained', 'unavailable')]
     assert rows(pg_connections, 'SELECT count(*) FROM atom_search.legacy_imports') == [(0,)]
     with pg_connections['application']() as connection:
@@ -637,7 +637,7 @@ def test_schema_dump_restore_keeps_search_without_local_runtime_paths(tmp_path):
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     c.execute('SELECT count(*) FROM atom_search.files')
                 c.rollback()
-            assert apply_catalog_migrations(lambda: target.open_connection(role='maintenance')) == 5
+            assert apply_catalog_migrations(lambda: target.open_connection(role='maintenance')) == 6
         assert state(target) == expected
         verified_manifest = _manifest_and_assets((ROOT / 'models').resolve())
         assert verified_manifest == MANIFEST  # separately supplied, verified assets; not SQL payload
