@@ -161,7 +161,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', action='store_true', help='Prepare source tests without Inno Setup')
     parser.add_argument('--desktop', action='store_true', help='Prepare pinned offline Electron input')
+    parser.add_argument('--agent', action='store_true', help='Prepare the approved SDK lock for source tests only')
     args = parser.parse_args()
+    if args.agent and (not args.source or args.desktop):
+        raise ValueError('agent_source_scope_invalid')
     config = json.loads((ROOT / 'resources/ci/build-inputs.json').read_text(encoding='utf-8'))
     if (config['schema_version'] != 1 or os.name != 'nt'
             or '.'.join(map(str, sys.version_info[:3])) != config['python_version']
@@ -204,6 +207,8 @@ def main() -> None:
         run(python, '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install',
             '--no-index', '--no-deps', '--no-build-isolation', '--editable',
             ROOT / 'packages/atom-search-core')
+    if args.agent:
+        run(python, ROOT / 'tools/ci_agent_dependencies.py', '--source-commit', os.environ.get('SOURCE_SHA', ''), '--prepare-source')
     run(python, ROOT / 'tools/fetch_model.py')
     print('Public inputs prepared; source tests can start.' if args.source else
           'Public inputs prepared; the offline build can start.')

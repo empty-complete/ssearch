@@ -20,6 +20,10 @@ on:
         description: Build the Electron package and frozen headless service candidate
         type: boolean
         default: false
+      agent_sdk:
+        description: Prepare the approved MCP SDK lock for manual source tests only
+        type: boolean
+        default: false
       frontend_test_targets:
         description: 'Electron Quick: JSON array of frontend test files'
         type: string
@@ -173,6 +177,7 @@ jobs:
       SOURCE_SHA: ${{ github.sha }}
       RESOLVER_PUBLISH: ${{ inputs.publish && 'true' || 'false' }}
       RESOLVER_DESKTOP: ${{ inputs.desktop_stack && 'true' || 'false' }}
+      RESOLVER_AGENT: ${{ inputs.agent_sdk && 'true' || 'false' }}
       RESOLVER_INSTALLER: ${{ inputs.installer_input }}
       RESOLVER_PYTHON_TARGETS: ${{ inputs.test_targets }}
       RESOLVER_FRONTEND_TARGETS: ${{ inputs.frontend_test_targets }}
@@ -190,7 +195,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:RESOLVER_PUBLISH -cne 'false' -or $env:RESOLVER_DESKTOP -cne 'false' -or
+          if ($env:RESOLVER_PUBLISH -cne 'false' -or $env:RESOLVER_DESKTOP -cne 'false' -or $env:RESOLVER_AGENT -cne 'false' -or
               $env:RESOLVER_INSTALLER -cne 'quick99') { throw 'AGENT_RESOLVER_SCOPE_INVALID' }
           foreach ($name in @('RESOLVER_PYTHON_TARGETS', 'RESOLVER_FRONTEND_TARGETS', 'RESOLVER_DESKTOP_TARGETS')) {
             try { $targets = ConvertFrom-Json -InputObject ([Environment]::GetEnvironmentVariable($name)) -NoEnumerate }
@@ -229,6 +234,7 @@ jobs:
       TEST_TARGETS_JSON: ${{ needs.changes.outputs.targets || inputs.test_targets || '[]' }}
       SSEARCH_INSTALLER_INPUT_SET: ${{ inputs.installer_input || 'quick99' }}
       DESKTOP_STACK: ${{ inputs.desktop_stack && 'true' || 'false' }}
+      AGENT_SDK: ${{ inputs.agent_sdk && 'true' || 'false' }}
       FRONTEND_TEST_TARGETS_JSON: ${{ inputs.frontend_test_targets || '[]' }}
       DESKTOP_TEST_TARGETS_JSON: ${{ inputs.desktop_test_targets || '[]' }}
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -266,6 +272,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $count = 0
+          if ($env:AGENT_SDK -ceq 'true' -and ('${{ github.event_name }}' -cne 'workflow_dispatch' -or
+              $env:BUILD_MODE -cne 'source' -or $env:DESKTOP_STACK -cne 'false' -or '${{ inputs.publish }}' -eq 'true')) {
+            throw 'AGENT_SOURCE_SCOPE_INVALID'
+          }
           foreach ($name in @('TEST_TARGETS_JSON', 'FRONTEND_TEST_TARGETS_JSON', 'DESKTOP_TEST_TARGETS_JSON')) {
             $targets = ConvertFrom-Json -InputObject ([Environment]::GetEnvironmentVariable($name)) -NoEnumerate
             if ($targets -isnot [array] -or @($targets | Where-Object { $_ -isnot [string] }).Count) {
@@ -317,6 +327,7 @@ jobs:
         run: |
           $arguments = @('tools/prepare_ci.py')
           if ($env:BUILD_MODE -eq 'source') { $arguments += '--source' }
+          if ($env:AGENT_SDK -ceq 'true') { $arguments += '--agent' }
           if ($env:DESKTOP_STACK -eq 'true') { $arguments += '--desktop' }
           & python @arguments
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -366,6 +377,16 @@ jobs:
           name: source-tests-${{ env.SOURCE_SHA }}
           path: artifacts/ci-source/test-receipt.json
           if-no-files-found: warn
+          retention-days: 7
+      - name: Retain only the source SDK input receipt
+        if: >-
+          always() && env.BUILD_MODE == 'source' && env.AGENT_SDK == 'true' &&
+          hashFiles(format('artifacts/ci-agent-source/{0}/input-receipt.json', env.SOURCE_SHA)) != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-source-inputs-${{ env.SOURCE_SHA }}
+          path: artifacts/ci-agent-source/${{ env.SOURCE_SHA }}/input-receipt.json
+          if-no-files-found: error
           retention-days: 7
       - name: Retain isolated native UTF-8 experiment only
         if: >-
