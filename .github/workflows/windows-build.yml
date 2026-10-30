@@ -10,7 +10,7 @@ on:
       mode:
         description: Scope; source runs selected tests without packaging
         type: choice
-        options: [full, quick, source, installer]
+        options: [full, quick, source, installer, agent-resolver]
         default: full
       test_targets:
         description: 'Python targets: JSON array of existing test files/nodeids'
@@ -162,9 +162,61 @@ jobs:
           "targets=$reviewTargets" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "authentication=$authentication" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
+  agent-resolver:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'agent-resolver'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      PYTHONUTF8: '1'
+      SOURCE_SHA: ${{ github.sha }}
+      RESOLVER_PUBLISH: ${{ inputs.publish && 'true' || 'false' }}
+      RESOLVER_DESKTOP: ${{ inputs.desktop_stack && 'true' || 'false' }}
+      RESOLVER_INSTALLER: ${{ inputs.installer_input }}
+      RESOLVER_PYTHON_TARGETS: ${{ inputs.test_targets }}
+      RESOLVER_FRONTEND_TARGETS: ${{ inputs.frontend_test_targets }}
+      RESOLVER_DESKTOP_TARGETS: ${{ inputs.desktop_test_targets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+      - name: Validate the manual dependency-only scope
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RESOLVER_PUBLISH -cne 'false' -or $env:RESOLVER_DESKTOP -cne 'false' -or
+              $env:RESOLVER_INSTALLER -cne 'quick99') { throw 'AGENT_RESOLVER_SCOPE_INVALID' }
+          foreach ($name in @('RESOLVER_PYTHON_TARGETS', 'RESOLVER_FRONTEND_TARGETS', 'RESOLVER_DESKTOP_TARGETS')) {
+            try { $targets = ConvertFrom-Json -InputObject ([Environment]::GetEnvironmentVariable($name)) -NoEnumerate }
+            catch { throw 'AGENT_RESOLVER_SCOPE_INVALID' }
+            if ($targets -isnot [array] -or $targets.Count -ne 0) { throw 'AGENT_RESOLVER_SCOPE_INVALID' }
+          }
+      - name: Resolve fixed SDK wheels and prove the isolated offline closure
+        shell: pwsh
+        run: |
+          & python tools/ci_agent_dependencies.py --source-commit $env:SOURCE_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain only the dependency proposal and closed proof
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-sdk-proposal-${{ env.SOURCE_SHA }}
+          path: |
+            artifacts/ci-agent-resolver/${{ env.SOURCE_SHA }}/agent-requirements.proposal.txt
+            artifacts/ci-agent-resolver/${{ env.SOURCE_SHA }}/resolver-report.json
+            artifacts/ci-agent-resolver/${{ env.SOURCE_SHA }}/provenance.json
+            artifacts/ci-agent-resolver/${{ env.SOURCE_SHA }}/offline-receipt.json
+          if-no-files-found: error
+          retention-days: 7
+
   build:
     needs: changes
-    if: needs.changes.outputs.build == 'true' && github.event_name != 'push'
+    if: needs.changes.outputs.build == 'true' && github.event_name != 'push' && inputs.mode != 'agent-resolver'
     runs-on: windows-2025
     timeout-minutes: 355
     permissions:
@@ -336,6 +388,7 @@ jobs:
       needs.changes.outputs.route != 'candidate-source' &&
       needs.changes.outputs.route != 'installer-source' &&
       needs.changes.outputs.route != 'owner-source' &&
+      inputs.mode != 'agent-resolver' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
         inputs.publish && inputs.mode == 'full' && needs.build.result == 'success'))
