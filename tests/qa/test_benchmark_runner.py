@@ -284,3 +284,37 @@ def test_directory_budget_streams_real_scandir_and_closes_on_refusal(inputs, mon
     assert 1 <= len(consumed) <= 43, 'real directory consumption must stop within the budget'
     assert closed == [True], 'the real scan context must close on budget refusal'
     assert not inputs[2].exists()
+
+
+def test_retained_directory_sharing_atomic_publication_probe(tmp_path):
+    """Real no-PG comparison: allow child writes while root rename stays denied."""
+    from atom_search.onboarding._windows_files import WindowsFiles
+    from atom_search.settings.atomic import atomic_write_json
+    outcomes = {}
+    for share_mask in (1, 3):  # READ versus READ|WRITE; neither shares DELETE.
+        files = WindowsFiles()
+        native_create = files._create
+        def create(*args):
+            values = list(args)
+            if values[8] & 1:  # FILE_DIRECTORY_FILE
+                values[6] = share_mask
+            return native_create(*values)
+        files._create = create
+        profile = tmp_path / f'probe-{share_mask}'
+        with files._parents(tmp_path) as parent:
+            with files._handle(parent, profile.name, directory=True, create=True, delete=True) as root:
+                try:
+                    atomic_write_json(profile / 'settings.json', {'revision': 1})
+                    atomic_write_json(profile / 'settings.json', {'revision': 2})
+                    outcomes[share_mask] = 'published'
+                except PermissionError as failure:
+                    outcomes[share_mask] = failure.winerror
+                with pytest.raises(PermissionError):
+                    profile.rename(tmp_path / f'displaced-{share_mask}')
+                for entry in profile.iterdir():
+                    with files._handle(root, entry.name, directory=False, delete=True) as leaf:
+                        files._dispose(leaf)
+                files._dispose(root)
+        assert not profile.exists()
+    assert outcomes[1] in (5, 32), outcomes
+    assert outcomes[3] == 'published', outcomes

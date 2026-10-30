@@ -125,22 +125,24 @@ def _files(corpus, max_files):
     while pending:
         directory = pending.pop()
         _no_links(directory)
-        for entry in directory.iterdir():
-            # Bound enumeration before probing or enqueueing any discovered
-            # child; a wide single directory must not grow an unbounded stack.
-            discovered += 1
-            if discovered > max_files * 4 + 32:
-                raise ValueError('benchmark_input_invalid')
-            _no_links(entry)
-            mode = entry.lstat().st_mode
-            if stat.S_ISDIR(mode):
-                pending.append(entry)
-            elif stat.S_ISREG(mode):
-                files.add(entry.relative_to(corpus).as_posix())
-                if len(files) > max_files:
+        with os.scandir(directory) as entries:
+            for discovered_entry in entries:
+                # Consume the OS iterator lazily. Path.iterdir on Python3.12
+                # materializes os.listdir before yielding its first entry.
+                discovered += 1
+                if discovered > max_files * 4 + 32:
                     raise ValueError('benchmark_input_invalid')
-            else:
-                raise ValueError('benchmark_input_invalid')
+                entry = Path(discovered_entry.path)
+                _no_links(entry)
+                mode = entry.lstat().st_mode
+                if stat.S_ISDIR(mode):
+                    pending.append(entry)
+                elif stat.S_ISREG(mode):
+                    files.add(entry.relative_to(corpus).as_posix())
+                    if len(files) > max_files:
+                        raise ValueError('benchmark_input_invalid')
+                else:
+                    raise ValueError('benchmark_input_invalid')
     return files
 
 
