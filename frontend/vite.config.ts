@@ -24,5 +24,22 @@ export default defineConfig({
   define: { __PRODUCT__: JSON.stringify(product) },
   server: { host: '127.0.0.1', strictPort: true, port: 5173 },
   build: { sourcemap: false, assetsInlineLimit: 0 },
-  test: { environment: 'jsdom', setupFiles: ['./tests/setup.ts'], include: ['tests/**/*.test.{ts,tsx}'], restoreMocks: true },
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./tests/setup.ts'],
+    include: ['tests/**/*.test.{ts,tsx}'],
+    restoreMocks: true,
+    // Resolve these static text imports before Vite's transform access check.
+    // Production aliases, filesystem permissions and CSP remain unchanged.
+    alias: [
+      {
+        find: /^\.\.\/\.\.\/LICENSE\.txt\?raw$/,
+        replacement: resolve(import.meta.dirname, 'tests/fixtures/staticText.ts'),
+      },
+      {
+        find: /^\.\.\/THIRD_PARTY_NOTICES\.txt\?raw$/,
+        replacement: resolve(import.meta.dirname, 'tests/fixtures/staticText.ts'),
+      },
+    ],
+  },
 });

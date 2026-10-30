@@ -1,5 +1,23 @@
 # ssearch frontend candidate
 
+P5 Task 1 search slice: `SearchPage` consumes the existing canonical client's
+search port, with explicit `scope: string[] | null`, mode
+`application | widget | onboarding`, and an optional typed result-UUID reveal
+port. Standalone pages keep query state in memory; only `SearchApp` uses the
+existing transient recovery port. No new service, DTO, settings store or native
+authority is introduced. Default Explorer actions remain disabled in application
+and demo surfaces until the separately gated native integration.
+Project choices use service-provided canonical labels without changing the query
+or aliases. Full paths wrap, including distinguishing parent folders. The shared
+HeroUI ListBox owns its composite keyboard behavior; query arrows enter it while
+IME and ordinary text navigation remain native. Query/scope/project changes
+invalidate pending results immediately; same-query refresh retains a surviving
+selected UUID and clears one that disappeared. Motion never gates commands.
+GitHub checks cover source races, composition, scope, choices, safe text,
+reconnect, disabled native actions and headless themes/compact paths/scroll.
+Actual CI and combined review evidence belong to the PR; native, packaging,
+batch-PG and full-stage acceptance are separate gates, not claims of this UI slice.
+
 P4 transport/lifecycle source slice: bounded TS broker frames and a private
 MAIN-owned Python adapter reuse P2 identity/nonce and read-only owner IPC proof;
 spawned/attached mode never grants mutation rights. One canonical user/profile
@@ -95,7 +113,8 @@ fallback in the renderer. The typed preload is a source boundary; the actual
 verified broker connection remains a separate integration gate.
 Only explicit development `VITE_DEV_MOCK=1` selects synthetic DTO fixtures; Vite
 eliminates that import in production and bundle inspection rejects fixture IDs.
-The preview reveal action explicitly explains that Explorer is not opened.
+Preview and production both keep Explorer actions disabled with an explanation
+until the native integration is available; browser fixtures never imply success.
 HMR alone receives a development CSP permitting its loopback websocket and React
 refresh preamble. Production keeps a strict self-only script policy and disables
 connections. A separate headless production scenario checks the unavailable
