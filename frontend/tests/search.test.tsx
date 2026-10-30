@@ -113,6 +113,40 @@ it('offers full project choices and refines the project without rewriting or rem
   expect(queryInput).toHaveValue('ПМ спецификация');
 });
 
+it('resets an enabled project choice after its search fails while retaining the query and source scope', async () => {
+  const requests: SearchRequest[] = [];
+  const service: SearchService = {
+    async search(request) {
+      requests.push(request);
+      if (request.project_id) throw new Error('service_unavailable');
+      const reply = response(request.query);
+      reply.ambiguities = [{ term: 'ПМ', options: [
+        { project_id: motorsProjectId, canonical_name: 'Пермские моторы', source_ids: [sourceId] },
+      ] }];
+      return reply;
+    },
+  };
+  render(<SearchApp service={service} scope={[sourceId]} />);
+  const user = userEvent.setup();
+  const queryInput = screen.getByRole('searchbox');
+  await user.type(queryInput, 'ПМ спецификация');
+  await user.keyboard('{Enter}');
+  await user.click(await screen.findByRole('button', { name: 'Пермские моторы', exact: true }));
+  await screen.findByRole('alert');
+  const reset = screen.getByRole('button', { name: 'Все проекты', exact: true });
+  expect(reset).toBeEnabled();
+  await user.click(reset);
+
+  await waitFor(() => expect(requests.at(-1)).toMatchObject({
+    query: 'ПМ спецификация',
+    source_ids: ['11111111-1111-4111-8111-111111111111'],
+    project_id: null,
+  }));
+  expect(screen.getByRole('searchbox')).toBe(queryInput);
+  expect(queryInput).toHaveValue('ПМ спецификация');
+  expect(screen.queryByText('Проект: Пермские моторы', { exact: true })).not.toBeInTheDocument();
+});
+
 it('retains the selected UUID after a reordered same-query refresh but never reveals while pending', async () => {
   const first = result(firstResultId, 'АР');
   const second = result(secondResultId, 'КМ');
