@@ -8,6 +8,38 @@
 сборки учитывается отдельно. MCP, ремонт, обновления и outbox ещё не реализованы.
 Учебный JSON не является конфигурацией приложения или результатом проверки ПК.
 
+Чистый модуль [repair](../../../src/atom_search/repair/) содержит предварительный
+source-only срез политики и неизменяемых планов. Он не подключён к HTTP/MCP,
+не выдаёт capabilities, не применяет ремонт и не меняет существующий writer.
+`AgentPrincipal` создаётся только доверенным владельцем из существующего
+`AccessContext` и текущей revision политики; JSON клиента не создаёт principal.
+По умолчанию политика выключена и actions пусты. Зарезервированный `agent_repair`
+в этом модуле — будущее явное право, текущий сервис его не выдаёт; `owner` сам
+по себе не заменяет его. UUID scope проверяется явно, пустой scope не wildcard.
+
+[repair-plan.schema.json](repair-plan.schema.json) описывает только планы
+`SOURCE_UNREACHABLE` / `SOURCE_ACCESS_DENIED`: cached факт не старше 300 секунд,
+один `retry_source_probe` / `pause_source_job`, максимум 5 секунд и одна попытка.
+План связывает principal, policy/config revisions, index generation, UUID источника
+и SHA-256 канонического cached факта, живёт 600 секунд. `observed_at` ответа не
+освежает факт. Preflight требует точную ссылку `health:<health_fact_hash>` и
+отвергает изменённые descriptors или устаревшие условия. Это проверка доверенного
+in-process DTO; будущий apply должен разрешать только ID сохранённого сервером
+плана с durable ключом через единственный coordinator. Принимать клиентский DTO
+как разрешение на выполнение нельзя. Пока `idempotency_key=null`, apply отсутствует.
+`peak_extra_bytes=0` описывает этот чистый срез без действий, а не резерв места для
+будущего ремонта/журнала. `not_required` не обещает rollback. Global/runtime коды
+возвращают `unsupported_repair` до проверенных owner/scope/storage/recovery ports.
+
+Локальная `RepairPolicy.settings_validate` переиспользует существующий
+`MutationCoordinator.validate` как доверенный чистый port. Сохраняется действующее
+P2 требование capability `owner`; дополнительно нужны включённая текущая политика,
+явный scope всех включённых источников и owner bounds внутри schema3
+`86400..31536000` для единственного поля `indexing.interval_seconds`.
+Возвращаемая `AgentSettingsValidation.normalized` — только безопасный patch,
+не полный owner config и не кандидат apply; paths/credentials из owner snapshot
+не возвращаются. Новый settings API, permission grant или mutation writer не добавляются.
+
 - `settings.example.json`: формат/монотонная revision, источники и профили,
   целевой managed PostgreSQL (без credentials),
   квота, UI/theme/hotkey, updates, onboarding/greeting, search/project_aliases,

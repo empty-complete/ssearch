@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssearch cached source repair plan (pure planning subset)",
+  "description": "Server-owned plan description, not an executable request. The current service exposes no repair endpoint or capability. Global/runtime plans, durable keys, apply, verification, rollback and incident delivery require later owner integration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "principal_id", "capability_revision", "config_revision", "index_generation", "health_fact_hash", "expires_at", "code", "source_id", "actions", "peak_extra_bytes", "rollback_mode", "idempotency_key"],
+  "properties": {
+    "id": {"type": "string", "format": "uuid"},
+    "principal_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "capability_revision": {"type": "integer", "minimum": 0},
+    "config_revision": {"type": "integer", "minimum": 1},
+    "index_generation": {"type": "integer", "minimum": 0},
+    "health_fact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "code": {"type": "string", "enum": ["SOURCE_UNREACHABLE", "SOURCE_ACCESS_DENIED"]},
+    "source_id": {"type": "string", "format": "uuid"},
+    "actions": {
+      "type": "array", "minItems": 1, "maxItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "kind", "timeout_seconds", "max_attempts", "reversible"],
+        "properties": {
+          "id": {"type": "string", "enum": ["retry_source_probe", "pause_source_job"]},
+          "kind": {"type": "string", "enum": ["retry_source_probe", "pause_source_job"]},
+          "timeout_seconds": {"type": "integer", "const": 5},
+          "max_attempts": {"type": "integer", "const": 1},
+          "reversible": {"type": "boolean", "const": false}
+        }
+      }
+    },
+    "peak_extra_bytes": {"type": "integer", "const": 0},
+    "rollback_mode": {"type": "string", "const": "not_required"},
+    "idempotency_key": {"type": "null"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"code": {"const": "SOURCE_UNREACHABLE"}}},
+      "then": {"properties": {"actions": {"items": {"properties": {
+        "id": {"const": "retry_source_probe"}, "kind": {"const": "retry_source_probe"}
+      }}}}}
+    },
+    {
+      "if": {"properties": {"code": {"const": "SOURCE_ACCESS_DENIED"}}},
+      "then": {"properties": {"actions": {"items": {"properties": {
+        "id": {"const": "pause_source_job"}, "kind": {"const": "pause_source_job"}
+      }}}}}
+    }
+  ]
+}

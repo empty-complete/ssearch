@@ -336,6 +336,22 @@ def publication_plan(api, env, *, recovery_pr=None):
 
 def classify(api, number, head_sha, *, merge_sha=None):
     pr = api.get(f'pulls/{number}')
+    source_path = Path(__file__).with_name('ci_source_scopes.py')
+    if source_path.is_file():
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('ssearch_owner_source_route', source_path)
+        source = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(source)
+        branch = pr.get('head', {}).get('ref') if isinstance(pr, dict) else None
+        try:
+            # Recognize before count/docs/UI fallbacks: invalid owned scopes
+            # must stop admission instead of accidentally starting a Full.
+            result = source.admit(api, pr, head_sha,
+                api.pages(f'pulls/{number}/files') if branch in source.PROFILES else [], merge_sha=merge_sha)
+        except source.ScopeError as error:
+            raise PublishError(str(error)) from None
+        if result is not None:
+            return result['route']
     require(pr['head']['sha'] == head_sha and bool(SHA.fullmatch(head_sha)),
             'classification_head_changed')
     if not 0 < pr['changed_files'] <= 3000:
@@ -448,7 +464,7 @@ def main():
         api = GitHub()
         if args.command == 'classify':
             route = classify(api, args.pr_number, args.head_sha, merge_sha=args.merge_sha)
-            print(route if route in ('candidate-source', 'installer-source') else ('true' if route else 'false'))
+            print(route if route in ('candidate-source', 'installer-source', 'owner-source') else ('true' if route else 'false'))
         elif args.command == 'verify-pr':
             print(json.dumps(verify_pr_selection(api, args.pr_number)))
         else:
