@@ -6,7 +6,7 @@ Policy/consent, TTL and revocation cases follow once that internal seam is agree
 """
 import uuid
 from dataclasses import dataclass
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from concurrent.futures import ThreadPoolExecutor
 import http.client
 import json
@@ -133,7 +133,7 @@ def raw_read(owner, *, token=None, reference=None):
         path, method = '/v1/search', 'POST'
         headers['Authorization'] = 'Bearer ' + token
         body = json.dumps({'query': 'drawing', 'mode': 'literal'})
-    with http.client.HTTPConnection(address.hostname, address.port, timeout=5) as connection:
+    with closing(http.client.HTTPConnection(address.hostname, address.port, timeout=5)) as connection:
         connection.request(method, path, body, headers)
         response = connection.getresponse()
         response.read()
