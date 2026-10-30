@@ -9,6 +9,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = '031c9dd248ceb10af00091b8a9f0f12c2d8cf49e'
+TASK2_BASE = '9674fc4d311dd0bb3471885624d9391d2aa95488'
+TASK2_BOOTSTRAP = 'codex/ci-task2-source-admission'
 HEAD, MERGE, TREE = 'a' * 40, 'b' * 40, 'c' * 40
 REPO = 'empty-complete/ssearch'
 WORKFLOW = '.github/workflows/windows-build.yml'
@@ -59,7 +61,20 @@ PROFILES = {
         ['tools/ci_source_scopes.py', 'tests/test_ci_source_scopes.py', 'tools/ci_publish.py',
          'tests/test_ci_publish.py', WORKFLOW, 'tests/test_ci_inputs.py'],
         ['tests/test_ci_source_scopes.py', 'tests/test_ci_publish.py', 'tests/test_ci_inputs.py', 'tests/test_ci_p4_candidate.py']),
+    'codex/p11-evidence-validation': (
+        ['docs/contracts/agent-contributions/README.md', 'tests/test_contribution_evidence.py',
+         'tools/agent_contributions/__main__.py', 'tools/agent_contributions/contracts.py',
+         'tools/agent_contributions/evidence.py', 'tools/agent_contributions/validation.py',
+         'tools/check_agent_contributions.py'],
+        ['tests/test_contribution_evidence.py', 'tests/test_contribution_workspace.py', 'tests/test_core_distribution.py']),
+    'codex/p12-quality-metrics': (
+        ['tools/qa/benchmark_search.py', 'tests/qa/test_benchmark_metrics.py'],
+        ['tests/qa/test_benchmark_metrics.py']),
+    TASK2_BOOTSTRAP: (
+        ['tools/ci_source_scopes.py', 'tests/test_ci_source_scopes.py'],
+        ['tests/test_ci_source_scopes.py', 'tests/test_ci_publish.py', 'tests/test_ci_inputs.py', 'tests/test_ci_p4_candidate.py']),
 }
+TASK2_OWNERS = ['codex/p11-evidence-validation', 'codex/p12-quality-metrics']
 
 
 def load_tool(name):
@@ -74,13 +89,14 @@ def load_tool(name):
 class PublicApi:
     def __init__(self, branch):
         self.branch = branch
+        base = TASK2_BASE if branch == TASK2_BOOTSTRAP else BASE
         self.pr = dict(number=17, changed_files=1,
-            base=dict(sha=BASE, ref='main', repo=dict(full_name=REPO)),
+            base=dict(sha=base, ref='main', repo=dict(full_name=REPO)),
             head=dict(sha=HEAD, ref=branch, repo=dict(full_name=REPO)))
         self.files = [dict(filename=PROFILES[branch][0][0], status='modified')]
-        self.main = BASE
-        self.comparison = dict(status='ahead', base_commit=dict(sha=BASE),
-            merge_base_commit=dict(sha=BASE), files=copy.deepcopy(self.files))
+        self.main = base
+        self.comparison = dict(status='ahead', base_commit=dict(sha=base),
+            merge_base_commit=dict(sha=base), files=copy.deepcopy(self.files))
         self.tree = TREE
         self.missing = set()
         self.changed_policy = None
@@ -147,6 +163,7 @@ def test_each_owner_gets_only_its_fixed_nonempty_source_targets(branch):
     assert api.tree_reads == [HEAD], 'targets_must_exist_as_ordinary_files_on_exact_head'
 
 
+@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS])
 @pytest.mark.parametrize('mutation,code', [
     ('extra', 'source_scope_paths_invalid'), ('rename_from', 'source_scope_paths_invalid'),
     ('rename_to', 'source_scope_paths_invalid'), ('policy', 'source_scope_paths_invalid'),
@@ -161,8 +178,8 @@ def test_each_owner_gets_only_its_fixed_nonempty_source_targets(branch):
     ('truncated_tree', 'source_scope_target_unavailable'), ('changed_policy', 'source_scope_policy_changed'),
     ('comparison_files', 'source_scope_inventory_invalid'),
 ])
-def test_recognized_scope_violations_fail_instead_of_falling_back_to_full(mutation, code):
-    api, publisher = PublicApi('codex/p9-repair-policy'), load_tool('ci_publish')
+def test_recognized_scope_violations_fail_instead_of_falling_back_to_full(branch, mutation, code):
+    api, publisher = PublicApi(branch), load_tool('ci_publish')
     if mutation in ('extra', 'policy', 'workflow', 'mixed_owner', 'rename_to'):
         path = {'extra': 'src/atom_search/runtime/postgres.py', 'policy': 'tools/ci_source_scopes.py',
                 'workflow': WORKFLOW, 'mixed_owner': 'src/atom_search/updates/trust.py',
@@ -241,18 +258,20 @@ def test_owner_admission_uses_fresh_advertised_main_not_the_bootstrap_anchor():
     assert publisher.classify(api, 17, HEAD) == 'owner-source'
 
 
+@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS, TASK2_BOOTSTRAP])
 @pytest.mark.parametrize('path', ['README.md', 'frontend/src/SearchApp.tsx'])
-def test_recognized_branch_cannot_escape_through_documentation_or_ui_exemptions(path):
-    api, publisher = PublicApi('codex/p9-repair-policy'), load_tool('ci_publish')
+def test_recognized_branch_cannot_escape_through_documentation_or_ui_exemptions(branch, path):
+    api, publisher = PublicApi(branch), load_tool('ci_publish')
     api.files = [dict(filename=path, status='modified')]
     api.comparison['files'] = copy.deepcopy(api.files)
     with pytest.raises(publisher.PublishError, match='^source_scope_paths_invalid$'):
         publisher.classify(api, 17, HEAD)
 
 
+@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS])
 @pytest.mark.parametrize('path', ['tools/ci_source_scopes.py', 'tools/ci_publish.py', WORKFLOW])
-def test_each_trusted_policy_must_match_the_advertised_base(path):
-    api, publisher = PublicApi('codex/p9-repair-policy'), load_tool('ci_publish')
+def test_each_trusted_policy_must_match_the_advertised_base(branch, path):
+    api, publisher = PublicApi(branch), load_tool('ci_publish')
     api.changed_policy = path
     with pytest.raises(publisher.PublishError, match='^source_scope_policy_changed$'):
         publisher.classify(api, 17, HEAD)
@@ -265,13 +284,14 @@ def test_ci_bootstrap_cannot_silently_move_its_trusted_anchor():
         publisher.classify(api, 17, HEAD)
 
 
+@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS, TASK2_BOOTSTRAP])
 @pytest.mark.parametrize('mutation,code', [
     ('valid', None), ('unmerged', 'source_scope_merge_invalid'),
     ('wrong_merge', 'source_scope_merge_invalid'), ('tree', 'source_scope_merge_tree_invalid'),
     ('advanced_main', 'source_scope_base_stale'),
 ])
-def test_merged_source_route_requires_exact_merge_identity_and_equal_trees(mutation, code):
-    api, publisher = PublicApi('codex/p9-repair-policy'), load_tool('ci_publish')
+def test_merged_source_route_requires_exact_merge_identity_and_equal_trees(branch, mutation, code):
+    api, publisher = PublicApi(branch), load_tool('ci_publish')
     api.main = MERGE
     api.pr.update(merged=True, merged_at='2026-10-30T00:00:00Z', merge_commit_sha=MERGE)
     if mutation == 'unmerged':
@@ -304,8 +324,9 @@ def test_settings_cli_reauthenticates_and_never_accepts_caller_targets(monkeypat
     assert output.out == '' and output.err.strip() == 'source_scope_paths_invalid'
 
 
-def test_settings_cli_binds_the_main_push_before_suppressing_publication(monkeypatch, capsys):
-    source, api = load_tool('ci_source_scopes'), PublicApi('codex/p9-repair-policy')
+@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS, TASK2_BOOTSTRAP])
+def test_settings_cli_binds_the_main_push_before_suppressing_publication(branch, monkeypatch, capsys):
+    source, api = load_tool('ci_source_scopes'), PublicApi(branch)
     api.main = MERGE
     api.pr.update(merged=True, merged_at='2026-10-30T00:00:00Z', merge_commit_sha=MERGE)
     monkeypatch.setattr(source, 'github', lambda: api)
@@ -318,3 +339,76 @@ def test_settings_cli_binds_the_main_push_before_suppressing_publication(monkeyp
     assert source.main() == 1
     output = capsys.readouterr()
     assert output.out == '' and output.err.strip() == 'source_scope_merge_tree_invalid'
+
+
+@pytest.mark.parametrize('base', [BASE, 'd' * 40])
+def test_task2_ci_bootstrap_does_not_inherit_the_old_or_a_rolling_anchor(base):
+    api, publisher = PublicApi(TASK2_BOOTSTRAP), load_tool('ci_publish')
+    api.main = api.pr['base']['sha'] = base
+    api.comparison['base_commit']['sha'] = api.comparison['merge_base_commit']['sha'] = base
+    with pytest.raises(publisher.PublishError, match='^source_scope_bootstrap_invalid$'):
+        publisher.classify(api, 17, HEAD)
+
+
+@pytest.mark.parametrize('path,rename', [
+    ('tools/ci_publish.py', False), (WORKFLOW, False),
+    ('tools/ci_publish.py', True), ('tools/qa/benchmark_search.py', True),
+])
+def test_task2_ci_bootstrap_cannot_edit_or_rename_other_policy_or_owner_files(path, rename):
+    api, publisher = PublicApi(TASK2_BOOTSTRAP), load_tool('ci_publish')
+    if rename:
+        api.files[0].update(status='renamed', previous_filename=path)
+    else:
+        api.files.append(dict(filename=path, status='modified'))
+        api.pr['changed_files'] = len(api.files)
+    api.comparison['files'] = copy.deepcopy(api.files)
+    with pytest.raises(publisher.PublishError, match='^source_scope_paths_invalid$'):
+        publisher.classify(api, 17, HEAD)
+
+
+@pytest.mark.parametrize('path', ['tools/ci_source_scopes.py', 'tools/ci_publish.py', WORKFLOW])
+def test_task2_ci_bootstrap_exempts_only_its_own_editable_policy(path):
+    api, publisher = PublicApi(TASK2_BOOTSTRAP), load_tool('ci_publish')
+    api.changed_policy = path
+    if path == 'tools/ci_source_scopes.py':
+        assert publisher.classify(api, 17, HEAD) == 'owner-source'
+    else:
+        with pytest.raises(publisher.PublishError, match='^source_scope_policy_changed$'):
+            publisher.classify(api, 17, HEAD)
+
+
+@pytest.mark.parametrize('branch', TASK2_OWNERS)
+def test_task2_owners_use_current_main_after_accepting_the_ci_base(branch):
+    api, publisher = PublicApi(branch), load_tool('ci_publish')
+    api.main = api.pr['base']['sha'] = TASK2_BASE
+    api.comparison['base_commit']['sha'] = api.comparison['merge_base_commit']['sha'] = TASK2_BASE
+    assert publisher.classify(api, 17, HEAD) == 'owner-source'
+
+
+@pytest.mark.parametrize('branch', [*TASK2_OWNERS, TASK2_BOOTSTRAP])
+@pytest.mark.parametrize('stale_during_checkout', [False, True])
+def test_task2_authentication_rechecks_current_scope_around_the_exact_checkout(
+        branch, stale_during_checkout, monkeypatch, capsys):
+    source, api = load_tool('ci_source_scopes'), PublicApi(branch)
+    observed = []
+
+    def checkout(head, targets):
+        observed.append((head, list(targets)))
+        if stale_during_checkout:
+            api.main = 'd' * 40
+
+    monkeypatch.setattr(source, 'github', lambda: api)
+    monkeypatch.setattr(source, 'verify_checkout', checkout)
+    monkeypatch.setattr('sys.argv', ['ci_source_scopes.py', 'authenticate', '--pr-number', '17', '--head-sha', HEAD])
+    result = source.main()
+    output = capsys.readouterr()
+    if stale_during_checkout:
+        assert result == 1 and output.out == ''
+        assert output.err.strip() == 'source_scope_base_stale'
+        assert observed == [(HEAD, PROFILES[branch][1])]
+    else:
+        assert result == 0 and output.err == ''
+        settings = json.loads(output.out)
+        assert settings == dict(route='owner-source', profile=branch, mode='source', desktop_stack=False,
+                                publish=False, test_targets=PROFILES[branch][1])
+        assert observed == [(HEAD, PROFILES[branch][1])] * 2
