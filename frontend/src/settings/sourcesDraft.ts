@@ -46,8 +46,19 @@ export function createSourcesDraft(snapshot: SettingsSnapshot): SourcesDraft {
   };
 }
 
-/** Unwired fail-closed contract scaffold. Editing awaits assertion RED and the
- * Task1 packaging boundary; it never simulates validate/apply success. */
-export function reduceSourcesDraft(draft: SourcesDraft, _action: SourcesDraftAction): SourcesDraft {
-  return draft;
+/** In-memory staging only. P2 still owns schema/path policy and atomic apply. */
+export function reduceSourcesDraft(draft: SourcesDraft, action: SourcesDraftAction): SourcesDraft {
+  if (!draft.baseline.mutable_fields.includes('sources') || !Array.isArray(draft.candidate.sources)) return draft;
+  if (action.type !== 'edit' && action.type !== 'remove') return draft;
+  const matches = (value: JsonValue): value is JsonObject => value !== null && typeof value === 'object'
+    && !Array.isArray(value) && value.id === action.id;
+  if (!draft.candidate.sources.some(matches)) return draft;
+  const candidate = copyObject(draft.candidate);
+  const sources = candidate.sources as JsonValue[];
+  candidate.sources = action.type === 'remove' ? sources.filter(row => !matches(row))
+    : sources.map(row => matches(row) ? { ...row,
+      ...(action.changes.label === undefined ? {} : { label: action.changes.label }),
+      ...(action.changes.enabled === undefined ? {} : { enabled: action.changes.enabled }),
+    } : row);
+  return { ...draft, candidate, generation: draft.generation + 1, validation: null };
 }

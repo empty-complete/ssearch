@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { JsonObject, SettingsSnapshot } from '../src/bridge/types';
-import { createSourcesDraft, reduceSourcesDraft, type SourceDraftRow } from '../src/settings/sourcesDraft';
+import { createSourcesDraft, reduceSourcesDraft, type SourceDraftRow, type SourcesDraft } from '../src/settings/sourcesDraft';
 
 const local: SourceDraftRow = {
   id: '11111111-1111-4111-8111-111111111111', path: 'C:\\Учебный каталог', label: 'Документы', enabled: true,
@@ -21,6 +21,18 @@ function snapshot(sources: SourceDraftRow[]): SettingsSnapshot {
       ui: { theme: 'system' }, projects: [],
     },
   };
+}
+
+// Independent public state input: cancellation/discard must be exercised even
+// if another staging operation is missing or regresses.
+function staged(saved: SettingsSnapshot): SourcesDraft {
+  const draft = createSourcesDraft(saved);
+  const candidate = createSourcesDraft(saved).candidate;
+  candidate.sources = [{ ...local, label: 'Черновик', enabled: false }];
+  return { ...draft, candidate, generation: 3, validation: {
+    valid: true, expected_revision: saved.revision, normalized: { ...candidate, revision: saved.revision + 1 },
+    diff: [], warnings: ['source_roots_overlap'], errors: [],
+  } };
 }
 
 describe('sources draft public contract (unwired, no native or service actions)', () => {
@@ -68,28 +80,42 @@ describe('sources draft public contract (unwired, no native or service actions)'
 
   it('native picker cancel(null) keeps the current staged changes instead of discarding them', () => {
     const saved = snapshot([local]);
-    const edited = reduceSourcesDraft(createSourcesDraft(saved), {
-      type: 'edit', id: local.id, changes: { label: 'Черновик' },
-    });
-    expect(edited.candidate.sources).toEqual([{ ...local, label: 'Черновик' }]);
+    const edited = staged(saved);
     const cancelled = reduceSourcesDraft(edited, { type: 'folder_selected', source: null });
     expect(cancelled).toBe(edited);
-    expect(cancelled.candidate.sources).toEqual([{ ...local, label: 'Черновик' }]);
+    expect(cancelled.candidate.sources).toEqual([{ ...local, label: 'Черновик', enabled: false }]);
     expect(cancelled.baseline).toEqual(saved);
     expect(cancelled.candidate.revision).toBe(7);
+    expect(cancelled.validation).toEqual(edited.validation);
+    expect(cancelled.generation).toBe(3);
   });
 
   it('UI discard restores the baseline rows and revision without applying staged edits', () => {
     const saved = snapshot([local, network]);
-    const edited = reduceSourcesDraft(createSourcesDraft(saved), {
-      type: 'edit', id: local.id, changes: { label: 'Не сохранять', enabled: false },
-    });
-    expect(edited.candidate.sources).toEqual([{ ...local, label: 'Не сохранять', enabled: false }, network]);
+    const edited = staged(saved);
     const discarded = reduceSourcesDraft(edited, { type: 'discard' });
     expect(discarded.candidate).toEqual(saved.settings);
     expect(discarded.baseline).toEqual(saved);
     expect(saved).toEqual(snapshot([local, network]));
     expect(discarded.validation).toBeNull();
+    expect(discarded.generation).toBeGreaterThan(edited.generation);
+    expect(edited.candidate.sources).toEqual([{ ...local, label: 'Черновик', enabled: false }]);
+  });
+
+  it('row and nested JSON mutations in an edited candidate cannot leak into previous draft, baseline or caller input', () => {
+    const saved = snapshot([local, network]);
+    saved.settings.ui = { theme: 'system', nested: { labels: ['Сохранено'] } };
+    const before = createSourcesDraft(saved);
+    const edited = reduceSourcesDraft(before, { type: 'edit', id: local.id, changes: { label: 'Новое имя' } });
+    const rows = edited.candidate.sources as JsonObject[];
+    rows[0].label = 'Изменение вложенного объекта';
+    ((edited.candidate.ui as JsonObject).nested as JsonObject).labels = ['Черновик'];
+    expect(before.candidate.sources).toEqual([local, network]);
+    expect(before.baseline.settings.sources).toEqual([local, network]);
+    expect(saved.settings.sources).toEqual([local, network]);
+    for (const settings of [before.candidate, before.baseline.settings, saved.settings]) {
+      expect(settings.ui).toEqual({ theme: 'system', nested: { labels: ['Сохранено'] } });
+    }
   });
 
   it('keeps fresh empty state on picker cancel without selecting a default root', () => {
