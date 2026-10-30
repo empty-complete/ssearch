@@ -34,18 +34,36 @@ class CredentialStore:
         password = secrets.token_urlsafe(48)
         payload = {"version": 1, "namespace": self.namespace, "profile_id": profile_id,
                    "reference": reference, "secret": password}
+        created = directory_identity = None
         try:
             _windows.assert_private(self.directory)
+            directory_identity = _windows._file_identity(self.directory)
             protected = _windows.crypt(json.dumps(payload).encode("utf-8"))
             with self._path(reference).open("xb") as stream:
+                stat = os.fstat(stream.fileno())
+                created = (stat.st_dev, stat.st_ino)
                 stream.write(protected)
                 stream.flush()
                 os.fsync(stream.fileno())
             if self.resolve(reference) != password:
                 raise CredentialError("credential_readback_failed")
             return reference
-        except (OSError, _windows.WindowsError):
-            raise CredentialError("credential_persistence_failed") from None
+        except BaseException as failure:
+            # create() can fail before returning its reference. Clean only the
+            # exact object we created; an xb collision or substituted record is
+            # never ours to delete. The private directory identity must match too.
+            if created is not None:
+                try:
+                    _windows.assert_private(self.directory)
+                    path = self._path(reference)
+                    if (_windows._file_identity(self.directory) == directory_identity
+                            and _windows._file_identity(path) == created):
+                        path.unlink()
+                except (OSError, _windows.WindowsError):
+                    pass
+            if isinstance(failure, (OSError, _windows.WindowsError)):
+                raise CredentialError("credential_persistence_failed") from None
+            raise
 
     def resolve(self, reference: str) -> str:
         path = self._path(reference)

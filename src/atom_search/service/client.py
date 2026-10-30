@@ -156,6 +156,18 @@ class ServiceClient:
     def settings_validate(self, candidate, expected_revision):
         return restore(SettingsValidation, self._ipc('settings_validate', dict(candidate=candidate, expected_revision=expected_revision)))
 
+    def read_grant_issue(self, *, consumer_id, operation_id, consent_id, expected_settings_revision,
+                         source_ids, capabilities, ttl_seconds):
+        return self._ipc('read_grant_issue', dict(consumer_id=consumer_id, operation_id=operation_id,
+            consent_id=consent_id, expected_settings_revision=expected_settings_revision,
+            source_ids=source_ids, capabilities=capabilities, ttl_seconds=ttl_seconds))
+
+    def read_grant_get(self, *, consumer_id, operation_id):
+        return self._ipc('read_grant_get', dict(consumer_id=consumer_id, operation_id=operation_id))
+
+    def read_grant_revoke(self, *, consumer_id, operation_id):
+        return self._ipc('read_grant_revoke', dict(consumer_id=consumer_id, operation_id=operation_id))
+
     def settings_apply(self, candidate, expected_revision):
         return restore(SettingsSnapshot, self._ipc('settings_apply', dict(candidate=candidate, expected_revision=expected_revision)))
 
