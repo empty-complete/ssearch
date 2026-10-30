@@ -1,12 +1,14 @@
 """Owner-issued runtime read grants. Trusted policy/consent are disabled by default."""
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
+import json
 import time
 from typing import Callable, Protocol
 import uuid
 
 from atom_search.http.security import error, public_uuid
-from atom_search.runtime import _windows
+from atom_search.runtime.credentials import CredentialCreationReceipt
 from .contracts import AccessContext, ServiceError
 
 
@@ -29,10 +31,12 @@ class ReadGrantPolicy:
     min_ttl_seconds: int
     max_ttl_seconds: int
     allowed_capabilities: frozenset[str]
+    max_operations: int
 
     def __post_init__(self):
         if (type(self.min_ttl_seconds) is not int or type(self.max_ttl_seconds) is not int
                 or not 0 < self.min_ttl_seconds <= self.max_ttl_seconds
+                or type(self.max_operations) is not int or self.max_operations <= 0
                 or type(self.allowed_capabilities) is not frozenset
                 or not self.allowed_capabilities or not self.allowed_capabilities <= READ_CAPABILITIES):
             raise ValueError('invalid_read_grant_policy')
@@ -46,9 +50,10 @@ class ConsentProvider(Protocol):
 
 @dataclass
 class _Grant:
-    request: ReadGrantRequest
+    request_digest: str
     descriptor: dict
     expires_at: float
+    receipt: CredentialCreationReceipt
 
 
 class ReadGrantStore:
@@ -103,7 +108,15 @@ class ReadGrantStore:
         if self.policy is None or self.consent_provider is None or self.owner.attached or self.owner.credentials is None:
             raise error('service_unavailable', 503)
         request = self._request(arguments)
-        reference = created_path = created_identity = directory_identity = None
+        digest = hashlib.sha256(json.dumps({**vars(request), 'capabilities': sorted(request.capabilities)},
+            sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+        reference = receipt = grant = access_entry = None
+        def created(value):
+            nonlocal receipt
+            receipt = value  # Comes from original xb/fstat, never a returned path lookup.
+            with self.owner._credential_lock:
+                if value.reference in self._references or value.reference in self.owner._access:
+                    raise error('service_unavailable', 503)
         try:
             # Real profile admission serializes duplicate issuance. Never hold the
             # credential-map lock while awaiting guard/budget/provider/DPAPI IO.
@@ -111,46 +124,50 @@ class ReadGrantStore:
                 with self.owner._credential_lock:
                     existing = self._operations.get(request.operation_id)
                     if existing is not None:
-                        if existing.request != request:
+                        if existing.request_digest != digest:
                             raise error('revision_conflict', 409)
                         self.active(existing.descriptor['credential_ref'])
                         return deepcopy(existing.descriptor)
-                    if len(self.owner._access) >= 256:
+                    if (len(self._operations) >= self.policy.max_operations
+                            or len(self.owner._access) >= 256):
                         raise error('too_many_requests', 429)
                 self._scope_revision(request)
                 if self.consent_provider.approve(request) is not True:
                     raise error('access_denied', 403)
                 self._scope_revision(request)
                 with self.owner.repository.budget.reserve(16384, 'service_credential'):
-                    reference = self.owner.credentials.create(self.owner.generation)
-                    created_path = self.owner.credentials.directory / (reference + '.dpapi')
-                    directory_identity = _windows._file_identity(self.owner.credentials.directory)
-                    created_identity = _windows._file_identity(created_path)
+                    reference = self.owner.credentials.create(self.owner.generation, on_created=created)
+                    if receipt is None or receipt.reference != reference:
+                        raise error('service_unavailable', 503)
                     secret = self.owner.credentials.resolve(reference)
                     self._scope_revision(request)
                     access = AccessContext('read-grant:' + request.consumer_id, request.capabilities, request.source_ids)
-                    grant = _Grant(request, dict(grant_id=str(uuid.uuid4()), consumer_id=request.consumer_id,
+                    grant = _Grant(digest, dict(grant_id=str(uuid.uuid4()), consumer_id=request.consumer_id,
                         operation_id=request.operation_id, credential_ref=reference, state='active',
                         installation_id=self.owner.installation_id, generation=self.owner.generation,
                         expected_settings_revision=request.expected_settings_revision,
                         source_ids=list(request.source_ids), capabilities=sorted(request.capabilities),
-                        ttl_seconds=request.ttl_seconds, cleanup_pending=False), self.clock() + request.ttl_seconds)
+                        ttl_seconds=request.ttl_seconds, cleanup_pending=False), self.clock() + request.ttl_seconds, receipt)
+                    access_entry = (secret, access)
                     with self.owner._credential_lock:
+                        if reference in self._references or reference in self.owner._access:
+                            raise error('service_unavailable', 503)
                         self._operations[request.operation_id] = grant
                         self._references[reference] = grant
-                        self.owner._access[reference] = (secret, access)
+                        self.owner._access[reference] = access_entry
                     return deepcopy(grant.descriptor)
         except BaseException as failure:
-            if reference is not None:
-                with self.owner._credential_lock:
-                    self.owner._access.pop(reference, None)
-                    self._references.pop(reference, None)
-                    self._operations.pop(request.operation_id, None)
+            if receipt is not None:
+                if grant is not None:
+                    with self.owner._credential_lock:
+                        if self.owner._access.get(reference) is access_entry:
+                            self.owner._access.pop(reference, None)
+                        if self._references.get(reference) is grant:
+                            self._references.pop(reference, None)
+                        if self._operations.get(request.operation_id) is grant:
+                            self._operations.pop(request.operation_id, None)
                 try:
-                    if (created_identity is not None
-                            and _windows._file_identity(self.owner.credentials.directory) == directory_identity
-                            and _windows._file_identity(created_path) == created_identity):
-                        self.owner.credentials.remove(reference)
+                    self.owner.credentials._remove_created(receipt)
                 except Exception:
                     pass  # An unpublished orphan can never authenticate.
             if isinstance(failure, ServiceError):
@@ -163,7 +180,7 @@ class ReadGrantStore:
         public_uuid(consumer_id)
         public_uuid(operation_id)
         grant = self._operations.get(operation_id)
-        if grant is None or grant.request.consumer_id != consumer_id:
+        if grant is None or grant.descriptor['consumer_id'] != consumer_id:
             raise error('result_not_found', 404)
         self.active(grant.descriptor['credential_ref'])
         return grant
@@ -180,7 +197,7 @@ class ReadGrantStore:
             self.owner._access.pop(reference, None)  # Block NEW admissions before any file cleanup/ACK.
         pending = False
         try:
-            self.owner.credentials.remove(reference)
+            self.owner.credentials._remove_created(grant.receipt)
         except Exception:
             pending = True
         with self.owner._credential_lock:

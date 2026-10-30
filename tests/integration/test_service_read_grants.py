@@ -1,8 +1,7 @@
 """Owner read-grant admission over real P2 IPC, private DPAPI and owned PG.
 
-These initial cases use only existing public transports, so the baseline RED
-identifies missing disabled-route behavior rather than a future module import.
-Policy/consent, TTL and revocation cases follow once that internal seam is agreed.
+The initial disabled-route cases use existing public transports. Lifecycle cases
+inject explicit trusted test policy/consent and retain real IPC/HTTP/DPAPI/PG.
 """
 import uuid
 from dataclasses import dataclass
@@ -77,7 +76,7 @@ def grants(owner_profile, owner_client, monkeypatch):
     class Consent:
         def approve(self, request):
             return request in approved
-    policy = ReadGrantPolicy(min_ttl_seconds=1, max_ttl_seconds=120,
+    policy = ReadGrantPolicy(min_ttl_seconds=1, max_ttl_seconds=120, max_operations=64,
                             allowed_capabilities=frozenset({'search', 'fetch', 'status', 'settings_get'}))
     consent = Consent()
     store = ReadGrantStore(owner, policy=policy, consent_provider=consent, clock=lambda: now[0])
@@ -196,6 +195,9 @@ def test_issue_idempotency_lost_reply_get_and_no_renewal(grants):
     before = credential_inventory(grants.owner)
     grants.now[0] += 3
     assert grants.client.read_grant_issue(**request) == first
+    # Equivalent unordered capability payloads must have the same canonical
+    # operation fingerprint; changing a consented value below must conflict.
+    assert grants.client.read_grant_issue(**{**request, 'capabilities': list(reversed(request['capabilities']))}) == first
     assert grants.client.read_grant_get(**grant_key(request)) == first
     assert credential_inventory(grants.owner) == before
     changed = {**request, 'ttl_seconds': 38}
@@ -260,6 +262,17 @@ def test_revoke_cleanup_failure_cannot_revive_token(grants, monkeypatch):
     assert grants.client.read_grant_revoke(**grant_key(request))['state'] == 'revoked'
     assert raw_read(grants.owner, token=token) == raw_read(grants.owner, reference=reference) == 401
     assert grants.client.read_grant_get(**grant_key(request))['state'] == 'revoked'
+
+
+def test_revoke_cleanup_preserves_replacement_of_the_original_credential(grants):
+    request, grant = issue(grants)
+    path = grants.owner.credentials.directory / (grant['credential_ref'] + '.dpapi')
+    replacement = grants.owner.credentials.directory / 'foreign-after-issue'
+    replacement.write_bytes(b'foreign replacement must remain')
+    replacement.replace(path)
+    assert grants.client.read_grant_revoke(**grant_key(request))['state'] == 'revoked'
+    assert path.read_bytes() == b'foreign replacement must remain'
+    assert raw_read(grants.owner, reference=grant['credential_ref']) == 401
 
 
 def test_slow_grant_create_does_not_block_existing_authentication(grants, monkeypatch):
@@ -402,6 +415,12 @@ def test_operation_limit_concurrent_boundary_admits_only_one_distinct_operation(
     assert grants.client.read_grant_revoke(**key)['state'] == 'revoked'
 
 
+@pytest.mark.parametrize('limit', [0, -1, True, 1.5, float('inf')])
+def test_operation_policy_requires_explicit_positive_finite_integer(grants, limit):
+    with pytest.raises(ValueError, match='invalid_read_grant_policy'):
+        limit_operations(grants, limit)
+
+
 def test_post_create_replacement_before_manager_identity_capture_is_not_deleted(grants, monkeypatch):
     original = grants.owner.credentials.create
     replacements = []
@@ -500,7 +519,7 @@ def test_credential_create_failure_removes_only_its_own_record(tmp_path, monkeyp
 def test_owner_restart_rejects_old_grant_reference_and_cached_bearer(tmp_path):
     from atom_search.service.owner import open_service_owner
     from atom_search.service.read_grants import ReadGrantPolicy, ReadGrantRequest
-    policy = ReadGrantPolicy(min_ttl_seconds=1, max_ttl_seconds=120,
+    policy = ReadGrantPolicy(min_ttl_seconds=1, max_ttl_seconds=120, max_operations=64,
                             allowed_capabilities=frozenset({'search', 'status'}))
     approved = []
     class Consent:
