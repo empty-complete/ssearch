@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ANCHOR = '031c9dd248ceb10af00091b8a9f0f12c2d8cf49e'
 REPOSITORY = 'empty-complete/ssearch'
 BOOTSTRAP = 'codex/ci-owner-source-admission'
+TASK2_BOOTSTRAP = 'codex/ci-task2-source-admission'
+BOOTSTRAP_ANCHORS = {BOOTSTRAP: ANCHOR, TASK2_BOOTSTRAP: '9674fc4d311dd0bb3471885624d9391d2aa95488'}
 POLICY = ('tools/ci_source_scopes.py', 'tools/ci_publish.py', '.github/workflows/windows-build.yml')
 PROFILES = {
     'codex/p9-repair-policy': (
@@ -56,6 +58,18 @@ PROFILES = {
     BOOTSTRAP: (
         ('tools/ci_source_scopes.py', 'tests/test_ci_source_scopes.py', 'tools/ci_publish.py', 'tests/test_ci_publish.py',
          '.github/workflows/windows-build.yml', 'tests/test_ci_inputs.py'),
+        ('tests/test_ci_source_scopes.py', 'tests/test_ci_publish.py', 'tests/test_ci_inputs.py', 'tests/test_ci_p4_candidate.py')),
+    'codex/p11-evidence-validation': (
+        ('docs/contracts/agent-contributions/README.md', 'tests/test_contribution_evidence.py',
+         'tools/agent_contributions/__main__.py', 'tools/agent_contributions/contracts.py',
+         'tools/agent_contributions/evidence.py', 'tools/agent_contributions/validation.py',
+         'tools/check_agent_contributions.py'),
+        ('tests/test_contribution_evidence.py', 'tests/test_contribution_workspace.py', 'tests/test_core_distribution.py')),
+    'codex/p12-quality-metrics': (
+        ('tools/qa/benchmark_search.py', 'tests/qa/test_benchmark_metrics.py'),
+        ('tests/qa/test_benchmark_metrics.py',)),
+    TASK2_BOOTSTRAP: (
+        ('tools/ci_source_scopes.py', 'tests/test_ci_source_scopes.py'),
         ('tests/test_ci_source_scopes.py', 'tests/test_ci_publish.py', 'tests/test_ci_inputs.py', 'tests/test_ci_p4_candidate.py')),
 }
 
@@ -106,8 +120,8 @@ def admit(api, pr, head, files, *, merge_sha=None):
     allowed, targets = PROFILES[branch]
     require(all(path in allowed and (previous is None or previous in allowed)
                 for path, previous, _ in records), 'source_scope_paths_invalid')
-    if branch == BOOTSTRAP:
-        require(base['sha'] == ANCHOR, 'source_scope_bootstrap_invalid')
+    if branch in BOOTSTRAP_ANCHORS:
+        require(base['sha'] == BOOTSTRAP_ANCHORS[branch], 'source_scope_bootstrap_invalid')
     current = api.get('commits/main')
     require(type(current) is dict and current.get('sha') == (merge_sha if merge_sha is not None else base['sha']),
             'source_scope_base_stale')
@@ -120,8 +134,10 @@ def admit(api, pr, head, files, *, merge_sha=None):
     require(comparison.get('status') == 'ahead' and comparison.get('base_commit', {}).get('sha') == base['sha']
         and comparison.get('merge_base_commit', {}).get('sha') == base['sha'], 'source_scope_ancestry_invalid')
     require(sorted(inventory(comparison.get('files'))) == sorted(records), 'source_scope_inventory_invalid')
-    if branch != BOOTSTRAP:
-        require(all(api.file(path, base['sha']) == api.file(path, head) for path in POLICY), 'source_scope_policy_changed')
+    # A bootstrap exempts only policy files within its own closed path inventory.
+    editable_policy = allowed if branch in BOOTSTRAP_ANCHORS else ()
+    require(all(api.file(path, base['sha']) == api.file(path, head)
+                for path in POLICY if path not in editable_policy), 'source_scope_policy_changed')
     require(targets and all(type(target) is str and target for target in targets), 'source_scope_target_unavailable')
     tree = api.get(f'git/trees/{head}?recursive=1')
     require(type(tree) is dict and tree.get('truncated') is False and type(tree.get('tree')) is list,
