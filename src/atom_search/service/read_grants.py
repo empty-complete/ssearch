@@ -9,6 +9,7 @@ import uuid
 
 from atom_search.http.security import error, public_uuid
 from atom_search.runtime.credentials import CredentialCreationReceipt
+from atom_search.settings.schema import settings_error
 from .contracts import AccessContext, ServiceError
 
 
@@ -87,7 +88,7 @@ class ReadGrantStore:
     def _scope_revision(self, request):
         snapshot = self.owner.repository.snapshot()
         if snapshot.revision != request.expected_settings_revision:
-            raise error('revision_conflict', 409)
+            raise settings_error('revision_conflict', status_code=409)
         enabled = {source['id'] for source in snapshot.settings['sources'] if source['enabled']}
         if not set(request.source_ids) <= enabled:
             raise error('source_scope_denied', 403)
@@ -125,7 +126,7 @@ class ReadGrantStore:
                     existing = self._operations.get(request.operation_id)
                     if existing is not None:
                         if existing.request_digest != digest:
-                            raise error('revision_conflict', 409)
+                            raise settings_error('revision_conflict', status_code=409)
                         self.active(existing.descriptor['credential_ref'])
                         return deepcopy(existing.descriptor)
                     if (len(self._operations) >= self.policy.max_operations
