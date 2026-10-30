@@ -40,17 +40,21 @@ cancel is an optional threading.Event passed to the actual catalog scheduler;
 cancelled/incomplete scans return coverage partial and total None. No synthetic
 report closes cancellation or platform acceptance. Results prove no scale target.
 
-Cleanup first closes the actual owner/PG, then verifies the new directory identity
-and secret ownership marker and refuses any reparse path before removing only
-that profile. Cleanup failure retains data and raises benchmark_cleanup_failed.
+The existing WindowsFiles helper retains native parent/root handles without
+delete sharing throughout exclusive relative creation, service use and cleanup.
+Cleanup first closes the actual owner/PG, verifies the secret ownership marker,
+and opens/deletes each child relative to a retained parent, refusing reparses.
+The root is disposed through its original creation handle, never a checked path.
+Cleanup failure retains data and raises benchmark_cleanup_failed.
 Input refusals are ValueError with fixed codes; execution failure is RuntimeError
 benchmark_failed without underlying details. No publish/upload/file logging occurs.
 """
 import json
+import hashlib
+from contextlib import ExitStack
 import math
 import os
 from pathlib import Path, PurePosixPath
-import shutil
 import stat
 import threading
 import time
@@ -117,14 +121,16 @@ def _no_links(path):
 
 
 def _files(corpus, max_files):
-    pending, files, directories = [corpus], set(), 0
+    pending, files, discovered = [corpus], set(), 1
     while pending:
         directory = pending.pop()
-        directories += 1
-        if directories > max_files * 4 + 32:
-            raise ValueError('benchmark_input_invalid')
         _no_links(directory)
         for entry in directory.iterdir():
+            # Bound enumeration before probing or enqueueing any discovered
+            # child; a wide single directory must not grow an unbounded stack.
+            discovered += 1
+            if discovered > max_files * 4 + 32:
+                raise ValueError('benchmark_input_invalid')
             _no_links(entry)
             mode = entry.lstat().st_mode
             if stat.S_ISDIR(mode):
@@ -191,24 +197,27 @@ def _inputs(corpus, judgments, profile, queries, repetitions, cancel, max_files)
         raise ValueError('benchmark_input_invalid') from None
 
 
-def _cleanup(profile, identity, token):
-    _no_links(profile)
-    info = profile.stat()
-    if (info.st_dev, info.st_ino) != identity:
-        raise RuntimeError('benchmark_cleanup_failed')
-    marker = profile / '.ssearch-benchmark-owner'
-    _no_links(marker)
-    if marker.read_text(encoding='ascii') != token:
-        raise RuntimeError('benchmark_cleanup_failed')
-    # Preflight the entire owned tree. shutil on Windows also refuses to follow
-    # directory junctions if another process swaps one after this verification.
-    for directory, dirs, files in os.walk(profile, followlinks=False):
-        _no_links(Path(directory))
-        for name in (*dirs, *files):
-            _no_links(Path(directory) / name)
-    if (profile.stat().st_dev, profile.stat().st_ino) != identity:
-        raise RuntimeError('benchmark_cleanup_failed')
-    shutil.rmtree(profile)
+def _cleanup(profile, files, root_handle, token):
+    # This root handle is still the exclusive FILE_CREATE result. Its parents
+    # and the root deny rename/replacement for the entire benchmark lifetime.
+    with files._handle(root_handle, '.ssearch-benchmark-owner', directory=False) as marker:
+        data, _ = files._fingerprint(marker, hashlib.sha256)
+        if data != token.encode('ascii'):
+            raise RuntimeError('benchmark_cleanup_failed')
+
+    def delete_children(directory, parent):
+        for entry in directory.iterdir():
+            # The native relative open rejects a swapped reparse entry. Keep
+            # each child directory pinned through enumeration and disposition.
+            mode = entry.lstat().st_mode
+            is_directory = stat.S_ISDIR(mode)
+            with files._handle(parent, entry.name, directory=is_directory, delete=True) as child:
+                if is_directory:
+                    delete_children(entry, child)
+                files._dispose(child)
+
+    delete_children(profile, root_handle)
+    files._dispose(root_handle)
 
 
 def _percentile(values, fraction):
@@ -220,14 +229,19 @@ def run_benchmark(corpus: Path, judgments: Path, *, profile: Path,
                   cancel: threading.Event | None = None, max_files: int = 128) -> dict:
     """Measure one explicit tiny metadata corpus with one exclusively owned PG."""
     corpus, profile, mapping = _inputs(corpus, judgments, profile, queries, repetitions, cancel, max_files)
-    owner, identity, token = None, None, uuid.uuid4().hex
+    from atom_search.onboarding._windows_files import WindowsFiles
+    owner, root_handle, token = None, None, uuid.uuid4().hex
+    authority = ExitStack()
     try:
+        files = WindowsFiles()
+        parent = authority.enter_context(files._parents(profile.parent))
         try:
-            profile.mkdir()  # Exclusive creation: never adopt a racing profile.
+            # One relative FILE_CREATE both establishes exclusive ownership and
+            # returns retained authority; no mkdir -> stat adoption interval.
+            root_handle = authority.enter_context(files._handle(
+                parent, profile.name, directory=True, create=True, delete=True))
         except FileExistsError:
             raise ValueError('benchmark_profile_exists') from None
-        info = profile.stat()
-        identity = (info.st_dev, info.st_ino)
         with (profile / '.ssearch-benchmark-owner').open('x', encoding='ascii') as stream:
             stream.write(token)
         from atom_search.service.owner import open_service_owner
@@ -276,13 +290,15 @@ def run_benchmark(corpus: Path, judgments: Path, *, profile: Path,
     except Exception:
         raise RuntimeError('benchmark_failed') from None
     finally:
-        if identity is not None:
-            try:
+        try:
+            if root_handle is not None:
                 if owner is not None:
                     owner.close()
                     if owner.runtime is not None and owner.runtime.status().state != 'stopped':
                         raise RuntimeError('benchmark_cleanup_failed')
-                _cleanup(profile, identity, token)
-            except Exception:
-                raise RuntimeError('benchmark_cleanup_failed') from None
+                _cleanup(profile, files, root_handle, token)
+        except Exception:
+            raise RuntimeError('benchmark_cleanup_failed') from None
+        finally:
+            authority.close()
     return result
