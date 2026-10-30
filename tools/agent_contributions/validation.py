@@ -39,7 +39,6 @@ def _query(workspace: Path, operation: str, *, input_data: bytes | None = None) 
         "attributes": ["check-attr", "-z", "--stdin", "text", "eol", "filter", "ident",
                        "working-tree-encoding"],
         "untracked": ["ls-files", "--others", "--exclude-standard", "-z"],
-        "status": ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     }
     executable = shutil.which("git")
     require(executable is not None and operation in operations, "source_unavailable")
@@ -63,8 +62,6 @@ def _blob_id(raw: bytes) -> str:
 
 
 def _matches_blob(raw: bytes, oid: str, attributes: dict[str, str]) -> bool:
-    if _blob_id(raw) == oid:
-        return True
     # Never invoke Git clean filters, external diff, encoding converters or
     # ident expansion. Only the documented text/eol newline transform is safe.
     require(all(attributes.get(name, "unspecified") in {"unset", "unspecified"}
@@ -72,6 +69,8 @@ def _matches_blob(raw: bytes, oid: str, attributes: dict[str, str]) -> bool:
     text, eol = attributes.get("text", "unspecified"), attributes.get("eol", "unspecified")
     require(text in {"set", "unset", "auto", "unspecified"}
             and eol in {"lf", "crlf", "unset", "unspecified"}, "unsupported_source_transform")
+    if _blob_id(raw) == oid:
+        return True
     normalize = text == "set" or (text != "unset" and eol in {"lf", "crlf"}) or text == "auto"
     if not normalize:
         return False
@@ -152,11 +151,16 @@ def snapshot(workspace: Path) -> SourceSnapshot:
                 working_matches_index = False
                 continue
             require(path.is_file(), "unsupported_source_entry")
+            if os.name != "nt" and bool(path.stat().st_mode & 0o100) != (mode == "100755"):
+                working_matches_index = False
             raw = path.read_bytes()
             rows.append([name, mode, hashlib.sha256(raw).hexdigest()])
             if oid is not None and not _matches_blob(raw, oid, attributes[name]):
                 working_matches_index = False
-        clean = not _query(workspace, "status") and indexed == head_entries and working_matches_index
+        # No git status/diff/refresh: those can execute repository clean/process
+        # filters. Actual bytes/modes, untracked entries and index/HEAD equality
+        # supply the proof directly, without trusting cached stat information.
+        clean = indexed == head_entries and working_matches_index
         # Reject a HEAD/index change during the fingerprint read.
         require(_query(workspace, "head").decode("ascii").strip() == head
                 and _query(workspace, "index") == index and _query(workspace, "flags") == flags
