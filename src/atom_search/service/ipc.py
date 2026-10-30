@@ -220,6 +220,9 @@ class OwnerIPC:
                 result = self.owner.call(lambda: compatible_operation(self.owner, method, arguments))
                 if isinstance(result, list):
                     result = [asdict(item) if is_dataclass(item) else item for item in result]
+            elif method in {'read_grant_issue', 'read_grant_get', 'read_grant_revoke'}:
+                action = method.removeprefix('read_grant_')
+                result = self.owner.call(lambda: getattr(self.owner.read_grants, action)(**arguments))
             elif method in {'settings_validate', 'settings_apply'}:
                 if set(arguments) != {'candidate', 'expected_revision'}:
                     raise error('invalid_request')

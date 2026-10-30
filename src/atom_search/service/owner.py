@@ -21,7 +21,8 @@ from .sources import SourceRegistry
 
 
 class ServiceOwner:
-    def __init__(self, profile_dir: Path, model_dir: Path, *, discover_legacy=False, automatic_catalog=True):
+    def __init__(self, profile_dir: Path, model_dir: Path, *, discover_legacy=False, automatic_catalog=True,
+                 read_grant_policy=None, read_grant_consent_provider=None):
         self.profile_dir, self.model_dir = _windows.reject_reparse(Path(profile_dir).absolute()), Path(model_dir)
         self.discover_legacy = discover_legacy
         self.automatic_catalog = automatic_catalog
@@ -51,6 +52,9 @@ class ServiceOwner:
         self._slots = threading.BoundedSemaphore(16)
         self._credential_lock = threading.Lock()
         self._access = {}
+        from .read_grants import ReadGrantStore
+        self.read_grants = ReadGrantStore(self, policy=read_grant_policy,
+                                         consent_provider=read_grant_consent_provider)
         self._cancel = set()
         self._remote_cancel = {}
         self._bound_sources = None
@@ -298,14 +302,14 @@ class ServiceOwner:
         if type(secret) is not str or len(secret) > 256:
             raise error('authentication_required', 401)
         with self._credential_lock:
-            for value, access in self._access.values():
-                if hmac.compare_digest(value, secret):
+            for reference, (value, access) in self._access.items():
+                if hmac.compare_digest(value, secret) and self.read_grants.active(reference):
                     return access
         raise error('authentication_required', 401)
 
     def credential(self, reference):
         with self._credential_lock:
-            value = self._access.get(reference)
+            value = self._access.get(reference) if self.read_grants.active(reference) else None
         if value is None:
             raise error('authentication_required', 401)
         return value
@@ -459,5 +463,7 @@ class ServiceOwner:
 
 
 def open_service_owner(profile_dir: Path, model_dir: Path, *, discover_legacy=False,
-                       automatic_catalog=True) -> ServiceOwner:
-    return ServiceOwner(profile_dir, model_dir, discover_legacy=discover_legacy, automatic_catalog=automatic_catalog)
+                       automatic_catalog=True, read_grant_policy=None,
+                       read_grant_consent_provider=None) -> ServiceOwner:
+    return ServiceOwner(profile_dir, model_dir, discover_legacy=discover_legacy, automatic_catalog=automatic_catalog,
+                        read_grant_policy=read_grant_policy, read_grant_consent_provider=read_grant_consent_provider)
