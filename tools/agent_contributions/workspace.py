@@ -13,6 +13,14 @@ def create_workspace(config: ContributionConfig, grant: ContributionAuthorizatio
     authorize(config, grant, now=now if now is not None else datetime.now(timezone.utc))
     root = local_path(parent)
     require(root == local_path(config.workspace_root) and root.is_dir(), "unsafe_workspace")
+    # Even an exact grant cannot repurpose a foreign checkout or bare repository.
+    # Inspect every ancestor before reserving the incident directory; .git can be
+    # a directory, worktree pointer file, or a symlink (including a broken one).
+    for ancestor in (root, *root.parents):
+        marker = ancestor / ".git"
+        require(not (marker.exists() or marker.is_symlink()), "foreign_repository")
+        require(not ((ancestor / "HEAD").is_file() and (ancestor / "objects").is_dir()),
+                "foreign_repository")
     target = root / grant.incident_id
     local_path(target)
     require(not target.exists(), "workspace_exists")

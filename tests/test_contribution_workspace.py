@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 import uuid
 
@@ -18,6 +19,14 @@ REMOTE = "https://example.invalid/owner/project.git"
 NOW = datetime(2026, 10, 29, tzinfo=timezone.utc)
 INCIDENT = str(uuid.UUID("a92c3e5e-2877-4918-9726-0718c20250b2"))
 BRANCH = "codex/agent-fix-" + INCIDENT
+
+
+@pytest.fixture
+def tmp_path():
+    # CI's default TEMP is inside its checkout. Valid developer workspaces must
+    # actually live outside every Git repository, under the verified user home.
+    with tempfile.TemporaryDirectory(prefix="ssearch-contribution-fixture-", dir=Path.home()) as directory:
+        yield Path(directory)
 
 
 @pytest.fixture
@@ -54,7 +63,7 @@ def configured(api, tmp_path, *, base="1" * 40):
 
 
 def git_run(*args, cwd):
-    result = subprocess.run(["git", "-c", "core.hooksPath=", *args], cwd=cwd,
+    result = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=cwd,
         shell=False, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
@@ -232,8 +241,8 @@ def test_owner_root_inside_foreign_repository_is_rejected_before_mutation(api, t
 def test_disposable_clone_never_executes_tracked_ambient_or_template_hooks(api, tmp_path, bare_repository, monkeypatch):
     bare, _ = bare_repository
     source = tmp_path / "source"
-    # With an empty core.hooksPath, Git can resolve this tracked executable at
-    # the clone's root. All sentinel writes stay inside this disposable tree.
+    # Exercise tracked, ambient and template hook no-execution in a disposable
+    # repository. All sentinel writes, if any, stay inside this fixture tree.
     tracked = source / "post-checkout"
     tracked.write_text("#!/bin/sh\nprintf executed > tracked-hook-executed.txt\n", encoding="utf-8")
     git_run("add", "post-checkout", cwd=source)

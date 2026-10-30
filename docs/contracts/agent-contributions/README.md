@@ -23,13 +23,15 @@ Any missing nullable prerequisite disables clone capability.
 
 The root must already exist as an owner-designated local developer directory,
 separate from an installation, search profile, documents or another checkout.
-UNC workspace roots, traversal, symlinks, junctions/reparse ancestors and existing
-destinations are refused. A new empty destination is reserved exclusively. Failed
+UNC workspace roots, traversal, symlinks, junctions/reparse ancestors, Git worktree
+or bare repository ancestors and existing destinations are refused. A new empty
+destination is reserved exclusively. Failed
 clones may leave their new directory for explicit inspection; retries never remove
 it or overwrite another directory. The root must remain under the owner's control;
 this CLI is not a defense against another local principal racing directory changes.
 
-Git uses fixed argument lists, `shell=False`, a minimal environment, disabled hooks,
+Git uses fixed argument lists, `shell=False`, a minimal environment, hooks disabled
+with the nonempty `core.hooksPath=/dev/null`,
 empty templates, no credential helpers or ambient Git config, no submodules and no
 HTTP redirects. The Git executable/PATH and OS certificate store must be trusted by
 the developer. HTTPS credentials require a separately injected developer resolver:

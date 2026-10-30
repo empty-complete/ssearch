@@ -60,7 +60,7 @@ class GitClient:
                if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATHEXT"}}
         env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_GLOBAL=os.devnull,
                    GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never", GIT_NO_REPLACE_OBJECTS="1")
-        prefix = [executable, "-c", "core.hooksPath=", "-c", "credential.helper=",
+        prefix = [executable, "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=",
                   "-c", "http.followRedirects=false", "-c", "http.sslVerify=true",
                   "-c", "protocol.allow=never", "-c", "protocol.ext.allow=never",
                   "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=" +
