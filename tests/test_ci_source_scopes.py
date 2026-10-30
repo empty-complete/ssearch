@@ -37,7 +37,7 @@ PROFILES = {
         ['tests/test_content_policy.py', 'tests/test_content_schedule.py', 'tests/test_content.py']),
     'codex/p7-scoped-read-api': (
         ['src/atom_search/agents/__init__.py', 'src/atom_search/agents/read_api.py', 'tests/agents/test_read_api.py'],
-        ['tests/agents/test_read_api.py', 'tests/test_service_http.py', 'tests/test_service_client.py']),
+        ['tests/agents/test_read_api.py', 'tests/test_service_client.py', 'tests/test_service_http.py']),
     'codex/p11-authorized-workspaces': (
         ['tools/agent_contributions/' + name + '.py' for name in ('__init__', '__main__', 'contracts', 'config', 'workspace', 'git_client')]
         + ['tests/test_contribution_workspace.py', 'docs/contracts/agent-contributions/config.schema.json',
@@ -48,12 +48,13 @@ PROFILES = {
         ['tests/qa/test_release_matrix.py']),
     'codex/p5-search-id-batch': (
         ['src/atom_search/service/application.py', 'packages/atom-search-core/src/atom_search_core/storage/public_ids.py',
-         'tests/integration/test_pg_search_materialization.py'],
+         'tests/integration/test_pg_search_materialization.py', 'tests/test_project_api.py'],
         ['tests/integration/test_pg_search_materialization.py', 'tests/integration/test_pg_public_ids.py',
          'tests/integration/test_pg_project_search.py',
          'tests/test_service_http.py::test_http_envelope_and_metadata_only_fetch',
          'tests/test_service_http.py::test_http_auth_origin_scope_and_limits',
-         'tests/test_service_owner.py::test_scoped_search_and_metadata_fetch_do_not_probe_document']),
+         'tests/test_service_owner.py::test_scoped_search_and_metadata_fetch_do_not_probe_document',
+         'tests/test_project_api.py']),
     'codex/ci-owner-source-admission': (
         ['tools/ci_source_scopes.py', 'tests/test_ci_source_scopes.py', 'tools/ci_publish.py',
          'tests/test_ci_publish.py', WORKFLOW, 'tests/test_ci_inputs.py'],
@@ -169,8 +170,10 @@ def test_recognized_scope_violations_fail_instead_of_falling_back_to_full(mutati
         api.files.append(dict(filename=path, status='modified'))
         api.pr['changed_files'] = 2
         if mutation == 'rename_to':
+            api.files[-1]['status'] = 'renamed'
             api.files[-1]['previous_filename'] = api.files[0]['filename']
     elif mutation == 'rename_from':
+        api.files[0]['status'] = 'renamed'
         api.files[0]['previous_filename'] = 'src/atom_search/runtime/postgres.py'
     elif mutation in ('zero', 'huge', 'incomplete'):
         api.pr['changed_files'] = {'zero': 0, 'huge': 3001, 'incomplete': 2}[mutation]
@@ -209,6 +212,18 @@ def test_unknown_risky_branch_keeps_ordinary_full():
     api, publisher = PublicApi('codex/p9-repair-policy'), load_tool('ci_publish')
     api.pr['head']['ref'] = 'codex/unregistered-risk'
     assert publisher.classify(api, 17, HEAD) is True
+
+
+@pytest.mark.parametrize('metadata', [
+    {}, {'status': 'PRIVATE_SENTINEL'}, {'status': 'renamed'},
+    {'status': 'renamed', 'previous_filename': ''}, {'status': 'renamed', 'previous_filename': None},
+])
+def test_incomplete_rename_metadata_never_admits_an_unknown_origin(metadata):
+    api, publisher = PublicApi('codex/p9-repair-policy'), load_tool('ci_publish')
+    api.files = [dict(filename='src/atom_search/repair/policy.py', **metadata)]
+    api.comparison['files'] = copy.deepcopy(api.files)
+    with pytest.raises(publisher.PublishError, match='^source_scope_inventory_invalid$'):
+        publisher.classify(api, 17, HEAD)
 
 
 @pytest.mark.parametrize('branch', ['codex/p9-repair-policy-extra', 'codex/p9-repair-policy/child'])
@@ -282,8 +297,24 @@ def test_settings_cli_reauthenticates_and_never_accepts_caller_targets(monkeypat
     value = json.loads(capsys.readouterr().out)
     assert value['mode'] == 'source' and value['desktop_stack'] is False and value['publish'] is False
     assert value['test_targets'] == PROFILES[api.branch][1]
-    api.files.append(dict(filename='PRIVATE_SENTINEL.py'))
+    api.files.append(dict(filename='PRIVATE_SENTINEL.py', status='modified'))
     api.pr['changed_files'] = 2
     assert source.main() == 1
     output = capsys.readouterr()
     assert output.out == '' and output.err.strip() == 'source_scope_paths_invalid'
+
+
+def test_settings_cli_binds_the_main_push_before_suppressing_publication(monkeypatch, capsys):
+    source, api = load_tool('ci_source_scopes'), PublicApi('codex/p9-repair-policy')
+    api.main = MERGE
+    api.pr.update(merged=True, merged_at='2026-10-30T00:00:00Z', merge_commit_sha=MERGE)
+    monkeypatch.setattr(source, 'github', lambda: api)
+    monkeypatch.setattr('sys.argv', ['ci_source_scopes.py', 'settings', '--pr-number', '17',
+                                   '--head-sha', HEAD, '--merge-sha', MERGE])
+    assert source.main() == 0
+    value = json.loads(capsys.readouterr().out)
+    assert value['route'] == 'owner-source' and value['publish'] is False
+    api.tree = 'd' * 40
+    assert source.main() == 1
+    output = capsys.readouterr()
+    assert output.out == '' and output.err.strip() == 'source_scope_merge_tree_invalid'
