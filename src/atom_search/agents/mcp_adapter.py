@@ -3,14 +3,28 @@ from pathlib import Path
 import sys
 from typing import Annotated
 
+from mcp import MCPError
 from mcp.server import MCPServer
-from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from mcp.types import INVALID_PARAMS, CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field, StrictInt, StrictStr
 
 from atom_search.http.serialization import encode
 
 from .launcher import connect_read_api
 from .read_api import AgentReadAPI
+
+
+async def _validate_source_scope(ctx, call_next):
+    # Refuse raw wrong-type scope before the SDK can JSON-decode strings into
+    # null or arrays. The SDK and facade retain all remaining validation.
+    if ctx.method == 'tools/call' and isinstance(ctx.params, dict):
+        if ctx.params.get('name') == 'search':
+            arguments = ctx.params.get('arguments')
+            if isinstance(arguments, dict):
+                scope = arguments.get('source_ids')
+                if scope is not None and type(scope) is not list:
+                    raise MCPError(INVALID_PARAMS, 'source_ids must be an array or null.')
+    return await call_next(ctx)
 
 
 def _result(value: dict) -> CallToolResult:
@@ -26,7 +40,7 @@ def _result(value: dict) -> CallToolResult:
 def create_mcp_server(api: AgentReadAPI) -> MCPServer:
     """Expose an injected, already scoped facade; annotations grant no rights."""
     server = MCPServer('ssearch', title='Simple Search', version='1',
-        subscriptions=False, log_level='WARNING')
+        subscriptions=False, log_level='WARNING', middleware=[_validate_source_scope])
     hints = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 
     # SDK v2 dispatches plain def tools on worker threads. P2's synchronous HTTP
