@@ -8,11 +8,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
+import math
+from types import MappingProxyType
 from typing import Protocol
 from uuid import UUID
 
 from atom_search.service.contracts import (
-    AccessContext, FieldError, ServiceError, SettingChange, SettingsValidation,
+    AccessContext, FieldError, HealthSnapshot, ServiceError, SettingChange, SettingsValidation,
 )
 
 
@@ -114,3 +117,75 @@ class SettingsValidatePort(Protocol):
     """The existing owner MutationCoordinator.validate, never an apply hook."""
 
     def __call__(self, candidate: dict, expected_revision: int) -> SettingsValidation: ...
+
+
+def _freeze_incident_value(value, depth=0):
+    """Copy runtime dictionaries into immutable, bounded-depth record values.
+
+    Field authority and redaction are checked by IncidentBuilder. No arbitrary
+    object's conversion/repr or serialization hooks run at this boundary.
+    """
+    if depth > 8:
+        raise repair_error('invalid_argument')
+    if type(value) in (dict, MappingProxyType):
+        if any(type(key) is not str for key in value):
+            raise repair_error('invalid_argument')
+        return MappingProxyType({key: _freeze_incident_value(item, depth + 1)
+                                 for key, item in value.items()})
+    if type(value) in (tuple, list):
+        return tuple(_freeze_incident_value(item, depth + 1) for item in value)
+    if type(value) in (type(None), str, bool, int):
+        return value
+    if type(value) is float and math.isfinite(value):
+        return value
+    raise repair_error('invalid_argument')
+
+
+@dataclass(frozen=True)
+class AttemptIntent:
+    """Trusted owner observation; never accepted as agent-supplied JSON."""
+
+    operation_id: str
+    incident_id: str
+    principal_id: str
+    kind: str
+    code: str
+    plan_id: str | None
+    source_id: str | None
+    started_at: datetime
+    config_revision: int
+    index_generation: int
+    health_before: HealthSnapshot
+    reason: AgentReason
+
+
+@dataclass(frozen=True)
+class AttemptRecord:
+    intent: AttemptIntent
+    finished_at: datetime
+    actions: tuple[dict, ...]
+    health_after: HealthSnapshot
+    verification: dict
+    rollback: dict
+    result: str
+    config_diff: tuple[dict, ...]
+
+    def __post_init__(self):
+        for field in ('actions', 'verification', 'rollback', 'config_diff'):
+            object.__setattr__(self, field, _freeze_incident_value(getattr(self, field)))
+
+
+@dataclass(frozen=True)
+class IncidentPayload:
+    """Final canonical report; delivery metadata belongs to a later boundary."""
+
+    id: str
+    canonical_bytes: bytes
+    sha256: str
+
+    def __post_init__(self):
+        if (not valid_uuid(self.id) or type(self.canonical_bytes) is not bytes
+                or not 0 < len(self.canonical_bytes) <= 262144
+                or type(self.sha256) is not str
+                or self.sha256 != hashlib.sha256(self.canonical_bytes).hexdigest()):
+            raise repair_error('invalid_argument')
