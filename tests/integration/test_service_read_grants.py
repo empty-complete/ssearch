@@ -185,6 +185,12 @@ def test_issue_idempotency_lost_reply_get_and_no_renewal(grants):
     assert grants.client.read_grant_issue(**request) == first
     assert grants.client.read_grant_get(**grant_key(request)) == first
     assert credential_inventory(grants.owner) == before
+    changed = {**request, 'ttl_seconds': 38}
+    grants.approve(changed)
+    with pytest.raises(ServiceError) as failure:
+        grants.client.read_grant_issue(**changed)
+    assert failure.value.code == 'revision_conflict'
+    assert credential_inventory(grants.owner) == before
 
 
 def test_concurrent_duplicate_issue_mints_one_dpapi_record(grants):
@@ -209,12 +215,6 @@ def test_either_missing_trusted_provider_or_policy_disables_mint(grants, missing
     with pytest.raises(ServiceError) as failure:
         grants.client.read_grant_issue(**issue_request(grants.owner))
     assert failure.value.code == 'service_unavailable'
-    assert credential_inventory(grants.owner) == before
-    changed = {**request, 'ttl_seconds': 38}
-    grants.approve(changed)
-    with pytest.raises(ServiceError) as failure:
-        grants.client.read_grant_issue(**changed)
-    assert failure.value.code == 'revision_conflict'
     assert credential_inventory(grants.owner) == before
 
 
