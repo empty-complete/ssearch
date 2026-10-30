@@ -4,6 +4,7 @@ The reused fixture supplies an explicit synthetic consent provider/policy and
 restores only its own grant records. Production issuance stays disabled.
 """
 import asyncio
+from dataclasses import replace
 import importlib
 import importlib.util
 import json
@@ -11,6 +12,10 @@ import threading
 import uuid
 
 import pytest
+
+# SDK stdio_client binds its default stderr at import. Import during collection,
+# before any capsys fixture can bind that default to a stream without fileno().
+from mcp import Client
 
 from atom_search.service.client import ServiceClient
 from atom_search.service.contracts import SearchRequest, ServiceError
@@ -31,6 +36,14 @@ def trusted_request(request):
                               'capabilities': frozenset(request['capabilities'])})
 
 
+def trusted_issuance(request, issued_reply):
+    # Test host consumes the real authenticated owner IPC issuance reply BEFORE
+    # raw input can be substituted. The production provider is still unwired.
+    return load_handoff().IssuanceContext(request=trusted_request(request),
+        credential_ref=issued_reply['credential_ref'], installation_id=issued_reply['installation_id'],
+        generation=issued_reply['generation'], grant_id=issued_reply['grant_id'])
+
+
 def assert_public_failure(failure, code, grant, owner, capsys):
     assert failure.value.code == code
     assert failure.value.details == {}
@@ -43,13 +56,12 @@ def assert_public_failure(failure, code, grant, owner, capsys):
 
 def test_four_mcp_reads_use_granted_sources_without_owner_bootstrap_authority(grants, capsys):
     handoff = load_handoff()
-    from mcp import Client
     from atom_search.agents.mcp_adapter import create_mcp_server
     request, grant = issue(grants)
-    expected = trusted_request(request)
+    expected = trusted_issuance(request, grant)
     endpoint_before = grants.owner.endpoint_file.read_bytes()
     assert grant['credential_ref'] != grants.owner.credential_ref
-    api = handoff.connect_granted_read_api(grants.owner.endpoint_file, grant, expected_request=expected)
+    api = handoff.connect_granted_read_api(grants.owner.endpoint_file, grant, expected_issuance=expected)
     sources = grants.owner.repository.snapshot().settings['sources']
 
     async def scenario():
@@ -82,8 +94,9 @@ def test_four_mcp_reads_use_granted_sources_without_owner_bootstrap_authority(gr
 def test_explicit_empty_grant_scope_stays_empty(grants):
     handoff = load_handoff()
     request, grant = issue(grants, source_ids=[])
+    expected = trusted_issuance(request, grant)
     api = handoff.connect_granted_read_api(grants.owner.endpoint_file, grant,
-                                          expected_request=trusted_request(request))
+                                          expected_issuance=expected)
     result = api.search('drawing')
     assert result['error'] is None and result['data']['results'] == []
     settings = api.settings_get()
@@ -93,6 +106,7 @@ def test_explicit_empty_grant_scope_stays_empty(grants):
 def test_broader_grant_reference_cannot_replace_restricted_issuance(grants, capsys):
     handoff = load_handoff()
     request, restricted = issue(grants, capabilities=['search', 'status'])
+    expected = trusted_issuance(request, restricted)
     sources = grants.owner.repository.snapshot().settings['sources']
     _, broader = issue(grants, source_ids=sorted(source['id'] for source in sources))
     # Both are genuine grants of the same live owner. Establish that the
@@ -108,27 +122,28 @@ def test_broader_grant_reference_cannot_replace_restricted_issuance(grants, caps
     # must remain bound to that independent issuance, not any valid credential.
     with pytest.raises(ServiceError) as failure:
         handoff.connect_granted_read_api(grants.owner.endpoint_file, substituted,
-                                         expected_request=trusted_request(request))
+                                         expected_issuance=expected)
     assert_public_failure(failure, 'access_denied', substituted, grants.owner, capsys)
 
 
 def test_statusless_real_grant_is_not_silently_augmented(grants, capsys):
     handoff = load_handoff()
     request, grant = issue(grants, capabilities=['search', 'fetch'])
+    expected = trusted_issuance(request, grant)
     with pytest.raises(ServiceError) as failure:
         handoff.connect_granted_read_api(grants.owner.endpoint_file, grant,
-                                         expected_request=trusted_request(request))
+                                         expected_issuance=expected)
     assert_public_failure(failure, 'access_denied', grant, grants.owner, capsys)
     assert grants.client.read_grant_get(**grant_key(request))['capabilities'] == ['fetch', 'search']
 
 
 def test_status_probe_does_not_prove_or_add_other_capabilities(grants):
     handoff = load_handoff()
-    from mcp import Client
     from atom_search.agents.mcp_adapter import create_mcp_server
     request, grant = issue(grants, capabilities=['status'])
+    expected = trusted_issuance(request, grant)
     api = handoff.connect_granted_read_api(grants.owner.endpoint_file, grant,
-                                          expected_request=trusted_request(request))
+                                          expected_issuance=expected)
 
     async def scenario():
         async with Client(create_mcp_server(api)) as client:
@@ -148,11 +163,10 @@ def test_status_probe_does_not_prove_or_add_other_capabilities(grants):
 @pytest.mark.parametrize('ending', ['expire', 'revoke'])
 def test_cached_descriptor_and_mcp_client_cannot_admit_after_grant_ends(grants, ending, capsys):
     handoff = load_handoff()
-    from mcp import Client
     from atom_search.agents.mcp_adapter import create_mcp_server
     request, grant = issue(grants)
-    expected = trusted_request(request)
-    api = handoff.connect_granted_read_api(grants.owner.endpoint_file, grant, expected_request=expected)
+    expected = trusted_issuance(request, grant)
+    api = handoff.connect_granted_read_api(grants.owner.endpoint_file, grant, expected_issuance=expected)
 
     async def scenario():
         async with Client(create_mcp_server(api)) as client:
@@ -165,7 +179,7 @@ def test_cached_descriptor_and_mcp_client_cannot_admit_after_grant_ends(grants, 
             assert reply.is_error
             assert reply.structured_content['error']['code'] == 'authentication_required'
             with pytest.raises(ServiceError) as failure:
-                handoff.connect_granted_read_api(grants.owner.endpoint_file, grant, expected_request=expected)
+                handoff.connect_granted_read_api(grants.owner.endpoint_file, grant, expected_issuance=expected)
             assert_public_failure(failure, 'authentication_required', grant, grants.owner, capsys)
     asyncio.run(scenario())
     terminal = grants.client.read_grant_get(**grant_key(request))
@@ -178,10 +192,15 @@ def test_cached_descriptor_and_mcp_client_cannot_admit_after_grant_ends(grants, 
 def test_grant_identity_must_match_the_same_verified_live_client(grants, field, capsys):
     handoff = load_handoff()
     request, grant = issue(grants)
-    changed = {**grant, field: str(uuid.uuid4())}
+    expected = trusted_issuance(request, grant)
+    identity = str(uuid.uuid4())
+    changed = {**grant, field: identity}
+    # Deliberately matching synthetic claims pass the raw/context binding check;
+    # the authenticated live owner must still disagree after the handshake.
+    changed_context = replace(expected, **{field: identity})
     with pytest.raises(ServiceError) as failure:
         handoff.connect_granted_read_api(grants.owner.endpoint_file, changed,
-                                         expected_request=trusted_request(request))
+                                         expected_issuance=changed_context)
     assert_public_failure(failure, 'service_identity_mismatch', grant, grants.owner, capsys)
     assert grants.client.status().liveness == 'alive'
 
@@ -189,22 +208,22 @@ def test_grant_identity_must_match_the_same_verified_live_client(grants, field, 
 def test_handoff_rejects_wrong_live_nonce_proof(grants, monkeypatch, capsys):
     handoff = load_handoff()
     request, grant = issue(grants)
+    expected = trusted_issuance(request, grant)
     # Real server/DPAPI/HTTP remain in use; only the peer's proof is corrupted.
     monkeypatch.setattr('atom_search.http.server.proof', lambda *args: '0' * 64)
     with pytest.raises(ServiceError) as failure:
         handoff.connect_granted_read_api(grants.owner.endpoint_file, grant,
-                                         expected_request=trusted_request(request))
+                                         expected_issuance=expected)
     assert_public_failure(failure, 'service_identity_mismatch', grant, grants.owner, capsys)
 
 
 def test_two_granted_mcp_clients_cancel_without_revoking_or_stopping_owner(grants, monkeypatch):
     handoff = load_handoff()
-    from mcp import Client
     from atom_search.agents.mcp_adapter import create_mcp_server
     request, grant = issue(grants)
-    expected = trusted_request(request)
+    expected = trusted_issuance(request, grant)
     apis = [handoff.connect_granted_read_api(grants.owner.endpoint_file, grant,
-        expected_request=expected) for _ in range(2)]
+        expected_issuance=expected) for _ in range(2)]
     started, release = threading.Event(), threading.Event()
     original = ServiceClient.search
 
@@ -251,20 +270,21 @@ def test_owner_restart_rejects_old_grant_handoff_and_cached_api(tmp_path):
     restarted = None
     try:
         owner.start()
-        expected = ReadGrantRequest(str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4()),
+        selected_request = ReadGrantRequest(str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4()),
             owner.repository.snapshot().revision, (), frozenset({'status'}), 37)
-        approved.append(expected)
+        approved.append(selected_request)
         host = ServiceClient(owner.endpoint_file, owner.credential_ref)
-        request = {**vars(expected), 'source_ids': [], 'capabilities': ['status']}
+        request = {**vars(selected_request), 'source_ids': [], 'capabilities': ['status']}
         grant = host.read_grant_issue(**request)
-        api = handoff.connect_granted_read_api(owner.endpoint_file, grant, expected_request=expected)
+        expected = trusted_issuance(request, grant)
+        api = handoff.connect_granted_read_api(owner.endpoint_file, grant, expected_issuance=expected)
         assert api.health()['error'] is None
         owner.close()
         restarted = open_service_owner(profile, tmp_path / 'missing-model', **options)
         restarted.start()
         assert api.health()['error']['code'] == 'service_identity_mismatch'
         with pytest.raises(ServiceError) as failure:
-            handoff.connect_granted_read_api(restarted.endpoint_file, grant, expected_request=expected)
+            handoff.connect_granted_read_api(restarted.endpoint_file, grant, expected_issuance=expected)
         assert failure.value.code == 'authentication_required'
         assert ServiceClient(restarted.endpoint_file, restarted.credential_ref).status().liveness == 'alive'
     finally:

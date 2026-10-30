@@ -37,6 +37,15 @@ def expected_request():
         capabilities=frozenset({'search', 'status'}), ttl_seconds=37))
 
 
+def expected_issuance(request=None):
+    # Independent synthetic host constants, not fields read from wire_grant().
+    # Real authenticated owner issuance is exercised in the integration tests.
+    return load_handoff().IssuanceContext(
+        request=expected_request() if request is None else request,
+        credential_ref=REFERENCE, installation_id=INSTALLATION,
+        generation=GENERATION, grant_id=GRANT)
+
+
 def wire_grant():
     # Deliberately reverse source/cap order: their authority is an explicit set,
     # and P2 canonicalizes source ordering rather than assigning it meaning.
@@ -72,7 +81,7 @@ def test_missing_wire_field_is_rejected_before_connect(missing, forbid_client, c
     grant = wire_grant()
     del grant[missing]
     with pytest.raises(ServiceError) as failure:
-        handoff.connect_granted_read_api(ENDPOINT, grant, expected_request=expected_request())
+        handoff.connect_granted_read_api(ENDPOINT, grant, expected_issuance=expected_issuance())
     assert_safe_error(failure, 'invalid_request', capsys)
 
 
@@ -84,7 +93,7 @@ def test_wire_is_exact_dict_without_added_authority_fields(shape, forbid_client,
              else MappingProxyType(grant) if shape == 'readonly_mapping'
              else {**grant, ('consent_id' if shape == 'consent' else 'token'): SECRET})
     with pytest.raises(ServiceError) as failure:
-        handoff.connect_granted_read_api(ENDPOINT, grant, expected_request=expected_request())
+        handoff.connect_granted_read_api(ENDPOINT, grant, expected_issuance=expected_issuance())
     assert_safe_error(failure, 'invalid_request', capsys)
 
 
@@ -107,7 +116,7 @@ def test_wire_types_and_read_bounds_are_strict(field, value, forbid_client, caps
     handoff = load_handoff()
     grant = {**wire_grant(), field: value}
     with pytest.raises(ServiceError) as failure:
-        handoff.connect_granted_read_api(ENDPOINT, grant, expected_request=expected_request())
+        handoff.connect_granted_read_api(ENDPOINT, grant, expected_issuance=expected_issuance())
     assert_safe_error(failure, 'invalid_request', capsys)
 
 
@@ -125,22 +134,26 @@ def test_direct_request_construction_does_not_bypass_validation(field, value, fo
     handoff = load_handoff()
     request = replace(expected_request(), **{field: value})
     with pytest.raises(ServiceError) as failure:
-        handoff.connect_granted_read_api(ENDPOINT, wire_grant(), expected_request=request)
+        handoff.connect_granted_read_api(ENDPOINT, wire_grant(), expected_issuance=expected_issuance(request))
     assert_safe_error(failure, 'invalid_request', capsys)
 
 
-@pytest.mark.parametrize('context', ['omitted', 'none', 'wire', 'mutated_request'])
+@pytest.mark.parametrize('context', ['omitted', 'none', 'wire', 'mutated_request', 'request_object', 'request_only'])
 def test_missing_or_descriptor_derived_context_cannot_authorize(context, forbid_client, capsys):
     handoff = load_handoff()
     arguments = {}
     if context == 'none':
-        arguments['expected_request'] = None
+        arguments['expected_issuance'] = None
     elif context == 'wire':
-        arguments['expected_request'] = wire_grant()
+        arguments['expected_issuance'] = wire_grant()
     elif context == 'mutated_request':
         request = expected_request()
         object.__setattr__(request, 'source_ids', [SOURCE_A, SOURCE_B])
-        arguments['expected_request'] = request
+        arguments['expected_issuance'] = expected_issuance(request)
+    elif context == 'request_object':
+        arguments['expected_issuance'] = expected_request()
+    elif context == 'request_only':
+        arguments['expected_request'] = expected_request()
     with pytest.raises(ServiceError) as failure:
         handoff.connect_granted_read_api(ENDPOINT, wire_grant(), **arguments)
     assert_safe_error(failure, 'invalid_request', capsys)
@@ -150,12 +163,14 @@ def test_missing_or_descriptor_derived_context_cannot_authorize(context, forbid_
     ('consumer_id', CONSENT), ('operation_id', CONSENT),
     ('expected_settings_revision', 8), ('source_ids', []),
     ('source_ids', [SOURCE_A]), ('capabilities', ['status']), ('ttl_seconds', 38),
+    ('credential_ref', 'dpapi-v1-' + 'b' * 64), ('grant_id', CONSENT),
+    ('installation_id', CONSENT), ('generation', CONSENT),
 ])
 def test_descriptor_cannot_replace_independent_request_bindings(field, value, forbid_client, capsys):
     handoff = load_handoff()
     with pytest.raises(ServiceError) as failure:
         handoff.connect_granted_read_api(ENDPOINT, {**wire_grant(), field: value},
-                                         expected_request=expected_request())
+                                         expected_issuance=expected_issuance())
     assert_safe_error(failure, 'access_denied', capsys)
 
 
@@ -164,7 +179,7 @@ def test_inactive_descriptor_is_refused_before_connect(state, forbid_client, cap
     handoff = load_handoff()
     with pytest.raises(ServiceError) as failure:
         handoff.connect_granted_read_api(ENDPOINT, {**wire_grant(), 'state': state},
-                                         expected_request=expected_request())
+                                         expected_issuance=expected_issuance())
     assert_safe_error(failure, 'access_denied', capsys)
 
 
@@ -173,7 +188,7 @@ def test_status_is_required_explicitly_without_adding_it(forbid_client, capsys):
     request = replace(expected_request(), capabilities=frozenset({'search'}))
     with pytest.raises(ServiceError) as failure:
         handoff.connect_granted_read_api(ENDPOINT, {**wire_grant(), 'capabilities': ['search']},
-                                         expected_request=request)
+                                         expected_issuance=expected_issuance(request))
     assert_safe_error(failure, 'access_denied', capsys)
 
 
@@ -185,7 +200,11 @@ def test_projection_is_immutable_normalized_and_hides_reference_in_repr(empty):
     if empty:
         grant.update(source_ids=[], capabilities=['status'])
         request = replace(request, source_ids=(), capabilities=frozenset({'status'}))
-    snapshot = handoff.parse_read_grant(grant, expected_request=request)
+    context = expected_issuance(request)
+    assert REFERENCE not in repr(context)
+    with pytest.raises(FrozenInstanceError):
+        context.credential_ref = 'dpapi-v1-' + 'b' * 64
+    snapshot = handoff.parse_read_grant(grant, expected_issuance=context)
     assert isinstance(snapshot, handoff.ReadGrantDescriptor)
     assert snapshot.source_ids == (() if empty else (SOURCE_A, SOURCE_B))
     assert type(snapshot.source_ids) is tuple
@@ -205,5 +224,27 @@ def test_positive_ttl_is_matched_without_inventing_host_policy_bounds():
     handoff = load_handoff()
     ttl = 10 ** 12
     snapshot = handoff.parse_read_grant({**wire_grant(), 'ttl_seconds': ttl},
-        expected_request=replace(expected_request(), ttl_seconds=ttl))
+        expected_issuance=expected_issuance(replace(expected_request(), ttl_seconds=ttl)))
     assert snapshot.ttl_seconds == ttl
+
+
+@pytest.mark.parametrize(('field', 'value'), [
+    ('request', None), ('request', {'consumer_id': CONSUMER}),
+    ('credential_ref', None), ('credential_ref', ''), ('credential_ref', False),
+    ('credential_ref', 'dpapi-v1-' + 'A' * 64), ('credential_ref', REFERENCE + '\n'),
+    ('installation_id', INSTALLATION.upper()), ('installation_id', None),
+    ('generation', False), ('generation', '../private'), ('grant_id', GRANT + '?scope=all'),
+])
+def test_direct_issuance_construction_does_not_bypass_validation(field, value, forbid_client, capsys):
+    handoff = load_handoff()
+    context = replace(expected_issuance(), **{field: value})
+    with pytest.raises(ServiceError) as failure:
+        handoff.connect_granted_read_api(ENDPOINT, wire_grant(), expected_issuance=context)
+    assert_safe_error(failure, 'invalid_request', capsys)
+
+
+def test_request_only_parser_cannot_authorize(forbid_client, capsys):
+    handoff = load_handoff()
+    with pytest.raises(ServiceError) as failure:
+        handoff.parse_read_grant(wire_grant(), expected_request=expected_request())
+    assert_safe_error(failure, 'invalid_request', capsys)
