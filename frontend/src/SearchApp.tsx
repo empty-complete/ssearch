@@ -28,6 +28,7 @@ export function SearchApp({ service, scope = null, preview = false, mode = 'appl
           <img src="./app-icon.png" width="24" height="24" alt="" />
           <span>{__PRODUCT__.product_name}</span>
         </div>
+        {devPreview && <p className="preview-label">Учебные данные. Предпросмотр интерфейса.</p>}
         <IconAction
           label="О программе"
           onPress={() => setAbout(value => !value)}
@@ -40,7 +41,6 @@ export function SearchApp({ service, scope = null, preview = false, mode = 'appl
           }
         />
       </header>
-      {devPreview && <p className="preview-label">Учебные данные. Предпросмотр интерфейса.</p>}
       <SearchPage client={service} scope={scope} mode="application"
         initialQuery={initialQuery} onQueryChange={writeTransientQuery} />
       {about && (
@@ -61,7 +61,7 @@ export function SearchApp({ service, scope = null, preview = false, mode = 'appl
         </section>
       )}
       <footer className="app-footer">
-        <span>{devPreview ? 'Предпросмотр' : 'Локальный поиск'}</span>
+        <span>Локальный поиск</span>
         <label className="theme-control">
           Тема
           <select aria-label="Тема предпросмотра" value={theme}

@@ -61,7 +61,11 @@ export class SearchController {
   }
 
   async chooseProject(projectId: string | null, generation = this.snapshot.generation) {
-    if (generation !== this.snapshot.generation || this.resultGeneration !== generation) return;
+    if (generation !== this.snapshot.generation) return;
+    // Clearing the current filter is also a recovery action after failure.
+    // A new project still requires a current, accepted ambiguity response.
+    if (projectId !== null && this.resultGeneration !== generation) return;
+    if (projectId === null && !this.snapshot.project) return;
     const option = this.snapshot.response?.ambiguities.flatMap(item => item.options)
       .find(item => item.project_id === projectId);
     if (projectId !== null && !option) return;
