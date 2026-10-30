@@ -24,7 +24,7 @@ _CONNECT_ERRORS = {
 }
 
 
-def connect_read_api(endpoint_file: Path, credential_ref: str) -> AgentReadAPI:
+def _connect_read_client(endpoint_file: Path, credential_ref: str) -> ServiceClient:
     """Verify the endpoint, process identity, nonce proof and explicit credential.
 
     ServiceClient permits an owner fallback for desktop callers. Reject missing
@@ -40,10 +40,15 @@ def connect_read_api(endpoint_file: Path, credential_ref: str) -> AgentReadAPI:
         # P2 revalidates private endpoint/state/process identity before resolving
         # the credential. This HTTP read also verifies the fresh nonce proof.
         client.status()
-        return AgentReadAPI(client)
+        return client
     except ServiceError as failure:
         code = (failure.code if type(failure.code) is str and failure.code in _CONNECT_ERRORS
                 else 'service_unavailable')
         raise error(code, _CONNECT_ERRORS[code], retryable=failure.retryable is True) from None
     except Exception:
         raise error('service_unavailable', 503, retryable=True) from None
+
+
+def connect_read_api(endpoint_file: Path, credential_ref: str) -> AgentReadAPI:
+    """Attach a read view using an explicit protected credential reference."""
+    return AgentReadAPI(_connect_read_client(endpoint_file, credential_ref))
