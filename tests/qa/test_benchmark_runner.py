@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import threading
+from contextlib import contextmanager
 
 import pytest
 
@@ -163,3 +164,83 @@ def test_explicit_input_guards_refuse_before_owner_creation(inputs, monkeypatch,
         RUNNER.run_benchmark(corpus, judgments, profile=profile, queries=queries,
                              repetitions=repetitions, max_files=max_files)
     assert owners == [] and not profile.exists()
+
+
+@pytest.mark.parametrize('phase', ['creation', 'cleanup'])
+def test_foreign_profile_swap_is_blocked_by_retained_authority(inputs, monkeypatch, phase):
+    """Attempt real rename at either current path seam or retained-handle seam."""
+    import shutil
+    from atom_search.onboarding._windows_files import WindowsFiles
+    profile = inputs[2]
+    foreign = profile.parent / 'foreign-profile'
+    foreign.mkdir()
+    sentinel = foreign / 'keep'
+    sentinel.write_text('DO NOT ADOPT OR DELETE', encoding='utf-8')
+    displaced = profile.parent / 'displaced-owned'
+    attempts, root_identity = [], []
+
+    def attack():
+        if attempts:
+            return
+        attempts.append(True)
+        try:
+            profile.rename(displaced)
+            foreign.rename(profile)
+        except OSError:
+            pass  # Retained Windows authority must deny rename/replacement.
+
+    original_mkdir, original_rmtree = Path.mkdir, shutil.rmtree
+    def mkdir(path, *args, **kwargs):
+        result = original_mkdir(path, *args, **kwargs)
+        if phase == 'creation' and path == profile:
+            attack()
+        return result
+    def rmtree(path, *args, **kwargs):
+        if phase == 'cleanup' and Path(path) == profile:
+            attack()
+        return original_rmtree(path, *args, **kwargs)
+    original_handle, original_dispose = WindowsFiles._handle, WindowsFiles._dispose
+    @contextmanager
+    def handle(files, parent, name, **kwargs):
+        with original_handle(files, parent, name, **kwargs) as opened:
+            if kwargs.get('create') and kwargs.get('directory') and name == profile.name:
+                root_identity.append(files._identity(opened, directory=True)[0])
+                if phase == 'creation':
+                    attack()
+            yield opened
+    def dispose(files, opened):
+        if phase == 'cleanup' and root_identity:
+            try:
+                is_root = files._identity(opened, directory=True)[0] == root_identity[0]
+            except (OSError, ValueError):
+                is_root = False
+            if is_root:
+                attack()
+        return original_dispose(files, opened)
+    monkeypatch.setattr(Path, 'mkdir', mkdir)
+    monkeypatch.setattr(shutil, 'rmtree', rmtree)
+    monkeypatch.setattr(WindowsFiles, '_handle', handle)
+    monkeypatch.setattr(WindowsFiles, '_dispose', dispose)
+    result = run(inputs)
+    assert attempts == [True], 'the real replacement attempt must execute'
+    assert sentinel.read_text(encoding='utf-8') == 'DO NOT ADOPT OR DELETE'
+    assert not displaced.exists() and not profile.exists()
+    assert result['status'] == 'complete'
+
+
+def test_wide_directory_enumeration_stops_at_discovery_budget(inputs, monkeypatch):
+    corpus = inputs[0]
+    for index in range(100):
+        (corpus / f'empty-{index}').mkdir()
+    observed = []
+    original = Path.iterdir
+    def counted(directory):
+        for entry in original(directory):
+            if directory == corpus:
+                observed.append(entry.name)
+            yield entry
+    monkeypatch.setattr(Path, 'iterdir', counted)
+    with pytest.raises(ValueError, match='^benchmark_input_invalid$'):
+        run(inputs, max_files=2)
+    assert len(observed) <= 43, 'directory discovery must be bounded before enqueue/probe'
+    assert not inputs[2].exists()
