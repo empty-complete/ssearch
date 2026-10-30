@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 
@@ -95,3 +96,24 @@ class VerifiedManifest:
     source_commit: str
     compatibility: ReleaseCompatibility
     executables: ReleaseExecutables
+
+
+@dataclass(frozen=True)
+class ArchiveEntry:
+    path: str
+    size: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class VerifiedArchiveInventory:
+    entries: tuple[ArchiveEntry, ...]
+    unpacked_bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class StagedRelease:
+    manifest: VerifiedManifest
+    directory: Path
+    files: tuple[Path, ...]

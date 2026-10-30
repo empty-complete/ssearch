@@ -5,7 +5,6 @@ import importlib
 import importlib.util
 import io
 import json
-from pathlib import Path
 import stat
 import zipfile
 
@@ -89,7 +88,3 @@ class FixtureRelease:
     def source_bytes(self):
         return {str(path.relative_to(self.source)): path.read_bytes()
                 for path in self.source.rglob('*') if path.is_file()}
-
-
-def load_helper():
-    return Path(__file__)
