@@ -82,21 +82,33 @@ def test_tools_list_is_read_only():
     {'query': 'drawing', 'limit': 0}, {'query': 'drawing', 'limit': 101},
     {'query': 'drawing', 'limit': True}, {'query': 'drawing', 'limit': 1.5},
     {'query': 'drawing', 'limit': '20'}, {'query': 'drawing', 'source_ids': 'all'},
+    {'query': 'drawing', 'source_ids': 'null'},
+    {'query': 'drawing', 'source_ids': '[]'},
+    {'query': 'drawing', 'source_ids': json.dumps([SOURCE_ID])},
     {'query': 'drawing', 'source_ids': [False]},
     {'query': 'drawing', 'source_ids': [SOURCE_ID] * 65},
 ])
 def test_sdk_invalid_arguments_do_not_reach_service(arguments):
     adapter = load_adapter()
-    from mcp import Client
+    from mcp import Client, MCPError
+    from mcp.types import INVALID_PARAMS
     service = MetadataClient()
 
     async def scenario():
         async with Client(adapter.create_mcp_server(AgentReadAPI(service))) as client:
-            result = await client.call_tool('search', arguments)
-            # Type errors may be rejected by the SDK; semantic failures retain
-            # the facade's public envelope. Neither may become a successful read.
-            if not result.is_error:
-                envelope(result, error='invalid_argument')
+            try:
+                result = await client.call_tool('search', arguments)
+            except MCPError as failure:
+                assert failure.code == INVALID_PARAMS
+                assert failure.message == 'source_ids must be an array or null.'
+                assert failure.data is None
+                assert SECRET not in str(failure)
+            else:
+                # Type errors may be rejected by the SDK; semantic failures
+                # retain the facade envelope. Neither is a successful read.
+                if not result.is_error:
+                    envelope(result, error='invalid_argument')
+                assert SECRET not in json.dumps(result.model_dump())
             assert service.calls == []
     asyncio.run(scenario())
 
