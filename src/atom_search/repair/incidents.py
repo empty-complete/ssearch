@@ -59,15 +59,26 @@ _ROLLBACK_REASONS = {
 }
 _METHODS = frozenset({'bounded_directory_probe', 'source_job_paused', 'settings_applied',
     'local_model_verified', 'owned_database_verified', 'storage_budget_verified', 'not_performed'})
-_SUCCESS_METHODS = _METHODS - {'not_performed'}
+_FIXED_METHODS = {
+    ('repair', 'SOURCE_UNREACHABLE'): 'bounded_directory_probe',
+    ('repair', 'SOURCE_ACCESS_DENIED'): 'source_job_paused',
+    ('repair', 'MODEL_MISSING'): 'local_model_verified',
+    ('repair', 'MODEL_CORRUPT'): 'local_model_verified',
+    ('repair', 'DB_BUSY'): 'owned_database_verified',
+    ('repair', 'DATABASE_UNAVAILABLE'): 'owned_database_verified',
+    ('repair', 'DATABASE_PORT_CONFLICT'): 'owned_database_verified',
+    ('repair', 'STORAGE_LIMIT'): 'storage_budget_verified',
+    ('repair', 'CONFIG_INVALID'): 'settings_applied',
+    ('settings', 'CONFIG_INVALID'): 'settings_applied',
+}
 _ERRORS = frozenset(_SYMPTOMS) | frozenset({
     'source_unavailable', 'source_access_denied', 'settings_invalid', 'settings_busy',
     'settings_apply_failed', 'settings_recovery_required', 'cancelled', 'timeout',
-    'stale_plan', 'revision_conflict', 'interrupted', 'unknown_error',
+    'stale_plan', 'revision_conflict', 'interrupted', 'unknown_error', 'server_exited',
 })
 _SOURCE_STATES = frozenset({'unknown', 'available', 'unreachable', 'access_denied', 'partial'})
 _MODEL_STATES = frozenset({'unknown', 'ready', 'missing', 'corrupt', 'error', 'unavailable'})
-_DATABASE_STATES = frozenset({'unknown', 'ready', 'starting', 'stopping', 'stopped', 'blocked',
+_DATABASE_STATES = frozenset({'unknown', 'ready', 'starting', 'stopping', 'stopped', 'blocked', 'degraded',
     'unavailable', 'error', 'failed', 'busy', 'port_conflict', 'version_unsupported', 'extension_missing'})
 _STAGES = frozenset({'started', 'completed', 'failed', 'cancelled', 'timed_out', 'skipped'})
 _VERSION = re.compile(r'[0-9]{1,5}(?:\.[0-9]{1,5}){1,3}\Z')
@@ -344,7 +355,8 @@ class IncidentBuilder:
         if not started <= checked <= finished:
             _invalid()
         result = _choice(attempt.result, _RESULTS)
-        if result == 'fixed' and (not verification['passed'] or verification['method'] not in _SUCCESS_METHODS
+        if result == 'fixed' and (not verification['passed']
+                or verification['method'] != _FIXED_METHODS.get((kind, code))
                 or verification['error_code'] is not None):
             _invalid()
         report = dict(schema_version=1, id=intent.incident_id, operation_id=intent.operation_id,

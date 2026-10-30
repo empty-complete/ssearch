@@ -53,10 +53,18 @@
   },
   "allOf": [{
     "if": {"properties": {"result": {"const": "fixed"}}},
-    "then": {"properties": {"verification": {"properties": {
-      "passed": {"const": true}, "error_code": {"type": "null"},
-      "method": {"enum": ["bounded_directory_probe", "source_job_paused", "settings_applied", "local_model_verified", "owned_database_verified", "storage_budget_verified"]}
-    }}}}
+    "then": {
+      "properties": {"verification": {"properties": {"passed": {"const": true}, "error_code": {"type": "null"}}}},
+      "anyOf": [
+        {"properties": {"kind": {"const": "repair"}, "code": {"const": "SOURCE_UNREACHABLE"}, "verification": {"properties": {"method": {"const": "bounded_directory_probe"}}}}},
+        {"properties": {"kind": {"const": "repair"}, "code": {"const": "SOURCE_ACCESS_DENIED"}, "verification": {"properties": {"method": {"const": "source_job_paused"}}}}},
+        {"properties": {"kind": {"const": "repair"}, "code": {"enum": ["MODEL_MISSING", "MODEL_CORRUPT"]}, "verification": {"properties": {"method": {"const": "local_model_verified"}}}}},
+        {"properties": {"kind": {"const": "repair"}, "code": {"enum": ["DB_BUSY", "DATABASE_UNAVAILABLE", "DATABASE_PORT_CONFLICT"]}, "verification": {"properties": {"method": {"const": "owned_database_verified"}}}}},
+        {"properties": {"kind": {"const": "repair"}, "code": {"const": "STORAGE_LIMIT"}, "verification": {"properties": {"method": {"const": "storage_budget_verified"}}}}},
+        {"properties": {"kind": {"const": "repair"}, "code": {"const": "CONFIG_INVALID"}, "verification": {"properties": {"method": {"const": "settings_applied"}}}}},
+        {"properties": {"kind": {"const": "settings"}, "code": {"const": "CONFIG_INVALID"}, "verification": {"properties": {"method": {"const": "settings_applied"}}}}}
+      ]
+    }
   }],
   "$defs": {
     "code": {"enum": ["SOURCE_UNREACHABLE", "SOURCE_ACCESS_DENIED", "MODEL_MISSING", "MODEL_CORRUPT", "DB_BUSY", "DATABASE_UNAVAILABLE", "DATABASE_PORT_CONFLICT", "DATABASE_VERSION_UNSUPPORTED", "DATABASE_EXTENSION_MISSING", "DB_CORRUPT", "STORAGE_LIMIT", "CONFIG_INVALID", "JOB_STALLED"]},
@@ -64,7 +72,7 @@
     "integer": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
     "nullableInteger": {"anyOf": [{"$ref": "#/$defs/integer"}, {"type": "null"}]},
     "nullableTime": {"anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
-    "error": {"enum": [null, "SOURCE_UNREACHABLE", "SOURCE_ACCESS_DENIED", "MODEL_MISSING", "MODEL_CORRUPT", "DB_BUSY", "DATABASE_UNAVAILABLE", "DATABASE_PORT_CONFLICT", "DATABASE_VERSION_UNSUPPORTED", "DATABASE_EXTENSION_MISSING", "DB_CORRUPT", "STORAGE_LIMIT", "CONFIG_INVALID", "JOB_STALLED", "source_unavailable", "source_access_denied", "settings_invalid", "settings_busy", "settings_apply_failed", "settings_recovery_required", "cancelled", "timeout", "stale_plan", "revision_conflict", "interrupted", "unknown_error"]},
+    "error": {"enum": [null, "SOURCE_UNREACHABLE", "SOURCE_ACCESS_DENIED", "MODEL_MISSING", "MODEL_CORRUPT", "DB_BUSY", "DATABASE_UNAVAILABLE", "DATABASE_PORT_CONFLICT", "DATABASE_VERSION_UNSUPPORTED", "DATABASE_EXTENSION_MISSING", "DB_CORRUPT", "STORAGE_LIMIT", "CONFIG_INVALID", "JOB_STALLED", "source_unavailable", "source_access_denied", "settings_invalid", "settings_busy", "settings_apply_failed", "settings_recovery_required", "cancelled", "timeout", "stale_plan", "revision_conflict", "interrupted", "unknown_error", "server_exited"]},
     "configVersion": {
       "type": "object", "additionalProperties": false, "required": ["schema_version", "revision"],
       "properties": {
@@ -140,7 +148,7 @@
             "engine": {"const": "postgresql"},
             "version": {"anyOf": [{"$ref": "#/$defs/version"}, {"type": "null"}]},
             "extension_version": {"anyOf": [{"$ref": "#/$defs/version"}, {"type": "null"}]},
-            "runtime_state": {"enum": ["unknown", "ready", "starting", "stopping", "stopped", "blocked", "unavailable", "error", "failed", "busy", "port_conflict", "version_unsupported", "extension_missing"]},
+            "runtime_state": {"enum": ["unknown", "ready", "starting", "stopping", "stopped", "blocked", "degraded", "unavailable", "error", "failed", "busy", "port_conflict", "version_unsupported", "extension_missing"]},
             "checked_at": {"$ref": "#/$defs/nullableTime"}, "stale": {"type": "boolean"}, "error_code": {"$ref": "#/$defs/error"}
           }
         },
