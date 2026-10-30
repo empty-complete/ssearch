@@ -126,6 +126,25 @@ describe('sources draft public contract (unwired, no native or service actions)'
     expect(draft.baseline).toEqual(saved);
   });
 
+  it('two identified single-folder selections stage Unicode and UNC rows with their supplied persistent UUIDs', () => {
+    const saved = snapshot([]);
+    const first = reduceSourcesDraft(createSourcesDraft(saved), { type: 'folder_selected', source: local });
+    const second = reduceSourcesDraft(first, { type: 'folder_selected', source: network });
+    expect(second.candidate.sources).toEqual([local, network]);
+    expect(saved.settings.sources).toEqual([]);
+    expect(second.baseline).toEqual(saved);
+    expect(second.candidate.revision).toBe(7);
+  });
+
+  it('does not exceed 64 staged sources or replace their UUIDs when another folder is selected', () => {
+    const sources = Array.from({ length: 64 }, (_, index) => ({ ...local,
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`, path: `C:\\Учебный каталог\\${index}` }));
+    const draft = createSourcesDraft(snapshot(sources));
+    const full = reduceSourcesDraft(draft, { type: 'folder_selected', source: network });
+    expect(full.candidate.sources).toEqual(sources);
+    expect(full.generation).toBe(draft.generation);
+  });
+
   it('does not coerce an invalid null or missing sources field into [] or a default root', () => {
     const invalidSettings: JsonObject[] = [{ schema_version: 3, revision: 7, sources: null },
       { schema_version: 3, revision: 7 }];

@@ -48,6 +48,8 @@ export function createSourcesDraft(snapshot: SettingsSnapshot): SourcesDraft {
 
 /** In-memory staging only. P2 still owns schema/path policy and atomic apply. */
 export function reduceSourcesDraft(draft: SourcesDraft, action: SourcesDraftAction): SourcesDraft {
+  if (action.type === 'discard') return { ...draft, candidate: copyObject(draft.baseline.settings),
+    generation: draft.generation + 1, validation: null };
   if (!draft.baseline.mutable_fields.includes('sources') || !Array.isArray(draft.candidate.sources)) return draft;
   if (action.type !== 'edit' && action.type !== 'remove') return draft;
   const matches = (value: JsonValue): value is JsonObject => value !== null && typeof value === 'object'
