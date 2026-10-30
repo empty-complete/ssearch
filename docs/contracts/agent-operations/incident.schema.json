@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssearch immutable redacted incident payload",
+  "description": "Canonical UTF-8 server report, at most 262144 bytes (or a lower host budget). The builder consumes trusted in-process observations; this is not agent input, a mutation grant, a storage reservation or delivery state. Identity and times come from the trusted intent. Details may be omitted only with details_truncated=true; result, verification and identity are retained. Absolute source paths are replaced by UUID-bound local keyed aliases. Alias key acquisition and all I/O remain outside this pure boundary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "operation_id", "plan_id", "kind", "code", "started_at", "finished_at", "symptoms", "app_version", "service_version", "api_version", "config_version", "source_id", "config_diff", "actions", "health_before", "health_after", "verification", "rollback", "result", "agent_reason", "agent_explanation", "details_truncated"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "format": "uuid"},
+    "operation_id": {"type": "string", "format": "uuid"},
+    "plan_id": {"anyOf": [{"type": "string", "format": "uuid"}, {"type": "null"}]},
+    "kind": {"enum": ["settings", "repair"]},
+    "code": {"$ref": "#/$defs/code"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "symptoms": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"type": "string", "maxLength": 256}},
+    "app_version": {"$ref": "#/$defs/version"},
+    "service_version": {"$ref": "#/$defs/version"},
+    "api_version": {"type": "string", "pattern": "^[0-9]{1,5}(\\.[0-9]{1,5}){0,2}$"},
+    "config_version": {"$ref": "#/$defs/configVersion"},
+    "source_id": {"anyOf": [{"type": "string", "format": "uuid"}, {"type": "null"}]},
+    "config_diff": {
+      "type": "object", "additionalProperties": false, "required": ["redacted", "changes"],
+      "properties": {
+        "redacted": {"const": true},
+        "changes": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/change"}}
+      }
+    },
+    "actions": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/action"}},
+    "health_before": {"$ref": "#/$defs/health"},
+    "health_after": {"$ref": "#/$defs/health"},
+    "verification": {"$ref": "#/$defs/verification"},
+    "rollback": {
+      "type": "object", "additionalProperties": false,
+      "required": ["required", "performed", "reason", "explanation"],
+      "properties": {
+        "required": {"type": "boolean"}, "performed": {"type": "boolean"},
+        "reason": {"enum": ["no_changes", "not_required", "restored", "restore_failed", "not_reversible", "interrupted"]},
+        "explanation": {"type": "string", "maxLength": 256}
+      }
+    },
+    "result": {"enum": ["fixed", "not_fixed", "partial", "rolled_back", "rollback_failed", "interrupted"]},
+    "agent_reason": {
+      "type": "object", "additionalProperties": false, "required": ["code", "evidence_refs"],
+      "properties": {
+        "code": {"$ref": "#/$defs/code"},
+        "evidence_refs": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "pattern": "^health:[0-9a-f]{64}$"}}
+      }
+    },
+    "agent_explanation": {"type": "string", "maxLength": 256},
+    "details_truncated": {"type": "boolean"}
+  },
+  "allOf": [{
+    "if": {"properties": {"result": {"const": "fixed"}}},
+    "then": {"properties": {"verification": {"properties": {
+      "passed": {"const": true}, "error_code": {"type": "null"},
+      "method": {"enum": ["bounded_directory_probe", "source_job_paused", "settings_applied", "local_model_verified", "owned_database_verified", "storage_budget_verified"]}
+    }}}}
+  }],
+  "$defs": {
+    "code": {"enum": ["SOURCE_UNREACHABLE", "SOURCE_ACCESS_DENIED", "MODEL_MISSING", "MODEL_CORRUPT", "DB_BUSY", "DATABASE_UNAVAILABLE", "DATABASE_PORT_CONFLICT", "DATABASE_VERSION_UNSUPPORTED", "DATABASE_EXTENSION_MISSING", "DB_CORRUPT", "STORAGE_LIMIT", "CONFIG_INVALID", "JOB_STALLED"]},
+    "version": {"type": "string", "pattern": "^[0-9]{1,5}(\\.[0-9]{1,5}){1,3}$"},
+    "integer": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "nullableInteger": {"anyOf": [{"$ref": "#/$defs/integer"}, {"type": "null"}]},
+    "nullableTime": {"anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
+    "error": {"enum": [null, "SOURCE_UNREACHABLE", "SOURCE_ACCESS_DENIED", "MODEL_MISSING", "MODEL_CORRUPT", "DB_BUSY", "DATABASE_UNAVAILABLE", "DATABASE_PORT_CONFLICT", "DATABASE_VERSION_UNSUPPORTED", "DATABASE_EXTENSION_MISSING", "DB_CORRUPT", "STORAGE_LIMIT", "CONFIG_INVALID", "JOB_STALLED", "source_unavailable", "source_access_denied", "settings_invalid", "settings_busy", "settings_apply_failed", "settings_recovery_required", "cancelled", "timeout", "stale_plan", "revision_conflict", "interrupted", "unknown_error"]},
+    "configVersion": {
+      "type": "object", "additionalProperties": false, "required": ["schema_version", "revision"],
+      "properties": {
+        "schema_version": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+        "revision": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}
+      }
+    },
+    "action": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "type", "stage", "timeout_seconds", "error_code"],
+      "properties": {
+        "id": {"$ref": "#/$defs/actionKind"}, "type": {"$ref": "#/$defs/actionKind"},
+        "stage": {"enum": ["started", "completed", "failed", "cancelled", "timed_out", "skipped"]},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 30},
+        "error_code": {"$ref": "#/$defs/error"}
+      }
+    },
+    "actionKind": {"enum": ["retry_source_probe", "pause_source_job", "use_lexical_fallback", "restore_local_model", "retry_database", "reselect_owned_port", "rebuild_derived_index", "restore_valid_config", "cancel_stalled_job", "cleanup_reproducible_cache"]},
+    "verification": {
+      "type": "object", "additionalProperties": false, "required": ["method", "checked_at", "passed", "error_code"],
+      "properties": {
+        "method": {"enum": ["bounded_directory_probe", "source_job_paused", "settings_applied", "local_model_verified", "owned_database_verified", "storage_budget_verified", "not_performed"]},
+        "checked_at": {"type": "string", "format": "date-time"}, "passed": {"type": "boolean"},
+        "error_code": {"$ref": "#/$defs/error"}
+      }
+    },
+    "change": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["path", "before", "after"],
+          "properties": {
+            "path": {"const": "indexing.interval_seconds"},
+            "before": {"type": "integer", "minimum": 86400, "maximum": 31536000},
+            "after": {"type": "integer", "minimum": 86400, "maximum": 31536000}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["path", "before", "after"],
+          "properties": {"path": {"const": "indexing.metadata_enabled"}, "before": {"type": "boolean"}, "after": {"type": "boolean"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["path", "before", "after"],
+          "properties": {"path": {"const": "ui.theme"}, "before": {"enum": ["light", "dark", "system", "[redacted]"]}, "after": {"enum": ["light", "dark", "system", "[redacted]"]}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["path", "source_id", "before", "after", "before_alias", "after_alias"],
+          "properties": {
+            "path": {"const": "sources.path"}, "source_id": {"type": "string", "format": "uuid"},
+            "before": {"const": "[redacted]"}, "after": {"const": "[redacted]"},
+            "before_alias": {"type": "string", "pattern": "^path:[0-9a-f]{64}$"},
+            "after_alias": {"type": "string", "pattern": "^path:[0-9a-f]{64}$"}
+          }
+        }
+      ]
+    },
+    "health": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observed_at", "liveness", "readiness", "config_version", "index_generation", "sources", "model", "database", "storage", "jobs", "outbox"],
+      "properties": {
+        "observed_at": {"type": "string", "format": "date-time"}, "liveness": {"enum": ["alive", "stopping"]},
+        "readiness": {"enum": ["warming", "ready", "degraded", "blocked"]},
+        "config_version": {"$ref": "#/$defs/configVersion"}, "index_generation": {"$ref": "#/$defs/integer"},
+        "sources": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/source"}},
+        "model": {
+          "type": "object", "additionalProperties": false, "required": ["state", "checked_at", "stale", "lexical_available"],
+          "properties": {"state": {"enum": ["unknown", "ready", "missing", "corrupt", "error", "unavailable"]}, "checked_at": {"$ref": "#/$defs/nullableTime"}, "stale": {"type": "boolean"}, "lexical_available": {"type": "boolean"}}
+        },
+        "database": {
+          "type": "object", "additionalProperties": false,
+          "required": ["engine", "version", "extension_version", "runtime_state", "checked_at", "stale", "error_code"],
+          "properties": {
+            "engine": {"const": "postgresql"},
+            "version": {"anyOf": [{"$ref": "#/$defs/version"}, {"type": "null"}]},
+            "extension_version": {"anyOf": [{"$ref": "#/$defs/version"}, {"type": "null"}]},
+            "runtime_state": {"enum": ["unknown", "ready", "starting", "stopping", "stopped", "blocked", "unavailable", "error", "failed", "busy", "port_conflict", "version_unsupported", "extension_missing"]},
+            "checked_at": {"$ref": "#/$defs/nullableTime"}, "stale": {"type": "boolean"}, "error_code": {"$ref": "#/$defs/error"}
+          }
+        },
+        "storage": {"$ref": "#/$defs/storage"},
+        "jobs": {
+          "type": "object", "additionalProperties": false, "required": ["active", "completed", "failed", "other"],
+          "properties": {"active": {"$ref": "#/$defs/integer"}, "completed": {"$ref": "#/$defs/integer"}, "failed": {"$ref": "#/$defs/integer"}, "other": {"$ref": "#/$defs/integer"}}
+        },
+        "outbox": {
+          "type": "object", "additionalProperties": false, "required": ["queued", "sent", "last_error", "repair_blocked"],
+          "properties": {"queued": {"$ref": "#/$defs/integer"}, "sent": {"$ref": "#/$defs/integer"}, "last_error": {"$ref": "#/$defs/error"}, "repair_blocked": {"type": "boolean"}}
+        }
+      }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_id", "state", "checked_at", "last_success_at", "stale", "error_code", "catalogued_files", "metadata_embedded_files", "catalog_counts_checked_at", "catalog_counts_stale"],
+      "properties": {
+        "source_id": {"type": "string", "format": "uuid"}, "state": {"enum": ["unknown", "available", "unreachable", "access_denied", "partial"]},
+        "checked_at": {"$ref": "#/$defs/nullableTime"}, "last_success_at": {"$ref": "#/$defs/nullableTime"},
+        "stale": {"type": "boolean"}, "error_code": {"$ref": "#/$defs/error"},
+        "catalogued_files": {"$ref": "#/$defs/nullableInteger"}, "metadata_embedded_files": {"$ref": "#/$defs/nullableInteger"},
+        "catalog_counts_checked_at": {"$ref": "#/$defs/nullableTime"}, "catalog_counts_stale": {"type": "boolean"}
+      }
+    },
+    "storage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["physical_owned_bytes", "pgdata_bytes", "wal_bytes", "temp_bytes", "cache_bytes", "outbox_bytes", "backup_bytes", "staging_bytes", "database_logical_bytes", "quota_bytes", "free_bytes", "reserved_bytes", "checked_at", "stale", "maintenance_required"],
+      "properties": {
+        "physical_owned_bytes": {"$ref": "#/$defs/nullableInteger"}, "pgdata_bytes": {"$ref": "#/$defs/nullableInteger"},
+        "wal_bytes": {"$ref": "#/$defs/nullableInteger"}, "temp_bytes": {"$ref": "#/$defs/nullableInteger"},
+        "cache_bytes": {"$ref": "#/$defs/nullableInteger"}, "outbox_bytes": {"$ref": "#/$defs/nullableInteger"},
+        "backup_bytes": {"$ref": "#/$defs/nullableInteger"}, "staging_bytes": {"$ref": "#/$defs/nullableInteger"},
+        "database_logical_bytes": {"$ref": "#/$defs/nullableInteger"}, "quota_bytes": {"$ref": "#/$defs/nullableInteger"},
+        "free_bytes": {"$ref": "#/$defs/nullableInteger"}, "reserved_bytes": {"$ref": "#/$defs/nullableInteger"},
+        "checked_at": {"$ref": "#/$defs/nullableTime"}, "stale": {"type": "boolean"}, "maintenance_required": {"type": "boolean"}
+      }
+    }
+  }
+}
