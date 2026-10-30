@@ -108,6 +108,32 @@ class PostgresPublicIds:
                 JOIN atom_search.catalogs c ON c.id=s.catalog_id WHERE c.state='active' AND f.id=%s""", (file_id,)).fetchone()
             return row[0] if row is not None else None
 
+    def metadata_ids(self, files, *, scope):
+        """Read existing file/source UUID pairs for one captured result cohort.
+
+        Match both the internal ID and its captured root: a file moved between
+        retrieval and materialization cannot acquire another source's identity.
+        Missing/retired/out-of-scope mappings are omitted, never created here.
+        """
+        from .postgres import _integer
+        if not isinstance(scope, SearchScope):
+            raise ValueError('invalid_search_scope')
+        requested = tuple((_integer(identity), canonical_root(root)) for identity, root in files)
+        sources = [_integer(identity) for identity in scope.source_ids]
+        if not requested or not sources:
+            return {}
+        with self.catalog._connection() as connection:
+            rows = connection.execute("""SELECT f.id,p.file_uuid::text,sp.source_uuid::text
+                FROM unnest(%s::bigint[],%s::text[]) requested(file_id,root)
+                JOIN atom_search.files f ON f.id=requested.file_id
+                JOIN atom_search.sources s ON s.id=f.source_id AND s.path=requested.root
+                JOIN atom_search.catalogs c ON c.id=s.catalog_id AND c.state='active'
+                JOIN atom_search.file_public_ids p ON p.file_id=f.id
+                JOIN atom_search.source_public_ids sp ON sp.source_id=s.id
+                WHERE s.id=ANY(%s::bigint[])""",
+                ([identity for identity, _ in requested], [root for _, root in requested], sources)).fetchall()
+        return {identity: (file_uuid, source_uuid) for identity, file_uuid, source_uuid in rows}
+
     def internal_file_id(self, result_id, *, scope):
         from .postgres import _integer
         try:
