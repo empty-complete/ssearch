@@ -85,6 +85,7 @@ def test_cancelled_scan_is_partial_and_prior_sql_records_survive(inputs, monkeyp
                 # Root acknowledged; the removed child's directory remains unvisited.
                 if snapshot.relative_path == '':
                     cancel.set()
+                    cancellation.set()
         with monkeypatch.context() as patch:
             patch.setattr(FileSystemSource, 'snapshots', interrupted)
             report = original_scan(owner, source_id, cancel=cancel)
