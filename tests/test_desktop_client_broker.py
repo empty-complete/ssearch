@@ -251,3 +251,114 @@ def test_folder_access_reader_is_denied_before_native_io(owner_profile, read_cli
         assert str(selected) not in str(reply)
     assert result[2]['envelope']['error'] is None
     assert result[2]['envelope']['data']['api_version'] == '1'
+
+
+@pytest.mark.parametrize('arguments', [
+    {}, {'selected_path': None}, {'selected_path': 'relative/folder'},
+    {'selected_path': 'C:/fictional/selection', 'source_id': 'a0000000-0000-4000-8000-000000000001'},
+    {'path': 'C:/fictional/selection'},
+])
+def test_source_identity_accepts_only_one_host_retained_path(owner_profile, arguments):
+    code, result = run(owner_profile, [request(owner_profile, 'select_source_identity', arguments)])
+    assert code == 0 and len(result) == 1
+    reply = result[0]['envelope']
+    assert reply['data'] is None and reply['error']['code'] == 'invalid_request'
+    assert 'fictional' not in str(reply)
+
+
+def test_source_identity_reuses_removed_root_and_repaths_without_binding_on_lookup(owner_profile, tmp_path):
+    from copy import deepcopy
+
+    owner = owner_profile
+    original = owner.repository.snapshot()
+    source = original.settings['sources'][0]
+    new_root = str(tmp_path / 'Uncommitted selection Папка')
+
+    def lookup(path):
+        before = owner.repository.snapshot()
+        code, result = run(owner, [request(owner, 'select_source_identity', {'selected_path': path})])
+        assert code == 0 and len(result) == 1
+        reply = result[0]['envelope']
+        assert reply['error'] is None
+        assert set(reply['data']) == {'source_id'}
+        identity = reply['data']['source_id']
+        assert str(uuid.UUID(identity)) == identity
+        after = owner.repository.snapshot()
+        assert (after.revision, after.settings) == (before.revision, before.settings)
+        assert path not in str(reply)
+        return identity
+
+    try:
+        # This UUID already identifies catalogued metadata in actual PostgreSQL.
+        assert lookup(source['path']) == source['id']
+        assert lookup(source['path'].replace('\\', '/') + '/.') == source['id']
+        removed = deepcopy(original.settings)
+        removed['sources'] = removed['sources'][1:]
+        owner.coordinator.owner_apply(removed, original.revision)
+        assert lookup(source['path']) == source['id']
+        latest = owner.repository.snapshot()
+        readded = deepcopy(latest.settings)
+        readded['sources'].insert(0, dict(source, id=lookup(source['path'])))
+        owner.coordinator.owner_apply(readded, latest.revision)
+        assert owner.repository.snapshot().settings['sources'][0] == source
+
+        assert owner.core.public_ids.source_uuid(new_root) is None
+        replacement = lookup(new_root)
+        assert replacement != source['id']
+        assert owner.core.public_ids.source_uuid(new_root) is None  # Lookup never binds.
+        latest = owner.repository.snapshot()
+        repathed = deepcopy(latest.settings)
+        repathed['sources'][0] = dict(source, id=replacement, path=new_root)
+        owner.coordinator.owner_apply(repathed, latest.revision)
+        assert lookup(new_root) == replacement
+        assert lookup(source['path']) == source['id']
+    finally:
+        latest = owner.repository.snapshot()
+        if latest.settings['sources'] != original.settings['sources']:
+            restored = deepcopy(latest.settings)
+            restored['sources'] = original.settings['sources']
+            owner.coordinator.owner_apply(restored, latest.revision)
+
+
+def test_source_identity_reader_is_denied_before_owner_lookup(owner_profile, read_client, monkeypatch):
+    from atom_search.service import desktop_client
+
+    lookups = []
+
+    def forbidden_lookup(path):
+        lookups.append(path)
+        raise AssertionError('reader reached owner source identity lookup')
+
+    def reader(endpoint, credential_ref):
+        assert endpoint == owner_profile.endpoint_file and credential_ref is None
+        read_client._verified = False
+        return read_client
+
+    monkeypatch.setattr(desktop_client, 'ServiceClient', reader)
+    monkeypatch.setattr(owner_profile.registry, 'select_source_id', forbidden_lookup)
+    selected = owner_profile.repository.snapshot().settings['sources'][0]['path']
+    code, result = run(owner_profile, [request(owner_profile, 'select_source_identity', {'selected_path': selected})])
+    assert code == 0 and len(result) == 1 and lookups == []
+    reply = result[0]['envelope']
+    assert reply['data'] is None and reply['error']['code'] == 'access_denied'
+    assert selected not in str(reply)
+
+
+def test_source_identity_lookup_failure_never_returns_fallback_uuid(owner_profile, monkeypatch):
+    before = owner_profile.repository.snapshot()
+    lookups = []
+
+    def unavailable(root):
+        lookups.append(root)
+        raise OSError('PRIVATE_LOOKUP_FAILURE must not cross the broker')
+
+    monkeypatch.setattr(owner_profile.core.public_ids, 'source_uuid', unavailable)
+    selected = before.settings['sources'][0]['path']
+    code, result = run(owner_profile, [request(owner_profile, 'select_source_identity', {'selected_path': selected})])
+    assert code == 0 and len(result) == 1
+    reply = result[0]['envelope']
+    assert reply['data'] is None and reply['error']['code'] == 'service_unavailable'
+    assert len(lookups) == 1
+    assert 'PRIVATE_LOOKUP_FAILURE' not in str(reply)
+    after = owner_profile.repository.snapshot()
+    assert (after.revision, after.settings) == (before.revision, before.settings)
