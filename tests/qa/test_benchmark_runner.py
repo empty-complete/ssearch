@@ -223,6 +223,7 @@ def test_foreign_profile_swap_is_blocked_by_retained_authority(inputs, monkeypat
     monkeypatch.setattr(WindowsFiles, '_dispose', dispose)
     result = run(inputs)
     assert attempts == [True], 'the real replacement attempt must execute'
+    assert sentinel.is_file(), 'a foreign profile must never be adopted or removed'
     assert sentinel.read_text(encoding='utf-8') == 'DO NOT ADOPT OR DELETE'
     assert not displaced.exists() and not profile.exists()
     assert result['status'] == 'complete'
