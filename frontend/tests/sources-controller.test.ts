@@ -152,10 +152,12 @@ describe('sources P2 settings session (controlled port, no real persistence/nati
   it('late validation cannot authorize an edited generation or a discarded draft', async () => {
     for (const discard of [false, true]) {
       const reply = deferred<SettingsValidation>();
-      const f = setup({ settingsValidate: () => reply.promise });
+      const validate = vi.fn(() => reply.promise);
+      const f = setup({ settingsValidate: validate });
       await f.controller.load(); edit(f.controller);
       const candidate = f.controller.getSnapshot().draft!.candidate;
       const pending = f.controller.validate();
+      expect(validate).toHaveBeenCalledTimes(1);
       if (discard) f.controller.dispatch({ type: 'discard' });
       else edit(f.controller, 'Следующее изменение');
       reply.resolve(validSettings(candidate, 7));

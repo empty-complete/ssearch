@@ -51,6 +51,12 @@ export function reduceSourcesDraft(draft: SourcesDraft, action: SourcesDraftActi
   if (action.type === 'discard') return { ...draft, candidate: copyObject(draft.baseline.settings),
     generation: draft.generation + 1, validation: null };
   if (!draft.baseline.mutable_fields.includes('sources') || !Array.isArray(draft.candidate.sources)) return draft;
+  if (action.type === 'folder_selected') {
+    if (!action.source || draft.candidate.sources.length >= 64) return draft;
+    const candidate = copyObject(draft.candidate);
+    candidate.sources = [...candidate.sources as JsonValue[], { ...action.source }];
+    return { ...draft, candidate, generation: draft.generation + 1, validation: null };
+  }
   if (action.type !== 'edit' && action.type !== 'remove') return draft;
   const matches = (value: JsonValue): value is JsonObject => value !== null && typeof value === 'object'
     && !Array.isArray(value) && value.id === action.id;
