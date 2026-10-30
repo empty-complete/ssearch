@@ -14,6 +14,7 @@
     "tests/diagnostics-outcome.test.ts",
     "tests/diagnostics-helpers.test.ts",
     "tests/diagnostics-framing.test.ts",
-    "tests/diagnostics-helper-pipe.test.ts"
+    "tests/diagnostics-helper-pipe.test.ts",
+    "tests/sources.test.ts"
   ]
 }

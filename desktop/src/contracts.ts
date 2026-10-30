@@ -142,6 +142,23 @@ export interface MethodResults {
   cancel_job: JobSnapshot;
 }
 export type UiMethod = keyof MethodArguments;
+
+/** MAIN-issued selection context; identity resolution is not an access grant. */
+export interface FolderSelection { selection_id: string; path: string; source_id: string }
+export type FolderAccessRequest = { selection_id: string; source_id?: never } | { source_id: string; selection_id?: never };
+export interface AccessCheck {
+  state: 'accessible' | 'missing' | 'access_denied' | 'network_unavailable' | 'timeout';
+  checked_at: string;
+  message: string;
+}
+export interface NativeMethodArguments {
+  'native.pick_folder': Record<string, never>;
+  'native.check_folder_access': FolderAccessRequest;
+}
+export interface NativeMethodResults {
+  'native.pick_folder': { selection: FolderSelection | null };
+  'native.check_folder_access': AccessCheck;
+}
 /** Plain values only: AbortSignal stays in the browser client. */
 export interface CallControl { request_id: string; cancel?: true }
 export interface DesktopApi {
