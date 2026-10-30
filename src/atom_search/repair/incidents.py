@@ -244,6 +244,37 @@ def _canonical(value):
         sort_keys=True, separators=(',', ':')).encode('utf-8')
 
 
+def _bounded_canonical(report, budget):
+    encoded = _canonical(report)
+    if len(encoded) <= budget:
+        return encoded
+    actions, changes = report['actions'], report['config_diff']['changes']
+    total = len(actions) + len(changes)
+    if total == 0:
+        raise ServiceError('incident_too_large', 'Required incident fields exceed the report budget.')
+    # Retain a deterministic prefix: actions first, then configuration changes.
+    # The upper bound omits at least one item: changing false to true alone
+    # saves one byte but would not truthfully describe a loss of details.
+    report['details_truncated'] = True
+    report['actions'] = []
+    report['config_diff']['changes'] = []
+    best = _canonical(report)
+    if len(best) > budget:
+        raise ServiceError('incident_too_large', 'Required incident fields exceed the report budget.')
+    low, high = 0, total - 1
+    while low <= high:
+        keep = (low + high) // 2
+        report['actions'] = actions[:min(keep, len(actions))]
+        report['config_diff']['changes'] = changes[:max(0, keep - len(actions))]
+        candidate = _canonical(report)
+        if len(candidate) <= budget:
+            best = candidate
+            low = keep + 1
+        else:
+            high = keep - 1
+    return best
+
+
 class IncidentBuilder:
     def __init__(self, *, alias_key: bytes, max_report_bytes: int = 262144):
         if type(alias_key) is not bytes or not 32 <= len(alias_key) <= 4096:
@@ -325,9 +356,5 @@ class IncidentBuilder:
             health_before=before, health_after=after, verification=verification, rollback=rollback,
             result=result, agent_reason=dict(code=code, evidence_refs=list(reason.evidence_refs)),
             agent_explanation=_EXPLANATIONS[result], details_truncated=False)
-        encoded = _canonical(report)
-        if len(encoded) > self._max_report_bytes:
-            # Fail closed until bounded detail truncation is implemented. A
-            # payload beyond the host's budget is never returned as finalized.
-            raise ServiceError('incident_too_large', 'Incident details exceed the report budget.')
+        encoded = _bounded_canonical(report, self._max_report_bytes)
         return IncidentPayload(intent.incident_id, encoded, hashlib.sha256(encoded).hexdigest())
