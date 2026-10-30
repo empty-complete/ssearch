@@ -20,7 +20,7 @@ from atom_search.runtime.storage import StorageBudget, StorageBudgetError
 from .contracts import ArchiveEntry, StagedRelease, UpdateError, VerifiedManifest
 from .inventory import verify_inventory
 from .manifest import POLICY, _path
-from .transports.unc import _PinnedTree, _call, _kernel
+from .transports.unc import _PinnedTree, _assert_private_handle, _call, _dispose, _file_id, _kernel
 
 CHUNK = 65536
 
@@ -176,29 +176,40 @@ def _unpack_member(archive, member, emit):
         raise UpdateError('update_archive')
 
 
-def _identity(path):
-    value = path.stat(follow_symlinks=False)
-    return value.st_dev, value.st_ino
-
-
 def _cleanup(root, files, directories):
-    """Only recorded, identity-matching own leaves; never recursively remove a root."""
-    for path, identity in reversed(list(files.items())):
-        try:
-            _windows.reject_reparse(path)
-            if path != root and path.is_relative_to(root) and _identity(path) == identity and path.stat().st_nlink == 1:
-                _windows.assert_private(path)
-                path.unlink()
-        except (OSError, _windows.WindowsError):
-            pass  # An unsafe replacement is preserved rather than followed.
-    for path, identity in sorted(directories.items(), key=lambda item: len(item[0].parts), reverse=True):
-        try:
-            _windows.reject_reparse(path)
-            if (path == root or path.is_relative_to(root)) and _identity(path) == identity:
-                _windows.assert_private(path)
-                path.rmdir()  # Foreign/unrecorded entries make this fail safely.
-        except (OSError, _windows.WindowsError):
-            pass
+    """Delete only retained identity handles under the retained expected root.
+
+    A pathname may locate an object, but never authorizes its deletion. The
+    creation-time native volume/file ID and handle ACL must agree while deletion
+    and all ancestor replacements remain denied. Foreign replacements survive.
+    """
+    try:
+        with _PinnedTree(root, delete_root=True) as boundary:
+            if _file_id(boundary._handle) != directories.get(root):
+                return
+            _assert_private_handle(boundary._handle)
+
+            def remove(path, identity, directory):
+                if path == root or not path.is_relative_to(root):
+                    return
+                try:
+                    with boundary.retained_delete(path.relative_to(root).as_posix(), directory=directory,
+                                                  expected_parents=directories) as handle:
+                        if _file_id(handle) != identity:
+                            return
+                        _assert_private_handle(handle)
+                        _dispose(handle)
+                except (UpdateError, OSError, _windows.WindowsError):
+                    pass  # Do not act on missing, occupied or replaced objects.
+
+            for path, identity in reversed(list(files.items())):
+                remove(path, identity, False)
+            for path, identity in sorted(directories.items(), key=lambda item: len(item[0].parts), reverse=True):
+                remove(path, identity, True)
+            # Nonempty/foreign entries make disposition fail rather than recurse.
+            _dispose(boundary._handle)
+    except (UpdateError, OSError, _windows.WindowsError):
+        pass
 
 
 def _cluster_bytes(root):
@@ -229,9 +240,9 @@ class _Allocation:
     def write_file(self, tree, relative, producer):
         self.check()
         with tree.open_file(relative, write=True) as output:
+            import msvcrt
             path = tree.directory / relative
-            info = os.fstat(output.fileno())
-            self.files[path] = (info.st_dev, info.st_ino)
+            self.files[path] = _file_id(msvcrt.get_osfhandle(output.fileno()))
             consumed = 0
 
             def emit(raw):
@@ -350,9 +361,9 @@ def stage_release(manifest, transport, *, staging_dir: Path, budget: StorageBudg
         peak = future + metadata_headroom + headroom_bytes
         operation = requested / ('ssearch-stage-' + uuid.uuid4().hex)
 
-        def created(path):
+        def created(path, identity):
             if path == operation or path.is_relative_to(operation):
-                directories[path] = _identity(path)
+                directories[path] = identity
 
         with budget.reserve(peak, 'ssearch-update-stage') as reservation:
             allocation = _Allocation(reservation, peak, cluster, files, cancelled)
@@ -387,7 +398,10 @@ def stage_release(manifest, transport, *, staging_dir: Path, budget: StorageBudg
                 allocation.check()
                 result = StagedRelease(manifest, payload.directory, tuple(result_files))
             cache_files = {path: identity for path, identity in files.items() if path.parent == operation / 'incoming'}
-            cache_dirs = {path: identity for path, identity in directories.items() if path == operation / 'incoming'}
+            # Include the expected operation-root ID as cleanup authority, but
+            # successful payload files keep that root nonempty and undeletable.
+            cache_dirs = {path: identity for path, identity in directories.items()
+                          if path in (operation, operation / 'incoming')}
             _cleanup(operation, cache_files, cache_dirs)
             return result
     except BaseException as error:

@@ -110,6 +110,8 @@ Inventory/artifact methods require `VerifiedManifest` and a listed artifact ID.
 Each source read retains native directory handles, checks the leaf's actual final
 path/type/link count, rejects reparse points and hardlinks, and denies deletion or
 replacement of pinned directories/files. Source file handles also deny writes.
+Initial authority is traversed from its explicit drive/share anchor through held
+ancestors; a newly opened final target is never promoted to an unchecked root.
 These are source checks on disposable local fixtures; real SMB interruption,
 permissions, offline behavior and permitted-share qualification remain unverified.
 
@@ -151,6 +153,9 @@ or execute any payload. A cancellation callback is checked before further writes
 Cleanup only removes recorded identity-matching own files and empty directories;
 it does not recursively remove the caller's staging root or follow replacements.
 Unknown/foreign entries and unsafe replacements are preserved.
+Creation/writer native volume/file IDs are checked under retained deletion handles,
+including parent/root identity and actual handle ACLs. Cleanup disposes that checked
+handle, rather than checking an identity and then deleting a replaceable pathname.
 
 ## Supported archive profile
 

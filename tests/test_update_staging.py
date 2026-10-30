@@ -513,11 +513,11 @@ def test_initial_destination_root_swap_never_writes_outside_budget(release, monk
 @pytest.mark.parametrize('mode', ['failure', 'cancel'])
 def test_cleanup_never_deletes_foreign_private_replacement(release, monkeypatch, mode):
     original_assert = _windows.assert_private
+    original_api = _windows._api
     state = dict(armed=False, attempted=False, blocked=False, replaced=False, path=None)
     marker = b'foreign replacement must survive cleanup'
 
-    def schedule(path):
-        original_assert(path)  # A real ACL check; its result is never fabricated.
+    def replace_after_real_acl(path):
         path = Path(path)
         if state['armed'] and not state['attempted'] and path.suffix == '.inventory':
             state['attempted'], state['path'] = True, path
@@ -528,7 +528,21 @@ def test_cleanup_never_deletes_foreign_private_replacement(release, monkeypatch,
                 return
             path.write_bytes(marker)
             state['replaced'] = True
+    def schedule(path):
+        original_assert(path)  # A real ACL check; its result is never fabricated.
+        replace_after_real_acl(path)
+    def schedule_handle(dll, name, arguments, *rest, **kwargs):
+        native = original_api(dll, name, arguments, *rest, **kwargs)
+        if name != 'GetSecurityInfo':
+            return native
+        def checked(*values):
+            result = native(*values)
+            if result == 0 and values[1] == 1 and state['armed']:
+                replace_after_real_acl(api('transports.unc')._final_path(values[0]))
+            return result
+        return checked
     monkeypatch.setattr(_windows, 'assert_private', schedule)
+    monkeypatch.setattr(_windows, '_api', schedule_handle)
     transport = release.transport()
     original_open = transport.open_artifact
     def interrupted(*args):

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes as c
 from ctypes import wintypes as w
+from contextlib import contextmanager
 import os
 from pathlib import Path
 
@@ -16,6 +17,10 @@ class _FileInfo(c.Structure):
     _fields_ = [('attributes', w.DWORD), ('created', w.FILETIME), ('accessed', w.FILETIME),
                 ('written', w.FILETIME), ('volume', w.DWORD), ('size_high', w.DWORD),
                 ('size_low', w.DWORD), ('links', w.DWORD), ('index_high', w.DWORD), ('index_low', w.DWORD)]
+
+
+class _FileIdInfo(c.Structure):
+    _fields_ = [('volume', c.c_ulonglong), ('identity', c.c_ubyte * 16)]
 
 
 def _kernel():
@@ -52,11 +57,42 @@ def _same_path(left, right):
     return os.path.normpath(str(left)).casefold() == os.path.normpath(str(right)).casefold()
 
 
-def _open_handle(path, *, directory=False, write=False):
+def _file_id(handle):
+    identity = _FileIdInfo()
+    if not _call(_kernel(), 'GetFileInformationByHandleEx', [w.HANDLE, c.c_int, c.c_void_p, w.DWORD])(
+            handle, 18, c.byref(identity), c.sizeof(identity)) or not any(identity.identity):
+        raise UpdateError('update_path')
+    return identity.volume, bytes(identity.identity)
+
+
+def _assert_private_handle(handle):
+    descriptor = c.c_void_p()
+    code = _windows._api(_windows._dll('advapi32'), 'GetSecurityInfo',
+        [w.HANDLE, c.c_int, w.DWORD, c.c_void_p, c.c_void_p, c.c_void_p, c.c_void_p, c.POINTER(c.c_void_p)],
+        w.DWORD)(handle, 1, 1 | 4, None, None, None, None, c.byref(descriptor))
+    if code:
+        raise UpdateError('update_path')
+    try:
+        _windows._assert_descriptor_private(descriptor)
+    finally:
+        _windows._free(descriptor)
+
+
+def _dispose(handle):
+    pending = c.c_ubyte(1)  # FILE_DISPOSITION_INFO.DeleteFile (BOOLEAN).
+    if not _call(_kernel(), 'SetFileInformationByHandle', [w.HANDLE, c.c_int, c.c_void_p, w.DWORD])(
+            handle, 4, c.byref(pending), c.sizeof(pending)):
+        raise UpdateError('update_path')
+
+
+def _open_handle(path, *, directory=False, write=False, delete=False):
     _windows.reject_reparse(path)
+    access = 0x80 if directory else (0x40000080 if write else 0x80000000)
+    if delete:
+        access = 0x80 | 0x20000 | 0x10000  # attributes + READ_CONTROL + DELETE.
     handle = _call(_kernel(), 'CreateFileW',
                    [w.LPCWSTR, w.DWORD, w.DWORD, c.c_void_p, w.DWORD, w.DWORD, w.HANDLE], w.HANDLE)(
-        str(path), 0x80 if directory else (0x40000080 if write else 0x80000000),
+        str(path), access,
         3 if directory else 1, None, 1 if write else 3,
         0x00200000 | (0x02000000 if directory else 0x08000000), None)
     if not handle or handle == c.c_void_p(-1).value:
@@ -109,14 +145,45 @@ class _PinnedTree:
     path, and only then converted to a Python stream. Source leaves deny writes.
     """
 
-    def __init__(self, root, *, on_create=None):
-        self._ancestors, self._on_create = [], on_create
-        self._handle = _open_handle(Path(root), directory=True)
+    def __init__(self, root, *, on_create=None, delete_root=False):
+        self._ancestors, self._on_create, self._handle = [], on_create, None
+        # Do not resolve a pathname and then promote its potentially swapped
+        # final target to authority. Pin the explicit anchor, then every child
+        # under its already pinned canonical parent, without following reparse
+        # points. Ancestors remain held for this tree's entire lifetime.
+        requested = _windows.reject_reparse(Path(root))
+        text = str(requested)
+        if text.startswith('\\\\?\\UNC\\'):
+            text = '\\\\' + text[8:]
+        elif text.startswith('\\\\?\\'):
+            text = text[4:]
+        requested = Path(text)
+        pins = []
         try:
-            self.directory = _final_path(self._handle)
-            _windows.reject_reparse(self.directory)
+            if not requested.anchor:
+                raise UpdateError('update_path')
+            anchor = Path(requested.anchor)
+            first = _open_handle(anchor, directory=True)
+            pins.append(first)
+            current = _final_path(first)
+            if not _same_path(current, anchor):
+                raise UpdateError('update_path')
+            parts = requested.parts[1:]
+            for index, part in enumerate(parts):
+                child = _open_handle(current / part, directory=True,
+                                     delete=delete_root and index == len(parts) - 1)
+                pins.append(child)
+                actual = _final_path(child)
+                if not _same_path(actual.parent, current):
+                    raise UpdateError('update_path')
+                current = actual
+            if delete_root and not parts:
+                raise UpdateError('update_path')
+            self.directory = current
+            self._handle, self._ancestors = pins[-1], pins[:-1]
         except BaseException:
-            self.close()
+            for handle in reversed(pins):
+                _close(handle)
             raise
 
     def __enter__(self): return self
@@ -137,8 +204,7 @@ class _PinnedTree:
             if not created and (exclusive or c.get_last_error() != 183):
                 raise UpdateError('update_path')
         _windows.assert_private(path)
-        if created and self._on_create is not None:
-            self._on_create(path)
+        return bool(created)
 
     def subtree(self, relative, *, exclusive=False):
         parts = _path(relative).split('/')
@@ -146,11 +212,13 @@ class _PinnedTree:
         try:
             for index, part in enumerate(parts):
                 current = current / part
-                self._directory(current, exclusive=exclusive and index == len(parts) - 1)
+                created = self._directory(current, exclusive=exclusive and index == len(parts) - 1)
                 handle = _open_handle(current, directory=True)
                 pins.append(handle)
                 if not _same_path(_final_path(handle), current):
                     raise UpdateError('update_path')
+                if created and self._on_create is not None:
+                    self._on_create(current, _file_id(handle))
             result = object.__new__(_PinnedTree)
             result._handle, result._ancestors = pins[-1], pins[:-1]
             result._on_create, result.directory = self._on_create, _final_path(pins[-1])
@@ -167,12 +235,15 @@ class _PinnedTree:
         try:
             for part in parts[:-1]:
                 current = current / part
+                created = False
                 if write:
-                    self._directory(current)
+                    created = self._directory(current)
                 child = _open_handle(current, directory=True)
                 pins.append(child)
                 if not _same_path(_final_path(child), current):
                     raise UpdateError('update_path')
+                if created and self._on_create is not None:
+                    self._on_create(current, _file_id(child))
             path = current / parts[-1]
             handle = _open_handle(path, write=write)
             if not _same_path(_final_path(handle), path):
@@ -191,6 +262,28 @@ class _PinnedTree:
             for pin in reversed(pins):
                 _close(pin)
             raise
+
+    @contextmanager
+    def retained_delete(self, relative, *, directory=False, expected_parents):
+        parts = _path(relative).split('/')
+        current, pins = self.directory, []
+        try:
+            for part in parts[:-1]:
+                current = current / part
+                handle = _open_handle(current, directory=True)
+                pins.append(handle)
+                if (not _same_path(_final_path(handle), current)
+                        or _file_id(handle) != expected_parents.get(current)):
+                    raise UpdateError('update_path')
+            path = current / parts[-1]
+            handle = _open_handle(path, directory=directory, delete=True)
+            pins.append(handle)
+            if not _same_path(_final_path(handle), path):
+                raise UpdateError('update_path')
+            yield handle
+        finally:
+            for handle in reversed(pins):
+                _close(handle)
 
 
 class UNCTransport:
