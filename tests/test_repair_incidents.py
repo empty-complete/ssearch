@@ -251,6 +251,75 @@ def test_verified_fixed_outcome_is_reported_from_postcondition_not_action_exit()
     assert data['result'] == 'fixed' and data['verification']['passed'] is True
 
 
+def fixed_attempt(kind, code, method):
+    record = attempt(result='fixed', verification=dict(method=method,
+        checked_at=(NOW + timedelta(seconds=30)).isoformat(), passed=True, error_code=None))
+    return replace(record, intent=replace(record.intent, kind=kind, code=code,
+        reason=AgentReason(code, ('health:' + 'a' * 64,))))
+
+
+@pytest.mark.parametrize('kind, code, method', [
+    ('repair', 'SOURCE_UNREACHABLE', 'settings_applied'),
+    ('repair', 'SOURCE_UNREACHABLE', 'storage_budget_verified'),
+    ('repair', 'SOURCE_ACCESS_DENIED', 'local_model_verified'),
+    ('repair', 'MODEL_MISSING', 'bounded_directory_probe'),
+    ('repair', 'MODEL_CORRUPT', 'owned_database_verified'),
+    ('repair', 'DATABASE_UNAVAILABLE', 'local_model_verified'),
+    ('repair', 'DB_BUSY', 'storage_budget_verified'),
+    ('repair', 'DATABASE_PORT_CONFLICT', 'settings_applied'),
+    ('repair', 'STORAGE_LIMIT', 'owned_database_verified'),
+    ('repair', 'CONFIG_INVALID', 'bounded_directory_probe'),
+    ('repair', 'JOB_STALLED', 'owned_database_verified'),
+    ('repair', 'DB_CORRUPT', 'owned_database_verified'),
+    ('repair', 'DATABASE_VERSION_UNSUPPORTED', 'owned_database_verified'),
+    ('repair', 'DATABASE_EXTENSION_MISSING', 'owned_database_verified'),
+    ('settings', 'CONFIG_INVALID', 'bounded_directory_probe'),
+    ('settings', 'CONFIG_INVALID', 'owned_database_verified'),
+    ('settings', 'SOURCE_UNREACHABLE', 'settings_applied'),
+    ('settings', 'MODEL_MISSING', 'settings_applied'),
+    ('settings', 'DATABASE_UNAVAILABLE', 'settings_applied'),
+    ('settings', 'STORAGE_LIMIT', 'settings_applied'),
+])
+def test_fixed_rejects_postconditions_for_another_kind_or_fault(kind, code, method):
+    # A successful check of a different component cannot prove this fault fixed.
+    assert_invalid(lambda: builder().build(fixed_attempt(kind, code, method)))
+
+
+@pytest.mark.parametrize('kind, code, method', [
+    ('repair', 'SOURCE_UNREACHABLE', 'bounded_directory_probe'),
+    ('repair', 'SOURCE_ACCESS_DENIED', 'source_job_paused'),
+    ('repair', 'MODEL_MISSING', 'local_model_verified'),
+    ('repair', 'MODEL_CORRUPT', 'local_model_verified'),
+    ('repair', 'DB_BUSY', 'owned_database_verified'),
+    ('repair', 'DATABASE_UNAVAILABLE', 'owned_database_verified'),
+    ('repair', 'DATABASE_PORT_CONFLICT', 'owned_database_verified'),
+    ('repair', 'STORAGE_LIMIT', 'storage_budget_verified'),
+    ('repair', 'CONFIG_INVALID', 'settings_applied'),
+    ('settings', 'CONFIG_INVALID', 'settings_applied'),
+])
+def test_fixed_keeps_specific_kind_and_fault_postconditions(kind, code, method):
+    data = document(builder().build(fixed_attempt(kind, code, method)))
+    assert (data['kind'], data['code'], data['verification']['method']) == (kind, code, method)
+    assert data['result'] == 'fixed' and data['verification']['passed'] is True
+
+
+def test_real_server_exited_runtime_state_is_reported_without_raw_error_text():
+    from atom_search.runtime.postgres import RuntimeState
+    actual = RuntimeState('degraded', None, 'server_exited')
+    snapshot = health()
+    snapshot = replace(snapshot, readiness='blocked', components=replace(snapshot.components,
+        database=DatabaseHealth('postgresql', None, None, actual.state, NOW.isoformat(), False, actual.error_code)))
+    record = attempt(health_after=snapshot, verification=dict(method='owned_database_verified',
+        checked_at=NOW.isoformat(), passed=False, error_code='DATABASE_UNAVAILABLE'))
+    record = replace(record, intent=replace(record.intent, code='DATABASE_UNAVAILABLE',
+        reason=AgentReason('DATABASE_UNAVAILABLE', ('health:' + 'a' * 64,))))
+    payload = builder().build(record)
+    observed = document(payload)['health_after']
+    assert observed['readiness'] == 'blocked'
+    assert observed['database']['runtime_state'] == 'degraded'
+    assert observed['database']['error_code'] == 'server_exited'
+
+
 @pytest.mark.parametrize('result', ['not_fixed', 'partial', 'rolled_back', 'rollback_failed', 'interrupted'])
 def test_unsuccessful_and_interrupted_results_remain_distinct(result):
     data = document(builder().build(attempt(result=result)))
