@@ -1,5 +1,5 @@
 """The agent boundary preserves live read authority and exposes bounded metadata."""
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 import json
 import uuid
 
@@ -290,6 +290,14 @@ def test_unexpected_failure_is_a_safe_error_envelope(api_class, method):
     assert SECRET not in encode(result).decode()
 
 
+def test_unknown_service_error_code_cannot_leak_a_secret(api_class):
+    client = ControlledClient()
+    client.failure = ServiceError(SECRET, SECRET, True, {'token': SECRET})
+    result = api_class(client).health()
+    assert_envelope(result, error='service_unavailable')
+    assert SECRET not in encode(result).decode()
+
+
 @pytest.mark.parametrize('method', ['search', 'fetch', 'health', 'settings_get'])
 def test_utf8_response_limit_is_an_explicit_error_not_partial_success(api_class, method):
     client = ControlledClient()
@@ -302,6 +310,14 @@ def test_utf8_response_limit_is_an_explicit_error_not_partial_success(api_class,
     result = getattr(api, method)(*(['drawing'] if method == 'search' else [RESULT_ID] if method == 'fetch' else []))
     assert_envelope(result, error='response_too_large')
     assert len(encode(result)) <= 256 * 1024
+
+
+def test_response_limit_counts_the_envelope_as_well_as_metadata(api_class):
+    client = ControlledClient()
+    overhead = len(encode(asdict(metadata(name=''))))
+    client.fetch_result = metadata(name='x' * (256 * 1024 - overhead))
+    assert len(encode(asdict(client.fetch_result))) == 256 * 1024
+    assert_envelope(api_class(client).fetch(RESULT_ID), error='response_too_large')
 
 
 def test_fetch_is_not_served_from_search_or_fetch_cache(api_class):
