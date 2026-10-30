@@ -13,7 +13,7 @@ import uuid
 import pytest
 
 from atom_search.service.client import ServiceClient
-from atom_search.service.contracts import ServiceError
+from atom_search.service.contracts import SearchRequest, ServiceError
 from atom_search.service.read_grants import ReadGrantRequest
 
 from .test_service_read_grants import grants, grant_key, issue
@@ -88,6 +88,28 @@ def test_explicit_empty_grant_scope_stays_empty(grants):
     assert result['error'] is None and result['data']['results'] == []
     settings = api.settings_get()
     assert settings['error'] is None and settings['data']['settings']['sources'] == []
+
+
+def test_broader_grant_reference_cannot_replace_restricted_issuance(grants, capsys):
+    handoff = load_handoff()
+    request, restricted = issue(grants, capabilities=['search', 'status'])
+    sources = grants.owner.repository.snapshot().settings['sources']
+    _, broader = issue(grants, source_ids=sorted(source['id'] for source in sources))
+    # Both are genuine grants of the same live owner. Establish that the
+    # substituted reference authenticates and really reaches the private source.
+    client = ServiceClient(grants.owner.endpoint_file, broader['credential_ref'])
+    try:
+        hits = client.search(SearchRequest('drawing'))
+        assert {hit.source_id for hit in hits.results} == {source['id'] for source in sources}
+    finally:
+        client.close()
+    substituted = {**restricted, 'credential_ref': broader['credential_ref']}
+    # All restricted request/descriptor metadata is unchanged. Its reference
+    # must remain bound to that independent issuance, not any valid credential.
+    with pytest.raises(ServiceError) as failure:
+        handoff.connect_granted_read_api(grants.owner.endpoint_file, substituted,
+                                         expected_request=trusted_request(request))
+    assert_public_failure(failure, 'access_denied', substituted, grants.owner, capsys)
 
 
 def test_statusless_real_grant_is_not_silently_augmented(grants, capsys):
