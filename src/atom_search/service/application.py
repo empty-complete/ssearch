@@ -32,9 +32,20 @@ class AtomSearchService:
     def _scope(self, requested):
         return self.owner.registry.resolve(scope_tuple(requested), allowed=self._allowed())
 
-    def _metadata(self, file, *, score=None, kind='metadata', matched=()):
-        source_id = self.owner.core.public_ids.source_uuid(file.root)
-        return ResultMetadata(self.owner.registry.public_file_id(file.file_id), source_id,
+    def _metadata_ids(self, files, *, scope):
+        identities = self.owner.core.public_ids.metadata_ids(
+            ((file.file_id, file.root) for file in files), scope=scope)
+        if any(file.file_id not in identities for file in files):
+            raise error('result_not_found', 404)
+        return identities
+
+    def _metadata(self, file, *, identity=None, score=None, kind='metadata', matched=()):
+        if identity is None:  # Retain the single-fetch lookup path.
+            source_id = self.owner.core.public_ids.source_uuid(file.root)
+            result_id = self.owner.registry.public_file_id(file.file_id)
+        else:
+            result_id, source_id = identity
+        return ResultMetadata(result_id, source_id,
             file.name, file.relative_path, str(PureWindowsPath(file.root).joinpath(*file.relative_path.split('/'))),
             file.size, file.modified_ns, getattr(file, 'stale',
                 getattr(file, 'source_status', 'complete') not in ('complete', 'scanning')),
@@ -77,14 +88,22 @@ class AtomSearchService:
                     # old alias explanation as well; a fresh request can resolve
                     # against the new configuration without holding writer locks.
                     raise error('service_unavailable', 503, retryable=True)
-                metadata = tuple(self._metadata(item, score=item.score, kind=item.match_kind,
+                identities = self._metadata_ids(results, scope=scope)
+                metadata = tuple(self._metadata(item, identity=identities[item.file_id],
+                                                score=item.score, kind=item.match_kind,
                                                 matched=item.matched_fields) for item in results)
+                generation = self.owner.index_generation()
+                if core.projection.configuration()[0] != revision:
+                    # UUID materialization uses a separate read transaction.
+                    # Reject a context change committed while that read ran too.
+                    raise error('service_unavailable', 503, retryable=True)
                 return SearchResponse(metadata, interpretation, applied, ambiguities,
-                                      self.owner.index_generation(), ())
+                                      generation, ())
             results = self.owner.core.search_scoped(request.query.strip(), scope=scope,
                                                     limit=request.limit, mode=request.mode)
             kind = request.mode if request.mode != 'hybrid' or self.owner.core._embedder is not None else 'lexical'
-            metadata = tuple(self._metadata(item, score=item.score, kind=kind,
+            identities = self._metadata_ids(results, scope=scope)
+            metadata = tuple(self._metadata(item, identity=identities[item.file_id], score=item.score, kind=kind,
                 matched=tuple(field for field, value in (('name', item.name), ('path', item.relative_path))
                               if compact(request.query) in compact(value))) for item in results)
             return SearchResponse(metadata, QueryInterpretation(request.query, normalize(request.query), None, ()),

@@ -43,6 +43,12 @@ def consumer():
         input_schema=INPUT_SCHEMA)
     public = SimpleNamespace(resolve_sources=lambda identities: SearchScope((1,)) if identities else SearchScope(()),
         source_uuid=lambda root: SOURCE, public_file_id=lambda identity: f'00000000-0000-4000-8000-{identity:012d}')
+    def metadata_ids(requested, *, scope):
+        return {identity: (f'00000000-0000-4000-8000-{identity:012d}', SOURCE)
+                for identity, root in requested
+                if 1 in scope.source_ids and root == 'C:/cached'
+                and any(file.file_id == identity for file in files)}
+    public.metadata_ids = metadata_ids
     core.public_ids = public
     repository = SimpleNamespace(snapshot=lambda: SettingsSnapshot(2, 1, {
         'sources': [dict(id=SOURCE, path='C:/cached', label='Архив', enabled=True)]}, ()))

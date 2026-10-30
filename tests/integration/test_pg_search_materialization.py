@@ -10,7 +10,7 @@ import pytest
 from atom_search.service.application import AtomSearchService
 from atom_search.service.contracts import AccessContext, SearchRequest, ServiceError, SettingsSnapshot
 from atom_search.service.sources import SourceRegistry
-from atom_search_core.models import DirectorySnapshot, EmbeddingModel, FileMetadata
+from atom_search_core.models import DirectorySnapshot, EmbeddingModel, FileMetadata, SearchScope
 from atom_search_core.project_context import INPUT_SCHEMA, build_document_context
 from atom_search_core.service import SearchService
 from atom_search_core.storage.migrations import apply_catalog_migrations
@@ -273,3 +273,17 @@ def test_scope_empty_forbidden_and_fetch_identity_stay_distinct(materialization_
         with pytest.raises(ServiceError) as hidden:
             subject.facade.fetch(identity, source_ids=scope)
         assert (hidden.value.code, hidden.value.status_code) == ('result_not_found', 404)
+
+
+def test_batch_requires_captured_root_and_catalog_connection_lifetime(materialization_search):
+    subject = materialization_search
+    file_id, file_uuid, _, _, _, root = subject.expected[0]
+    public = subject.core.public_ids
+    permitted = SearchScope(subject.sources)
+    assert public.metadata_ids(((file_id, root),), scope=permitted) == {file_id: (file_uuid, VISIBLE)}
+    # A different root cannot relabel an ID, even if both sources are permitted.
+    assert public.metadata_ids(((file_id, subject.roots[1]),), scope=permitted) == {}
+    assert public.metadata_ids(((file_id, root),), scope=SearchScope((subject.sources[1],))) == {}
+    subject.core.catalog.close()
+    with pytest.raises(ValueError, match='Catalog is closed'):
+        public.metadata_ids(((file_id, root),), scope=permitted)
