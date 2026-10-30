@@ -11,6 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE = '031c9dd248ceb10af00091b8a9f0f12c2d8cf49e'
 TASK2_BASE = '9674fc4d311dd0bb3471885624d9391d2aa95488'
 TASK2_BOOTSTRAP = 'codex/ci-task2-source-admission'
+SDK_BASE = '53a72d96c82e6824dbdf0d2f4ef93fba4a89e92d'
+SDK_BOOTSTRAP = 'codex/ci-p7-sdk-admission'
+SDK_OWNER = 'codex/p7-grant-handoff'
 HEAD, MERGE, TREE = 'a' * 40, 'b' * 40, 'c' * 40
 REPO = 'empty-complete/ssearch'
 WORKFLOW = '.github/workflows/windows-build.yml'
@@ -73,8 +76,33 @@ PROFILES = {
     TASK2_BOOTSTRAP: (
         ['tools/ci_source_scopes.py', 'tests/test_ci_source_scopes.py'],
         ['tests/test_ci_source_scopes.py', 'tests/test_ci_publish.py', 'tests/test_ci_inputs.py', 'tests/test_ci_p4_candidate.py']),
+    SDK_OWNER: (
+        ['src/atom_search/agents/grant_handoff.py', 'src/atom_search/agents/launcher.py',
+         'src/atom_search/agents/mcp_adapter.py', 'src/atom_search/runtime/credentials.py',
+         'src/atom_search/service/client.py', 'src/atom_search/service/ipc.py',
+         'src/atom_search/service/owner.py', 'src/atom_search/service/read_grants.py',
+         'tests/agents/test_grant_handoff.py', 'tests/agents/test_mcp_contract.py',
+         'tests/integration/test_mcp_read_grants.py', 'tests/integration/test_mcp_service.py',
+         'tests/integration/test_service_read_grants.py'],
+        ['tests/agents/test_grant_handoff.py', 'tests/integration/test_mcp_read_grants.py',
+         'tests/integration/test_service_read_grants.py', 'tests/agents/test_mcp_contract.py',
+         'tests/integration/test_mcp_service.py', 'tests/agents/test_read_api.py']),
+    SDK_BOOTSTRAP: (
+        [WORKFLOW, 'requirements-agent.lock.txt', 'tests/test_ci_agent_dependencies.py',
+         'tests/test_ci_inputs.py', 'tools/ci_agent_dependencies.py', 'tools/prepare_ci.py',
+         'tools/run_ci_build.ps1', 'tools/ci_source_scopes.py', 'tests/test_ci_source_scopes.py'],
+        ['tests/test_ci_source_scopes.py', 'tests/test_ci_publish.py', 'tests/test_ci_inputs.py',
+         'tests/test_ci_p4_candidate.py', 'tests/test_ci_agent_dependencies.py']),
 }
 TASK2_OWNERS = ['codex/p11-evidence-validation', 'codex/p12-quality-metrics']
+
+
+def expected_settings(branch):
+    value = dict(route='owner-source', profile=branch, mode='source', desktop_stack=False,
+                 publish=False, test_targets=PROFILES[branch][1])
+    if branch in (SDK_OWNER, SDK_BOOTSTRAP):
+        value['agent_sdk'] = True
+    return value
 
 
 def load_tool(name):
@@ -89,7 +117,7 @@ def load_tool(name):
 class PublicApi:
     def __init__(self, branch):
         self.branch = branch
-        base = TASK2_BASE if branch == TASK2_BOOTSTRAP else BASE
+        base = SDK_BASE if branch == SDK_BOOTSTRAP else TASK2_BASE if branch == TASK2_BOOTSTRAP else BASE
         self.pr = dict(number=17, changed_files=1,
             base=dict(sha=base, ref='main', repo=dict(full_name=REPO)),
             head=dict(sha=HEAD, ref=branch, repo=dict(full_name=REPO)))
@@ -158,12 +186,11 @@ def test_each_owner_gets_only_its_fixed_nonempty_source_targets(branch):
     api.pr['changed_files'] = len(api.files)
     api.comparison['files'] = copy.deepcopy(api.files)
     settings = source.admit(api, api.pr, HEAD, api.files)
-    assert settings == dict(route='owner-source', profile=branch, mode='source', desktop_stack=False,
-                            publish=False, test_targets=PROFILES[branch][1])
+    assert settings == expected_settings(branch)
     assert api.tree_reads == [HEAD], 'targets_must_exist_as_ordinary_files_on_exact_head'
 
 
-@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS])
+@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS, SDK_OWNER])
 @pytest.mark.parametrize('mutation,code', [
     ('extra', 'source_scope_paths_invalid'), ('rename_from', 'source_scope_paths_invalid'),
     ('rename_to', 'source_scope_paths_invalid'), ('policy', 'source_scope_paths_invalid'),
@@ -258,7 +285,7 @@ def test_owner_admission_uses_fresh_advertised_main_not_the_bootstrap_anchor():
     assert publisher.classify(api, 17, HEAD) == 'owner-source'
 
 
-@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS, TASK2_BOOTSTRAP])
+@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS, TASK2_BOOTSTRAP, SDK_OWNER, SDK_BOOTSTRAP])
 @pytest.mark.parametrize('path', ['README.md', 'frontend/src/SearchApp.tsx'])
 def test_recognized_branch_cannot_escape_through_documentation_or_ui_exemptions(branch, path):
     api, publisher = PublicApi(branch), load_tool('ci_publish')
@@ -268,7 +295,7 @@ def test_recognized_branch_cannot_escape_through_documentation_or_ui_exemptions(
         publisher.classify(api, 17, HEAD)
 
 
-@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS])
+@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS, SDK_OWNER])
 @pytest.mark.parametrize('path', ['tools/ci_source_scopes.py', 'tools/ci_publish.py', WORKFLOW])
 def test_each_trusted_policy_must_match_the_advertised_base(branch, path):
     api, publisher = PublicApi(branch), load_tool('ci_publish')
@@ -284,7 +311,7 @@ def test_ci_bootstrap_cannot_silently_move_its_trusted_anchor():
         publisher.classify(api, 17, HEAD)
 
 
-@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS, TASK2_BOOTSTRAP])
+@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS, TASK2_BOOTSTRAP, SDK_OWNER, SDK_BOOTSTRAP])
 @pytest.mark.parametrize('mutation,code', [
     ('valid', None), ('unmerged', 'source_scope_merge_invalid'),
     ('wrong_merge', 'source_scope_merge_invalid'), ('tree', 'source_scope_merge_tree_invalid'),
@@ -324,7 +351,7 @@ def test_settings_cli_reauthenticates_and_never_accepts_caller_targets(monkeypat
     assert output.out == '' and output.err.strip() == 'source_scope_paths_invalid'
 
 
-@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS, TASK2_BOOTSTRAP])
+@pytest.mark.parametrize('branch', ['codex/p9-repair-policy', *TASK2_OWNERS, TASK2_BOOTSTRAP, SDK_OWNER, SDK_BOOTSTRAP])
 def test_settings_cli_binds_the_main_push_before_suppressing_publication(branch, monkeypatch, capsys):
     source, api = load_tool('ci_source_scopes'), PublicApi(branch)
     api.main = MERGE
@@ -385,7 +412,7 @@ def test_task2_owners_use_current_main_after_accepting_the_ci_base(branch):
     assert publisher.classify(api, 17, HEAD) == 'owner-source'
 
 
-@pytest.mark.parametrize('branch', [*TASK2_OWNERS, TASK2_BOOTSTRAP])
+@pytest.mark.parametrize('branch', [*TASK2_OWNERS, TASK2_BOOTSTRAP, SDK_OWNER, SDK_BOOTSTRAP])
 @pytest.mark.parametrize('stale_during_checkout', [False, True])
 def test_task2_authentication_rechecks_current_scope_around_the_exact_checkout(
         branch, stale_during_checkout, monkeypatch, capsys):
@@ -409,6 +436,53 @@ def test_task2_authentication_rechecks_current_scope_around_the_exact_checkout(
     else:
         assert result == 0 and output.err == ''
         settings = json.loads(output.out)
-        assert settings == dict(route='owner-source', profile=branch, mode='source', desktop_stack=False,
-                                publish=False, test_targets=PROFILES[branch][1])
+        assert settings == expected_settings(branch)
         assert observed == [(HEAD, PROFILES[branch][1])] * 2
+
+
+@pytest.mark.parametrize('branch', [SDK_OWNER, SDK_BOOTSTRAP, 'codex/p7-scoped-read-api', TASK2_BOOTSTRAP])
+@pytest.mark.parametrize('caller_flag', ['true', 'false'])
+def test_sdk_preparation_is_selected_by_the_trusted_profile_not_caller_environment(
+        branch, caller_flag, monkeypatch, capsys):
+    source, api = load_tool('ci_source_scopes'), PublicApi(branch)
+    monkeypatch.setenv('AGENT_SDK', caller_flag)
+    monkeypatch.setattr(source, 'github', lambda: api)
+    monkeypatch.setattr('sys.argv', ['ci_source_scopes.py', 'settings', '--pr-number', '17', '--head-sha', HEAD])
+    assert source.main() == 0
+    assert json.loads(capsys.readouterr().out) == expected_settings(branch)
+
+
+@pytest.mark.parametrize('base', [BASE, TASK2_BASE, 'd' * 40])
+def test_sdk_ci_bootstrap_has_its_own_exact_fresh_anchor(base):
+    api, publisher = PublicApi(SDK_BOOTSTRAP), load_tool('ci_publish')
+    api.main = api.pr['base']['sha'] = base
+    api.comparison['base_commit']['sha'] = api.comparison['merge_base_commit']['sha'] = base
+    with pytest.raises(publisher.PublishError, match='^source_scope_bootstrap_invalid$'):
+        publisher.classify(api, 17, HEAD)
+
+
+@pytest.mark.parametrize('path,rename', [
+    ('tools/ci_publish.py', False), ('src/atom_search/service/read_grants.py', False),
+    ('tools/ci_publish.py', True), ('requirements.lock.txt', True),
+])
+def test_sdk_bootstrap_cannot_widen_the_nine_ci_paths(path, rename):
+    api, publisher = PublicApi(SDK_BOOTSTRAP), load_tool('ci_publish')
+    if rename:
+        api.files[0].update(status='renamed', previous_filename=path)
+    else:
+        api.files.append(dict(filename=path, status='modified'))
+        api.pr['changed_files'] = len(api.files)
+    api.comparison['files'] = copy.deepcopy(api.files)
+    with pytest.raises(publisher.PublishError, match='^source_scope_paths_invalid$'):
+        publisher.classify(api, 17, HEAD)
+
+
+@pytest.mark.parametrize('path', ['tools/ci_source_scopes.py', 'tools/ci_publish.py', WORKFLOW])
+def test_sdk_bootstrap_keeps_noneditable_classifier_policy_trusted(path):
+    api, publisher = PublicApi(SDK_BOOTSTRAP), load_tool('ci_publish')
+    api.changed_policy = path
+    if path in PROFILES[SDK_BOOTSTRAP][0]:
+        assert publisher.classify(api, 17, HEAD) == 'owner-source'
+    else:
+        with pytest.raises(publisher.PublishError, match='^source_scope_policy_changed$'):
+            publisher.classify(api, 17, HEAD)

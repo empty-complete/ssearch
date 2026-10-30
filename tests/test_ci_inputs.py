@@ -200,6 +200,90 @@ Invoke-Expression $loops[0].Extent.Text
     assert value == {'agent': True, 'private_absent': True}
 
 
+def workflow_run_block(name):
+    """Select the real bounded workflow step; never run its preparation/build jobs."""
+    path = Path(__file__).parents[1] / '.github/workflows/windows-build.yml'
+    lines = path.read_text(encoding='utf-8-sig').splitlines()
+    start = lines.index('      - name: ' + name)
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith('      - ')), len(lines))
+    run = next(i for i in range(start, end) if lines[i] == '        run: |')
+    return '\n'.join(line[10:] for line in lines[run + 1:end] if line.strip())
+
+
+def exercise_workflow_scope(name, *, event='pull_request', authentication='owner', trusted='true',
+                            agent='true', mode='source', desktop='false', publish=False, reply=None):
+    body = workflow_run_block(name)
+    for expression, value in {
+        'github.event_name': event, 'github.ref': 'refs/heads/main',
+        'inputs.publish': str(publish).lower(), 'needs.changes.outputs.pr_number': '17',
+    }.items():
+        body = body.replace('${{ ' + expression + ' }}', value)
+    assert '${{' not in body, 'workflow_probe_expression_not_bound'
+    environment = {**os.environ, 'SOURCE_SHA': 'a' * 40, 'BUILD_MODE': mode,
+        'DESKTOP_STACK': desktop, 'AGENT_SDK': agent, 'SOURCE_AUTHENTICATION': authentication,
+        'SOURCE_AGENT_SDK': trusted, 'SSEARCH_INSTALLER_INPUT_SET': 'quick99',
+        'TEST_TARGETS_JSON': '[]' if mode == 'full' else '["tests/test_ci_inputs.py"]',
+        'FRONTEND_TEST_TARGETS_JSON': '[]', 'DESKTOP_TEST_TARGETS_JSON': '[]',
+        'SYNTHETIC_SCOPE_REPLY': json.dumps(reply)}
+    stub = '' if reply is None else 'function python { $global:LASTEXITCODE=0; $env:SYNTHETIC_SCOPE_REPLY }\n'
+    driver = ("$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n" + stub
+        + "try { $null = & {\n" + body + "\n}; $value=@{accepted=$true;reason='accepted'} }\n"
+        + "catch { $reason=if ($_.Exception.Message -ceq 'AGENT_SOURCE_SCOPE_INVALID') "
+          "{ 'AGENT_SOURCE_SCOPE_INVALID' } else { 'unexpected_validation_failure' }; "
+          "$value=@{accepted=$false;reason=$reason} }\n$value | ConvertTo-Json -Compress")
+    try:
+        result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-Command', driver],
+            env=environment, capture_output=True, text=True, timeout=25)
+    except subprocess.TimeoutExpired:
+        pytest.fail('workflow_scope_probe_timeout', pytrace=False)
+    clean = result.returncode == 0 and result.stderr == '' and 'PRIVATE_SENTINEL' not in result.stdout
+    assert clean, 'workflow_scope_probe_streams_not_clean'
+    try:
+        value = json.loads(result.stdout)
+    except ValueError:
+        pytest.fail('workflow_scope_probe_invalid_json', pytrace=False)
+    return value
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows workflow input boundary')
+@pytest.mark.parametrize('case,overrides,accepted', [
+    ('trusted-pr', {}, True),
+    ('trusted-main-push', {'event': 'push'}, True),
+    ('manual-source', {'event': 'workflow_dispatch', 'authentication': '', 'trusted': ''}, True),
+    ('ordinary-source', {'trusted': 'false', 'agent': 'false'}, True),
+    ('ordinary-full', {'event': 'workflow_dispatch', 'authentication': '', 'trusted': '',
+                       'agent': 'false', 'mode': 'full'}, True),
+    ('caller-enable', {'trusted': 'false'}, False),
+    ('caller-disable', {'agent': 'false'}, False),
+    ('untrusted-route', {'authentication': ''}, False),
+    ('missing-trust', {'trusted': ''}, False),
+    ('malformed-trust', {'trusted': 'PRIVATE_SENTINEL'}, False),
+    ('malformed-flag', {'agent': 'TRUE'}, False),
+    ('full-sdk', {'mode': 'full'}, False),
+    ('desktop-sdk', {'desktop': 'true'}, False),
+    ('publish-sdk', {'publish': True}, False),
+])
+def test_actual_workflow_accepts_only_source_sdk_requests_from_the_authenticated_context(case, overrides, accepted):
+    value = exercise_workflow_scope('Validate requested build scope', **overrides)
+    assert value == dict(accepted=accepted, reason='accepted' if accepted else 'AGENT_SOURCE_SCOPE_INVALID')
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows workflow authentication boundary')
+@pytest.mark.parametrize('case,flag,agent,accepted', [
+    ('sdk-selected', True, 'true', True), ('caller-disabled', True, 'false', False),
+    ('ordinary-source', None, 'false', True), ('caller-enabled', None, 'true', False),
+    ('false-caller-enabled', False, 'true', False),
+    ('malformed-sdk-field', 'PRIVATE_SENTINEL', 'true', False),
+])
+def test_actual_authentication_step_binds_preparation_to_the_reauthenticated_sdk_flag(case, flag, agent, accepted):
+    reply = dict(route='owner-source', mode='source', desktop_stack=False, publish=False,
+                 test_targets=['tests/test_ci_inputs.py'])
+    if flag is not None:
+        reply['agent_sdk'] = flag
+    value = exercise_workflow_scope('Authenticate the exact owner source scope', agent=agent, reply=reply)
+    assert value == dict(accepted=accepted, reason='accepted' if accepted else 'AGENT_SOURCE_SCOPE_INVALID')
+
+
 def fixture_archive(tmp_path, *, extra=None, payload=b'public runtime'):
     data = b'public runtime'
     manifest = json.dumps({'files': [{'path': 'bin/server.dll', 'size': len(data),
