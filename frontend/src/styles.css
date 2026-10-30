@@ -19,7 +19,17 @@ button, input, select { font:inherit; }
 ::selection { background:var(--accent); color:var(--accent-foreground); }
 :focus-visible, [data-focus-visible="true"] { outline:2px solid var(--focus); outline-offset:3px; }
 .motion-root { min-height:100dvh; }
-.app-shell { min-height:100dvh; max-width:1120px; margin:auto; display:flex; flex-direction:column; padding:16px 24px 12px; gap:16px; }
+.app-shell { height:100dvh; min-height:0; max-width:1120px; margin:auto; display:flex; flex-direction:column; padding:16px 24px 12px; gap:16px; overflow-y:auto; }
+.app-header,.app-footer { flex-shrink:0; }
+.search-page { display:flex; flex-direction:column; flex:1; min-height:200px; gap:12px; min-width:0; }
+.search-area { flex-shrink:0; }
+.query-choices { flex-shrink:0; }
+.query-choices p { margin-bottom:8px; color:var(--muted); }
+.project-options { display:flex; flex-wrap:wrap; gap:8px; }
+.project-options button { height:auto; min-height:36px; white-space:normal; text-align:start; }
+.search-actions { flex-shrink:0; }
+.search-actions p { margin:8px 0 0; }
+mark { color:inherit; background:var(--selected); font-weight:600; }
 .app-header,.wordmark,.search-context,.app-footer,.theme-control { display:flex; align-items:center; }
 .app-header { justify-content:space-between; }
 .wordmark { gap:8px; font-size:16px; font-weight:600; }
@@ -30,7 +40,7 @@ button, input, select { font:inherit; }
 .search-field input { width:100%; min-height:48px; padding:10px 14px; font-size:18px; box-shadow:none; border:1px solid var(--field-border); }
 .search-context { justify-content:space-between; gap:12px; color:var(--muted); font-size:13px; }
 .preview-label { margin:0; color:var(--muted); font-size:13px; }
-.result-area { flex:1; min-width:0; }
+.result-area { flex:1; min-width:0; min-height:64px; overflow-y:auto; scrollbar-gutter:stable; }
 .search-status { color:var(--muted); font-size:13px; }
 p { margin:0 0 12px; }
 .results { width:100%; padding:0; gap:4px; background:transparent; }

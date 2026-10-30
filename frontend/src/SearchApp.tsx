@@ -1,10 +1,8 @@
 import { Button } from '@heroui/react';
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useState } from 'react';
 import { AppShell, type ShellMode, type Theme } from './AppShell';
 import { IconAction } from './components/IconAction';
-import { SearchBox } from './components/SearchBox';
-import { ResultList } from './components/ResultList';
-import { SearchController } from './searchController';
+import { SearchPage } from './search/SearchPage';
 import type { SearchService } from './bridge/types';
 import license from '../../LICENSE.txt?raw';
 import notices from '../THIRD_PARTY_NOTICES.txt?raw';
@@ -13,32 +11,16 @@ import { readTransientQuery, writeTransientQuery } from './bridge/transientQuery
 
 interface SearchAppProps {
   service: SearchService;
+  scope?: string[] | null;
   preview?: boolean;
   mode?: ShellMode;
 }
 
-export function SearchApp({ service, preview = false, mode = 'application' }: SearchAppProps) {
-  const controller = useMemo(() => {
-    const value = new SearchController(service);
-    value.edit(readTransientQuery());
-    return value;
-  }, [service]);
-  const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+export function SearchApp({ service, scope = null, preview = false, mode = 'application' }: SearchAppProps) {
   const [theme, setTheme] = useState<Theme>('system');
-  const [notice, setNotice] = useState('');
   const [about, setAbout] = useState(false);
-  const response = state.response;
+  const [initialQuery] = useState(readTransientQuery);
   const devPreview = import.meta.env.DEV && preview;
-  useEffect(() => () => controller.dispose(), [controller]);
-
-  const submit = () => { void controller.submit(); };
-  const reveal = (id: string) => {
-    if (!controller.revealCandidate(id)) return;
-    setNotice(devPreview
-      ? 'Предпросмотр: Проводник не открывается. Полный путь указан в выдаче.'
-      : 'Показ в Проводнике будет доступен после подключения приложения.');
-  };
-
   return (
     <AppShell theme={theme} mode={mode}>
       <header className="app-header">
@@ -58,66 +40,9 @@ export function SearchApp({ service, preview = false, mode = 'application' }: Se
           }
         />
       </header>
-      <section className="search-area" aria-label="Поиск документов">
-        <SearchBox
-          value={state.query}
-          onChange={value => { controller.edit(value); writeTransientQuery(value); setNotice(''); }}
-          onSubmit={submit}
-        />
-        <div className="search-context">
-          <span>Все выбранные источники</span>
-          <Button variant="secondary" size="sm" onPress={submit} isDisabled={!state.query.trim()}>
-            Найти
-          </Button>
-        </div>
-      </section>
       {devPreview && <p className="preview-label">Учебные данные. Предпросмотр интерфейса.</p>}
-      <section className="result-area" aria-label="Результаты поиска" aria-busy={state.state === 'loading'}>
-        <div role="status" aria-live="polite" className="search-status">
-          {state.state === 'idle' && (
-            <p>Введите название, объект или часть пути. Нажмите Enter для поиска.</p>
-          )}
-          {state.state === 'loading' && (
-            <>
-              <p>Ищем документы…</p>
-              <div className="skeleton" aria-hidden="true" />
-              <div className="skeleton short" aria-hidden="true" />
-            </>
-          )}
-          {state.state === 'empty' && (
-            <p>Документы не найдены. Попробуйте другое название или часть пути.</p>
-          )}
-          {state.state === 'ready' && (
-            <p>Найдено: {response?.results.length}. Выберите документ; Enter — показать в Проводнике.</p>
-          )}
-        </div>
-        {state.state === 'error' && (
-          <div className="connection-error" role="alert">
-            <p>Локальный поиск недоступен. Запрос сохранён.</p>
-            <Button variant="secondary" onPress={submit}>Повторить соединение</Button>
-          </div>
-        )}
-        {!!response?.warnings.length && (
-          <p className="persistent-warning" role="status">
-            Результаты могут быть неполными. Часть источников или способов поиска недоступна.
-          </p>
-        )}
-        {!!response?.ambiguities.length && (
-          <p className="persistent-warning">
-            В запросе несколько проектов с похожими названиями. Уточните название проекта или часть пути.
-          </p>
-        )}
-        {state.state === 'ready' && response && (
-          <ResultList results={response.results} selectedId={state.selectedId}
-            onSelect={id => controller.select(id)} onReveal={reveal} />
-        )}
-        {state.selectedId && (
-          <Button className="reveal-action" variant="secondary" onPress={() => reveal(state.selectedId!)}>
-            Показать в Проводнике
-          </Button>
-        )}
-        {notice && <p className="persistent-warning" role="status">{notice}</p>}
-      </section>
+      <SearchPage client={service} scope={scope} mode="application"
+        initialQuery={initialQuery} onQueryChange={writeTransientQuery} />
       {about && (
         <section className="about" aria-label="О программе">
           <h1>{__PRODUCT__.product_name} — {__PRODUCT__.product_name_ru}</h1>

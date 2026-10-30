@@ -29,7 +29,8 @@ test('loading skeleton respects reduced motion while results remain usable', asy
   await expect(results.getByRole('option')).toHaveCount(2);
   await results.getByRole('option').first().focus();
   await page.keyboard.press('Enter');
-  await expect(page.getByText(/Предпросмотр: Проводник не открывается/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Показать в Проводнике' })).toBeDisabled();
+  await expect(page.getByText('Показ в Проводнике пока недоступен.')).toBeVisible();
 });
 
 test('search, duplicate paths, focus, keyboard and theme screenshots', async ({ page }, testInfo) => {
@@ -41,7 +42,8 @@ test('search, duplicate paths, focus, keyboard and theme screenshots', async ({ 
   await expect(page.getByText('C:\\Учебные документы\\Северный завод\\АР\\СтадияП\\Ведомость.xlsx')).toBeVisible();
   await expect(page.getByText('C:\\Учебные документы\\Северный завод\\КМ\\СтадияП\\Ведомость.xlsx')).toBeVisible();
   await results.getByRole('option').first().focus(); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
-  await expect(page.getByText(/Предпросмотр: Проводник не открывается/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Показать в Проводнике' })).toBeDisabled();
+  await expect(page.getByText('Показ в Проводнике пока недоступен.')).toBeVisible();
   for (const theme of ['light', 'dark']) {
     await page.getByRole('combobox', { name: 'Тема предпросмотра' }).selectOption(theme);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
