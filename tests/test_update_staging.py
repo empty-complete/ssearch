@@ -558,3 +558,13 @@ def test_cleanup_never_deletes_foreign_private_replacement(release, monkeypatch,
         assert state['path'].is_file() and state['path'].read_bytes() == marker
     else:
         assert state['blocked']
+
+
+def test_extended_source_alias_never_allows_staging_inside_its_source(release):
+    shutil.copytree(release.source, release.data, dirs_exist_ok=True)
+    release.source = Path('\\\\?\\' + str(release.data))
+    before = release.source_bytes()
+    with pytest.raises(UpdateError, match='update_path'):
+        stage(release)
+    assert not release.staging.exists()
+    assert release.source_bytes() == before
