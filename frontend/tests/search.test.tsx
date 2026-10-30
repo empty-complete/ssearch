@@ -1,16 +1,11 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SearchApp } from '../src/SearchApp';
 import { SearchController } from '../src/searchController';
 import type {
   ResultMetadata, SearchRequest, SearchResponse, SearchService,
 } from '../src/bridge/types';
-
-// Only static text assets are substituted. The real page, controls and search
-// state remain under test without widening Vite's filesystem permissions.
-vi.mock('../../LICENSE.txt?raw', () => ({ default: 'Static license text fixture.' }));
-vi.mock('../THIRD_PARTY_NOTICES.txt?raw', () => ({ default: 'Static notices text fixture.' }));
 
 const sourceId = '11111111-1111-4111-8111-111111111111';
 const motorsProjectId = '22222222-2222-4222-8222-222222222222';
