@@ -27,7 +27,9 @@ test('loading skeleton respects reduced motion while results remain usable', asy
   await page.screenshot({ path: testInfo.outputPath('reduced-loading.png'), fullPage: true });
   const results = page.getByRole('listbox', { name: 'Найденные документы' });
   await expect(results.getByRole('option')).toHaveCount(2);
-  await results.getByRole('option').first().focus();
+  await input.press('ArrowDown');
+  await expect(results.getByRole('option', { selected: true })).toHaveCount(1);
+  await expect(results.getByRole('option').first()).toHaveAttribute('aria-selected', 'true');
   await page.keyboard.press('Enter');
   await expect(page.getByRole('button', { name: 'Показать в Проводнике' })).toBeDisabled();
   await expect(page.getByText('Показ в Проводнике пока недоступен.')).toBeVisible();
