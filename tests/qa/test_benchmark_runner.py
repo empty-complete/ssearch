@@ -1,6 +1,7 @@
 """Tiny explicit synthetic inputs; real ServiceOwner/PG, no ambient corpus/DSN."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import threading
 from contextlib import contextmanager
@@ -244,4 +245,42 @@ def test_wide_directory_enumeration_stops_at_discovery_budget(inputs, monkeypatc
     with pytest.raises(ValueError, match='^benchmark_input_invalid$'):
         run(inputs, max_files=2)
     assert len(observed) <= 43, 'directory discovery must be bounded before enqueue/probe'
+    assert not inputs[2].exists()
+
+
+def test_directory_budget_streams_real_scandir_and_closes_on_refusal(inputs, monkeypatch):
+    corpus = inputs[0]
+    for index in range(100):
+        (corpus / f'empty-stream-{index}').mkdir()
+    consumed, closed, eager = [], [], []
+    original_scandir, original_listdir = os.scandir, os.listdir
+
+    def listdir(directory):
+        if Path(directory) == corpus:
+            eager.append(True)
+            raise AssertionError('corpus enumeration must not eagerly materialize os.listdir')
+        return original_listdir(directory)
+
+    @contextmanager
+    def scandir(directory):
+        with original_scandir(directory) as entries:
+            if Path(directory) != corpus:
+                yield entries
+                return
+            def observed():
+                for entry in entries:
+                    consumed.append(entry.name)
+                    yield entry
+            try:
+                yield observed()
+            finally:
+                closed.append(True)
+
+    monkeypatch.setattr(os, 'listdir', listdir)
+    monkeypatch.setattr(os, 'scandir', scandir)
+    with pytest.raises(ValueError, match='^benchmark_input_invalid$'):
+        run(inputs, max_files=2)
+    assert eager == []
+    assert 1 <= len(consumed) <= 43, 'real directory consumption must stop within the budget'
+    assert closed == [True], 'the real scan context must close on budget refusal'
     assert not inputs[2].exists()
