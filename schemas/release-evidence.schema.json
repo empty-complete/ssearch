@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssearch release evidence v1",
+  "description": "Structural contract. Capability, binding, environment and observation policy is evaluated by tools/qa/release_matrix.py. Does not authenticate receipts or authorize release.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate",
+    "capabilities",
+    "declared_capabilities",
+    "environments",
+    "gates"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "candidate": {
+      "$ref": "#/$defs/binding"
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metadata",
+        "ui",
+        "deep",
+        "repair"
+      ],
+      "properties": {
+        "metadata": {
+          "type": "boolean"
+        },
+        "ui": {
+          "type": "boolean"
+        },
+        "deep": {
+          "type": "boolean"
+        },
+        "repair": {
+          "type": "boolean"
+        }
+      }
+    },
+    "declared_capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "metadata",
+          "ui",
+          "deep",
+          "repair"
+        ]
+      }
+    },
+    "environments": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/environment"
+      }
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/gate"
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "electron",
+        "node",
+        "chromium",
+        "frontend",
+        "service",
+        "desktop_api",
+        "service_api",
+        "schema",
+        "model",
+        "postgres",
+        "vector"
+      ],
+      "properties": {
+        "electron": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "node": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "chromium": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "frontend": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "service": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "desktop_api": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "service_api": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "postgres": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "vector": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_sha",
+        "desktop_sha256",
+        "service_sha256",
+        "payload_inventory_sha256",
+        "owner_generation",
+        "versions"
+      ],
+      "properties": {
+        "source_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "desktop_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "service_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "payload_inventory_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "owner_generation": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "versions": {
+          "$ref": "#/$defs/versions"
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os",
+        "os_build",
+        "architecture",
+        "cpu",
+        "ram_bytes"
+      ],
+      "properties": {
+        "os": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "os_build": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "architecture": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "cpu": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "ram_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_id",
+        "status",
+        "artifact_sha256",
+        "environment_id",
+        "report_path",
+        "reason",
+        "binding",
+        "evidence_kind"
+      ],
+      "properties": {
+        "gate_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "not_run",
+            "blocked"
+          ]
+        },
+        "artifact_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "environment_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "report_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "evidence_kind": {
+          "enum": [
+            "automated",
+            "browser",
+            "native",
+            "pilot"
+          ]
+        },
+        "observation": {
+          "$ref": "#/$defs/observation"
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "independent",
+        "unresolved_failures",
+        "participants"
+      ],
+      "properties": {
+        "independent": {
+          "type": "boolean"
+        },
+        "unresolved_failures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "participants": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 5,
+          "items": {
+            "$ref": "#/$defs/participant"
+          }
+        }
+      }
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "participant_id",
+        "first_time",
+        "scenarios"
+      ],
+      "properties": {
+        "participant_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "first_time": {
+          "type": "boolean"
+        },
+        "scenarios": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/scenario"
+          }
+        }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_id",
+        "success",
+        "assistance_requested",
+        "errors",
+        "duration_seconds",
+        "recovery"
+      ],
+      "properties": {
+        "scenario_id": {
+          "enum": [
+            "add-source",
+            "find-duplicate",
+            "reveal-in-explorer",
+            "open-progress",
+            "restore-from-tray",
+            "skip-replay-onboarding"
+          ]
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "assistance_requested": {
+          "type": "boolean"
+        },
+        "errors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duration_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "recovery": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      }
+    }
+  }
+}

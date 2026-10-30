@@ -46,7 +46,8 @@ def receipt(gate, binding):
                 environment_id='fixture', report_path='unit-fixture.json', reason=None,
                 binding=copy.deepcopy(binding),
                 evidence_kind='pilot' if gate == 'ux.primary-flow' else
-                    'native' if gate == 'platform.windows-11' else 'automated')
+                    'native' if gate == 'platform.windows-11' else
+                    'browser' if gate == 'ui.browser' else 'automated')
     if gate == 'ux.primary-flow':
         result['observation'] = pilot_observation()
     return result
@@ -251,3 +252,81 @@ def test_primary_flow_requires_actual_structured_observation(matrix, mutation):
         observation['participants'][1]['participant_id'] = 'participant-0'
     assert check(matrix, data)['eligible'] is False
 
+
+def test_valid_independent_primary_flow_fixture_is_eligible(matrix):
+    assert check(matrix, candidate(ui=True))['eligible'] is True
+
+
+def test_gate_result_public_constructor(matrix):
+    receipt = matrix.GateResult('runtime.source', 'not_run', 'b' * 64, 'fixture', None, 'pending')
+    assert receipt.status == 'not_run' and receipt.reason == 'pending'
+
+
+@pytest.mark.parametrize('field', ['top', 'binding', 'versions', 'gate', 'environment'])
+def test_unknown_fields_are_rejected(matrix, field):
+    data = candidate()
+    targets = dict(top=data, binding=data['candidate'], versions=data['candidate']['versions'],
+                   gate=data['gates'][0], environment=data['environments']['fixture'])
+    targets[field]['unknown'] = True
+    assert 'schema_invalid' in check(matrix, data)['blockers']
+
+
+@pytest.mark.parametrize('value', [True, -1, float('nan'), float('inf')])
+def test_invalid_environment_measurement_rejected(matrix, value):
+    data = candidate()
+    data['environments']['fixture']['ram_bytes'] = value
+    assert check(matrix, data)['eligible'] is False
+
+
+def test_native_gate_requires_actual_os_environment(matrix):
+    data = candidate()
+    data['environments']['fixture']['os'] = 'Linux'
+    assert 'environment_mismatch' in check(matrix, data)['blockers']
+
+
+def test_matching_unknown_api_versions_are_not_assumed_compatible(matrix):
+    data = candidate()
+    data['candidate']['versions'].update(desktop_api='99', service_api='99')
+    for gate in data['gates']:
+        gate['binding'] = copy.deepcopy(data['candidate'])
+    assert 'api_incompatible' in check(matrix, data)['blockers']
+
+
+def test_optional_failure_is_not_silently_ignored(matrix):
+    data = candidate()
+    gate = receipt('extra.audit', data['candidate'])
+    gate.update(status='fail', reason='observed defect')
+    data['gates'].append(gate)
+    assert 'gate_failed' in check(matrix, data)['blockers']
+
+
+@pytest.mark.parametrize('mutation', ['help', 'errors', 'recovery', 'not_first_time', 'unknown_time'])
+def test_observed_primary_flow_difficulty_requires_resolution(matrix, mutation):
+    data = candidate(ui=True)
+    observation = next(g for g in data['gates'] if g['gate_id'] == 'ux.primary-flow')['observation']
+    participant = observation['participants'][0]
+    scenario = participant['scenarios'][0]
+    if mutation == 'help':
+        scenario['assistance_requested'] = True
+    elif mutation == 'errors':
+        scenario['errors'] = 1
+    elif mutation == 'recovery':
+        scenario['recovery'] = 'restart'
+    elif mutation == 'not_first_time':
+        participant['first_time'] = False
+    else:
+        scenario['duration_seconds'] = None
+    assert 'ux_observation_incomplete' in check(matrix, data)['blockers']
+
+
+@pytest.mark.parametrize('contents', ['{}', '{"gates": [], "gates": []}', 'not json'])
+def test_cli_refuses_invalid_evidence_without_actions(matrix, tmp_path, capsys, contents):
+    path = tmp_path / 'evidence.json'
+    path.write_text(contents, encoding='utf-8')
+    assert matrix.main([str(path)]) == 1
+    assert json.loads(capsys.readouterr().out)['eligible'] is False
+
+
+def test_cli_missing_file_fails_closed(matrix, tmp_path, capsys):
+    assert matrix.main([str(tmp_path / 'absent.json')]) == 1
+    assert json.loads(capsys.readouterr().out)['blockers'] == ['evidence_unreadable']
