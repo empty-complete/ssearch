@@ -1,4 +1,7 @@
-"""Owner-configured developer CLI. No issue input, fixture switch or command runner."""
+"""Owner-configured clone CLI; evidence recording is a separate trusted-host API.
+
+No issue input, validation execution, fixture switch or command runner.
+"""
 import argparse
 from datetime import datetime, timezone
 import json

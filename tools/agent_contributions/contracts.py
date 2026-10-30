@@ -52,3 +52,32 @@ class ContributionWorkspace:
     incident_id: str
     branch: str
     base_sha: str
+
+
+@dataclass(frozen=True)
+class CheckEvidence:
+    name: str
+    command_id: str
+    source_sha: str
+    exit_code: int | None
+    report_sha256: str | None
+    status: str
+    limitation: str | None
+
+
+@dataclass(frozen=True)
+class ReviewEvidence:
+    """Independent review supplied by the trusted developer host, not an issue."""
+
+    reviewer_id: str
+    reviewed_tree_sha256: str
+    blocking_findings: int
+
+
+@dataclass(frozen=True)
+class BuildEvidence:
+    source_sha: str
+    clean: bool
+    manifest_path: Path
+    manifest_sha256: str
+    frozen_checks: tuple[CheckEvidence, ...]

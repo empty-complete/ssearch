@@ -215,6 +215,62 @@ def test_source_change_invalidates_review_commit_and_ready(scenario, change):
         s.run.record_commit(target)
 
 
+@pytest.mark.parametrize("flag", ["--skip-worktree", "--assume-unchanged"])
+def test_hidden_worktree_fix_cannot_attest_an_older_unfixed_commit(scenario, flag):
+    s = scenario
+    base = git(s.repo, "rev-parse", "HEAD")
+    regression(s)
+    s.run.record_checks("python", report(s))
+    reviewed_tree = s.api.snapshot(s.repo).tree_sha256
+    # Genuine GREEN belongs to fixed commit F. Restore the old B commit, then
+    # conceal fixed bytes T from status: B itself still contains the defect.
+    git(s.repo, "checkout", "--detach", base)
+    git(s.repo, "update-index", flag, "--", "defect.py")
+    (s.repo / "defect.py").write_text("def answer(): return 42\n", encoding="utf-8")
+    assert git(s.repo, "status", "--porcelain") == ""
+    assert "return 0" in git(s.repo, "show", "HEAD:defect.py")
+    accepted = False
+    try:
+        s.run.record_review(s.api.ReviewEvidence("independent-reviewer", reviewed_tree, 0))
+        s.run.record_commit(base)
+        accepted = s.run.ready()
+    except s.api.ContributionError:
+        pass  # Refusal may occur at snapshot, review or commit; never accept B.
+    assert accepted is False, "Hidden fixed worktree bytes must not attest unfixed HEAD"
+
+
+def test_snapshot_rejects_index_mutation_during_fingerprint_read(scenario, monkeypatch):
+    s = scenario
+    validation = importlib.import_module("tools.agent_contributions.validation")
+    query = validation._query
+    changed = False
+
+    def mutate_after_index_read(workspace, operation):
+        nonlocal changed
+        result = query(workspace, operation)
+        if operation == "index" and not changed:
+            changed = True
+            git(s.repo, "update-index", "--assume-unchanged", "--", "defect.py")
+        return result
+
+    monkeypatch.setattr(validation, "_query", mutate_after_index_read)
+    with pytest.raises(s.api.ContributionError):
+        s.api.snapshot(s.repo)
+    assert changed is True
+
+
+def test_source_red_without_authenticated_call_phase_failure_is_not_regression(scenario):
+    s = scenario
+    # Source receipt exit 1 is also produced by setup/teardown errors. Its
+    # existing aggregate fields do not attest a call-phase regression failure.
+    red = report(s, "regression", exit_code=1)
+    (s.repo / "defect.py").write_text("def answer(): return 42\n", encoding="utf-8")
+    git(s.repo, "commit", "-am", "synthetic fix")
+    green = report(s, "regression")
+    with pytest.raises(s.api.ContributionError):
+        s.run.record_regression(red, green)
+
+
 def build(s, *, mode="quick"):
     current = s.api.snapshot(s.repo)
     # Current build-manifest fields; provenance/tree/clean binding comes from the
@@ -241,7 +297,9 @@ def test_build_requires_commit_clean_exact_source_manifest_and_frozen(scenario, 
     s.run = s.api.ContributionRun(workspace=s.repo, implementer_id="implementer", recipe=s.recipe,
                                  receipts=s.store)
     target = reviewed(s)
-    proof = build(s)
+    frozen = report(s, "frozen", payload=dict(source_commit=target, execution_mode="frozen",
+        ok=True, model_ready=True, clean_stop=True, source_clean=True, public_identity_preserved=True))
+    proof = replace(build(s), frozen_checks=() if fault == "missing_frozen" else (frozen,))
     if fault != "before_commit":
         s.run.record_commit(target)
     if fault == "dirty":
@@ -321,7 +379,7 @@ def test_disposable_synthetic_defect_test_fix_review_commit_artifact_order(scena
     result = json.loads(output.read_text(encoding="utf-8"))
     assert result["synthetic"] is True
     assert result["published"] is False
-    assert result["ready"] is True
+    assert result["fixture_ready"] is True
     assert result["full_suite_passed"] is False
     assert result["frozen_status"] == result["native_status"] == "not_run"
     assert [entry["step"] for entry in observations] == [
