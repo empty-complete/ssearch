@@ -156,6 +156,50 @@ def test_ci_launcher_refuses_an_unadmitted_child_before_creating_state(tmp_path)
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize('flag,mode', [('true', 'full'), ('true', 'quick'), ('true', 'installer'), ('TRUE', 'source'), ('1', 'source')])
+def test_agent_sdk_cannot_enter_another_ci_mode_even_before_admission(tmp_path, flag, mode):
+    environment = os.environ.copy()
+    environment.update(GITHUB_ACTIONS='false', AGENT_SDK=flag, BUILD_MODE=mode)
+    launcher = Path(__file__).parents[1] / 'tools/run_ci_build.ps1'
+    result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File', str(launcher)],
+        env=environment, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    refused = result.returncode != 0 and 'CI_AGENT_SDK_SCOPE_INVALID' in result.stderr
+    assert refused, 'agent_sdk_wrong_mode_was_not_rejected'
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_actual_bootstrap_transfers_only_the_public_agent_sdk_context(tmp_path):
+    launcher = Path(__file__).parents[1] / 'tools/run_ci_build.ps1'
+    # Execute the actual bootstrap assignment loop, without its native child
+    # launch/account admission. Only that external launch is outside this probe.
+    script = r'''
+param([string]$Launcher)
+$text=[IO.File]::ReadAllText($Launcher)
+$marker="$" + "bootstrapText = @'"
+$start=$text.IndexOf($marker)+$marker.Length
+$end=$text.IndexOf("'@",$start)
+$bootstrap=$text.Substring($start,$end-$start)
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseInput($bootstrap,[ref]$tokens,[ref]$errors)
+$loops=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.ForEachStatementAst]},$true))
+if($errors.Count -or $loops.Count -ne 1){throw 'bootstrap_context_probe_invalid'}
+$data=@{context=@{AGENT_SDK='true'; PRIVATE_SENTINEL='never_forward'}}
+Invoke-Expression $loops[0].Extent.Text
+@{agent=($env:AGENT_SDK -ceq 'true'); private_absent=!(Test-Path Env:PRIVATE_SENTINEL)} | ConvertTo-Json -Compress
+'''
+    path = tmp_path / 'context.ps1'
+    path.write_text(script, encoding='utf-8')
+    environment = os.environ.copy()
+    environment.pop('AGENT_SDK', None)
+    environment.pop('PRIVATE_SENTINEL', None)
+    result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File', str(path), str(launcher)],
+        env=environment, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    clean_exit = result.returncode == 0
+    assert clean_exit, 'bootstrap_context_probe_failed'
+    value = json.loads(result.stdout)
+    assert value == {'agent': True, 'private_absent': True}
+
+
 def fixture_archive(tmp_path, *, extra=None, payload=b'public runtime'):
     data = b'public runtime'
     manifest = json.dumps({'files': [{'path': 'bin/server.dll', 'size': len(data),

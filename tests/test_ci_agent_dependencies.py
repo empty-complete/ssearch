@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -176,3 +177,87 @@ def test_real_offline_wheel_install_checks_dependency_closure(helper, tmp_path, 
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
         clean_import = checked.returncode == 0
         assert clean_import, 'offline_toy_import_failed'
+
+
+def test_source_preparation_accepts_only_the_owner_approved_lock_and_exact_base(helper):
+    validate = getattr(helper, 'validate_source_lock', None)
+    assert callable(validate), 'locked_agent_source_preparation_missing'
+    records = validate((ROOT / 'requirements-agent.lock.txt').read_bytes(), (ROOT / 'requirements.lock.txt').read_bytes())
+    assert len(records) == 29
+    selected = {item['name']: item for item in records}
+    assert selected['mcp']['version'] == selected['mcp-types']['version'] == '2.3.0'
+    assert selected['mcp']['sha256'] == ROOTS[0][2]
+    assert selected['mcp-types']['sha256'] == ROOTS[1][2]
+
+
+@pytest.mark.parametrize('mutation,code', [('lock', 'agent_source_lock_mismatch'), ('base', 'agent_source_base_mismatch')])
+def test_source_preparation_never_rolls_or_repairs_an_unapproved_lock(helper, mutation, code):
+    validate = getattr(helper, 'validate_source_lock', None)
+    assert callable(validate), 'locked_agent_source_preparation_missing'
+    lock, base = (ROOT / 'requirements-agent.lock.txt').read_bytes(), (ROOT / 'requirements.lock.txt').read_bytes()
+    if mutation == 'lock':
+        lock = lock.replace(b'mcp==2.3.0', b'mcp==2.3.1')
+    else:
+        base = base.replace(b'idna==3.20', b'idna==3.19')
+    with pytest.raises(helper.ResolverError, match='^' + code + '$'):
+        validate(lock, base)
+
+
+@pytest.mark.parametrize('mutation', ['missing', 'changed'])
+def test_source_sdk_install_cannot_change_or_omit_any_base_distribution(helper, mutation):
+    verify = getattr(helper, 'verify_versions', None)
+    assert callable(verify), 'base_distribution_preservation_missing'
+    actual = {'idna': '3.20', 'typing-extensions': '4.16.0', 'mcp': '2.3.0'}
+    if mutation == 'missing':
+        actual.pop('idna')
+    else:
+        actual['idna'] = '3.19'
+    with pytest.raises(helper.ResolverError, match='^agent_source_environment_mismatch$'):
+        verify(actual, {'idna': '3.20', 'typing-extensions': '4.16.0'})
+
+
+def test_standard_user_sdk_recheck_requires_the_source_bound_preparation_receipt(helper, monkeypatch, tmp_path):
+    verify = getattr(helper, 'verify_prepared_source', None)
+    assert callable(verify), 'standard_user_sdk_recheck_missing'
+    monkeypatch.setattr(helper, 'ROOT', tmp_path)
+    monkeypatch.setattr(helper, 'verify_source', lambda source: None)
+    with pytest.raises(helper.ResolverError, match='^agent_source_receipt_invalid$'):
+        verify('a' * 40)
+
+
+def prepare_module():
+    spec = importlib.util.spec_from_file_location('ssearch_agent_prepare_test', ROOT / 'tools/prepare_ci.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_existing_prepare_cli_delegates_locked_sdk_only_after_base_source_setup(monkeypatch, tmp_path):
+    prepare = prepare_module()
+    config = tmp_path / 'resources/ci/build-inputs.json'
+    config.parent.mkdir(parents=True)
+    config.write_bytes((ROOT / 'resources/ci/build-inputs.json').read_bytes())
+    monkeypatch.setattr(prepare, 'ROOT', tmp_path)
+    commands = []
+    monkeypatch.setattr(prepare, 'run', lambda *arguments: commands.append(tuple(map(str, arguments))))
+    monkeypatch.setattr(prepare, 'download', lambda spec, path: path)
+    monkeypatch.setattr(prepare, 'restore_runtime', lambda *args: None)
+    monkeypatch.setenv('SOURCE_SHA', 'a' * 40)
+    monkeypatch.setattr('sys.argv', ['prepare_ci.py', '--source', '--agent'])
+    prepare.main()
+    sdk = [command for command in commands if str(tmp_path / 'tools/ci_agent_dependencies.py') in command]
+    assert sdk == [(str(tmp_path / '.venv/Scripts/python.exe'), str(tmp_path / 'tools/ci_agent_dependencies.py'),
+                    '--source-commit', 'a' * 40, '--prepare-source')]
+    prior = commands[:commands.index(sdk[0])]
+    assert any('--editable' in command for command in prior)
+    assert not any('--dry-run' in command for command in commands)
+
+
+@pytest.mark.parametrize('flags', [[], ['--desktop'], ['--source', '--desktop']])
+def test_agent_sdk_scope_is_rejected_before_reading_or_acquiring_inputs(monkeypatch, tmp_path, flags):
+    prepare = prepare_module()
+    monkeypatch.setattr(prepare, 'ROOT', tmp_path)
+    monkeypatch.setattr('sys.argv', ['prepare_ci.py', '--agent', *flags])
+    with pytest.raises(ValueError, match='^agent_source_scope_invalid$'):
+        prepare.main()
+    assert list(tmp_path.iterdir()) == []
