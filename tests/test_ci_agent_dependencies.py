@@ -56,7 +56,8 @@ def test_constraints_projection_removes_only_extras_and_keeps_exact_pins(helper)
 
 
 @pytest.mark.parametrize('raw', [b'pkg>=1\n', b'pkg @ https://private.invalid/x\n',
-    b'--extra-index-url https://private.invalid\n', b'pkg==1\npkg==2\n', b'pkg==1; python_version>"3"\n'])
+    b'--extra-index-url https://private.invalid\n', b'pkg==1\npkg==2\n', b'pkg_name==1\npkg-name==1\n',
+    b'pkg==1; python_version>"3"\n'])
 def test_unrepresentable_base_constraints_fail_without_silent_relaxation(helper, raw):
     with pytest.raises(helper.ResolverError, match='^agent_base_constraints_invalid$'):
         helper.project_constraints(raw)
@@ -122,7 +123,9 @@ def toy_wheel(directory, missing_dependency=False):
     filename = 'ssearch_resolver_probe-1.0.0-py3-none-any.whl'
     path = directory / filename
     metadata = 'Metadata-Version: 2.1\nName: ssearch-resolver-probe\nVersion: 1.0.0\n'
-    if missing_dependency:
+    if missing_dependency == 'direct':
+        metadata += 'Requires-Dist: ssearch-absent-probe @ file:///Z:/ssearch-missing/PRIVATE_SENTINEL.whl\n'
+    elif missing_dependency:
         metadata += 'Requires-Dist: ssearch-absent-probe==1.0.0\n'
     prefix = 'ssearch_resolver_probe-1.0.0.dist-info/'
     with zipfile.ZipFile(path, 'w') as wheel:
@@ -150,7 +153,7 @@ def test_missing_corrupt_or_foreign_wheelhouse_cannot_be_admitted(helper, tmp_pa
         helper.verify_wheelhouse([record], cache)
 
 
-@pytest.mark.parametrize('missing_dependency', [False, True])
+@pytest.mark.parametrize('missing_dependency', [False, True, 'direct'])
 def test_real_offline_wheel_install_checks_dependency_closure(helper, tmp_path, missing_dependency):
     cache = tmp_path / 'cache'
     cache.mkdir()
