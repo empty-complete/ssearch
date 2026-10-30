@@ -337,3 +337,16 @@ def test_browser_or_pilot_cannot_replace_frozen_runtime_proof(matrix, kind):
     data = candidate()
     next(g for g in data['gates'] if g['gate_id'] == 'runtime.frozen')['evidence_kind'] = kind
     assert 'evidence_kind_mismatch' in check(matrix, data)['blockers']
+
+
+@pytest.mark.parametrize('field', ['source_sha', 'desktop_sha256', 'service_sha256',
+                                   'payload_inventory_sha256'])
+def test_digest_rejects_trailing_newline_in_consistent_bindings(matrix, field):
+    data = candidate()
+    data['candidate'][field] += '\n'
+    for gate in data['gates']:
+        gate['binding'] = copy.deepcopy(data['candidate'])
+        gate['artifact_sha256'] = data['candidate']['desktop_sha256']
+    result = check(matrix, data)
+    assert result['eligible'] is False
+    assert 'schema_invalid' in result['blockers']
