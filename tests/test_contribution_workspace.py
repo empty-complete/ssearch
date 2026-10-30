@@ -197,6 +197,70 @@ def test_unknown_base_never_falls_back_to_default_branch(api, tmp_path, bare_rep
         assert git_run("branch", "--show-current", cwd=target) != BRANCH
 
 
+@pytest.mark.parametrize("kind", ["git_directory", "git_file", "bare"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_owner_root_inside_foreign_repository_is_rejected_before_mutation(api, tmp_path, monkeypatch, kind, nested):
+    config, grant, _ = configured(api, tmp_path)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    if kind == "git_directory":
+        (foreign / ".git").mkdir()
+    elif kind == "git_file":
+        (foreign / ".git").write_text("gitdir: /fictional/other/worktree", encoding="utf-8")
+    else:
+        (foreign / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        (foreign / "objects").mkdir()
+        (foreign / "refs").mkdir()
+        (foreign / "config").write_text("[core]\n bare = true\n", encoding="utf-8")
+    sentinel = foreign / "keep.txt"
+    sentinel.write_text("foreign worktree unchanged", encoding="utf-8")
+    parent = foreign / "nested" / "workspaces" if nested else foreign
+    parent.mkdir(parents=True, exist_ok=True)
+    config = replace(config, workspace_root=parent)
+    grant = replace(grant, workspace_root=parent)
+    before = sorted(str(path.relative_to(foreign)) for path in foreign.rglob("*"))
+    def forbidden(*args, **kwargs):
+        pytest.fail("A foreign repository ancestor must be rejected before Git")
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    with pytest.raises(api.ContributionError):
+        api.create_workspace(config, grant, parent=parent, now=NOW)
+    assert not (parent / INCIDENT).exists()
+    assert sentinel.read_text(encoding="utf-8") == "foreign worktree unchanged"
+    assert sorted(str(path.relative_to(foreign)) for path in foreign.rglob("*")) == before
+
+
+def test_disposable_clone_never_executes_tracked_ambient_or_template_hooks(api, tmp_path, bare_repository, monkeypatch):
+    bare, _ = bare_repository
+    source = tmp_path / "source"
+    # With an empty core.hooksPath, Git can resolve this tracked executable at
+    # the clone's root. All sentinel writes stay inside this disposable tree.
+    tracked = source / "post-checkout"
+    tracked.write_text("#!/bin/sh\nprintf executed > tracked-hook-executed.txt\n", encoding="utf-8")
+    git_run("add", "post-checkout", cwd=source)
+    git_run("update-index", "--chmod=+x", "post-checkout", cwd=source)
+    git_run("commit", "-m", "fictional tracked hook", cwd=source)
+    base = git_run("rev-parse", "HEAD", cwd=source)
+    git_run("push", str(bare), "main", cwd=source)
+    ambient = tmp_path / "ambient-hooks"
+    ambient.mkdir()
+    templates = tmp_path / "templates"
+    (templates / "hooks").mkdir(parents=True)
+    for directory, marker in ((ambient, "ambient-hook-executed.txt"),
+                              (templates / "hooks", "template-hook-executed.txt")):
+        hook = directory / "post-checkout"
+        hook.write_text("#!/bin/sh\nprintf executed > " + marker + "\n", encoding="utf-8")
+        hook.chmod(0o755)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(ambient))
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(templates))
+    config, grant, parent = configured(api, tmp_path, base=base)
+    client = api.GitClient.for_local_fixture(approved_remote=REMOTE, repository=bare)
+    result = api.create_workspace(config, grant, parent=parent, git_client=client, now=NOW)
+    assert (result.path / "post-checkout").is_file()
+    assert not any(tmp_path.rglob("*-hook-executed.txt"))
+
+
 def test_fixture_adapter_cannot_substitute_another_owner_remote(api, tmp_path, bare_repository):
     bare, base = bare_repository
     config, grant, parent = configured(api, tmp_path, base=base)
@@ -270,10 +334,42 @@ def test_git_uses_fixed_arguments_controlled_environment_and_disables_hooks(api,
         assert "GIT_SSH_COMMAND" not in env and "GIT_TEMPLATE_DIR" not in env and "SEARCH_TOKEN" not in env
         assert env["GIT_CONFIG_NOSYSTEM"] == "1" and env["GIT_TERMINAL_PROMPT"] == "0"
         assert "url.ext::evil.insteadOf" not in repr(env)
-        assert "core.hooksPath=" in argv
+        assert "core.hooksPath=/dev/null" in argv
         assert "protocol.ext.allow=never" in argv
         assert "http.followRedirects=false" in argv
     assert any("clone" in argv and "--no-checkout" in argv for argv, _ in calls)
+    clone_env = next(kwargs["env"] for argv, kwargs in calls if "clone" in argv)
+    assert clone_env["GIT_CONFIG_VALUE_0"] == "Authorization: " + secret
+    assert all(secret not in repr(kwargs["env"]) for argv, kwargs in calls if "clone" not in argv)
+
+
+def test_https_without_developer_resolver_never_uses_ambient_credentials(api, tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("Missing developer resolver must fail before Git")
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    with pytest.raises(api.ContributionError, match="developer_credentials_unavailable"):
+        api.GitClient().clone_at(REMOTE, destination=tmp_path / "new", base_sha="1" * 40,
+                                branch=BRANCH, credential_ref="developer:fixture")
+
+
+def test_git_failure_does_not_expose_developer_secret(api, tmp_path, monkeypatch):
+    secret = "Bearer fictional-secret"
+    def failed(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, "", "remote reported " + secret)
+    monkeypatch.setattr(subprocess, "run", failed)
+    with pytest.raises(api.ContributionError) as error:
+        api.GitClient(credential_resolver=lambda ref: secret).clone_at(REMOTE,
+            destination=tmp_path / "new", base_sha="1" * 40, branch=BRANCH,
+            credential_ref="developer:fixture")
+    assert secret not in str(error.value)
+
+
+def test_duplicate_owner_keys_are_rejected(api, tmp_path):
+    path = tmp_path / "owner.json"
+    value = json.dumps(config_payload(tmp_path))
+    path.write_text(value[:-1] + ', "remote": "https://example.invalid/hidden.git"}', encoding="utf-8")
+    with pytest.raises(api.ContributionError):
+        api.load_config(path)
 
 
 def test_cli_and_search_have_no_mutual_runtime_dependency(api):
