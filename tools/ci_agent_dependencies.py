@@ -23,6 +23,8 @@ SDK = {
 SDK_SOURCE = 'https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/v2.3.0/pyproject.toml'
 ENVIRONMENT = dict(implementation_name='cpython', python_full_version='3.12.10',
                    sys_platform='win32', platform_machine='AMD64', os_name='nt')
+AGENT_LOCK_SHA = 'bc813c42a295ca8415162e96dae39854ead335bc7d76ade5da75a46cb575c0ae'
+BASE_LOCK_SHA = 'efb8d062547d38cdd58b3ed3dcfafc39a41e4013711f951aaf72075772d68335'
 NAME = r'[A-Za-z0-9][A-Za-z0-9._-]*'
 VERSION = r'[0-9][A-Za-z0-9.!+_-]*'
 
@@ -153,12 +155,15 @@ def run(arguments, code):
         raise ResolverError(code) from None
 
 
-def install_locked(python, cache, lock):
+def install_locked(python, cache, lock, *, force_reinstall=False):
     lines = lock.read_text(encoding='utf-8').splitlines()
     require(lines and all(re.fullmatch(f'{NAME}=={VERSION} --hash=sha256:[0-9a-f]{{64}}', line)
                           for line in lines), 'agent_report_invalid')
-    run([python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install',
-        '--no-index', '--no-deps', '--require-hashes', '--find-links', cache, '-r', lock], 'agent_offline_install_failed')
+    arguments = [python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install',
+        '--no-index', '--no-deps', '--require-hashes', '--find-links', cache, '-r', lock]
+    if force_reinstall:
+        arguments.append('--force-reinstall')
+    run(arguments, 'agent_offline_install_failed')
     run([python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'check'], 'agent_offline_check_failed')
 
 
@@ -172,6 +177,132 @@ def write_json(path, value):
     with path.open('x', encoding='utf-8', newline='\n') as output:
         json.dump(value, output, indent=2)
         output.write('\n')
+
+
+def validate_source_lock(lock, base):
+    require(hashlib.sha256(base).hexdigest() == BASE_LOCK_SHA, 'agent_source_base_mismatch')
+    require(hashlib.sha256(lock).hexdigest() == AGENT_LOCK_SHA, 'agent_source_lock_mismatch')
+    records = []
+    for line in lock.decode('utf-8').splitlines():
+        match = re.fullmatch(f'({NAME})==({VERSION}) --hash=sha256:([0-9a-f]{{64}})', line)
+        require(match is not None, 'agent_source_lock_mismatch')
+        records.append(dict(name=normalized(match[1]), version=match[2], sha256=match[3]))
+    selected = {item['name']: item for item in records}
+    require(len(records) == len(selected) == 29 and all(name in selected
+        and selected[name]['version'] == pin['version'] and selected[name]['sha256'] == pin['sha256']
+        for name, pin in SDK.items()), 'agent_source_lock_mismatch')
+    return records
+
+
+def verify_versions(actual, expected):
+    require(type(actual) is dict and all(actual.get(name) == version for name, version in expected.items()),
+            'agent_source_environment_mismatch')
+
+
+def installed_versions(python, expected):
+    code = "import importlib.metadata as m,json,sys; print(json.dumps({name:m.version(name) for name in json.loads(sys.argv[1])}))"
+    result = subprocess.run([str(python), '-I', '-c', code, json.dumps(sorted(expected))],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    require(result.returncode == 0 and len(result.stdout) <= 65536, 'agent_source_environment_mismatch')
+    try:
+        actual = json.loads(result.stdout)
+    except ValueError:
+        raise ResolverError('agent_source_environment_mismatch') from None
+    verify_versions(actual, expected)
+
+
+def source_identity(source):
+    verify_source(source)
+    lock_path, base_path = ROOT / 'requirements-agent.lock.txt', ROOT / 'requirements.lock.txt'
+    no_links(lock_path)
+    no_links(base_path)
+    base = base_path.read_bytes()
+    records = validate_source_lock(lock_path.read_bytes(), base)
+    python = ROOT / '.venv/Scripts/python.exe'
+    require(os.path.normcase(str(Path(sys.executable).absolute())) == os.path.normcase(str(python.absolute())),
+            'agent_source_interpreter_mismatch')
+    expected_base = dict(line.split('==') for line in project_constraints(base).splitlines())
+    installed_versions(python, expected_base)
+    return python, lock_path, records, expected_base
+
+
+def verify_source_cache(records, cache):
+    no_links(cache)
+    require(cache.is_dir(), 'agent_wheelhouse_invalid')
+    selected = {record['name']: record for record in records}
+    found = set()
+    for path in cache.iterdir():
+        no_links(path)
+        require(path.is_file() and re.fullmatch(r'[A-Za-z0-9_.+!-]+\.whl', path.name), 'agent_wheelhouse_invalid')
+        parts = path.name[:-4].split('-')
+        require(len(parts) in (5, 6), 'agent_wheelhouse_invalid')
+        name = normalized(parts[0])
+        require(name in selected and name not in found and parts[1] == selected[name]['version']
+            and parts[-1] in ('any', 'win_amd64') and 0 < path.stat().st_size <= 128 * 1024 * 1024
+            and digest(path) == selected[name]['sha256'], 'agent_wheelhouse_invalid')
+        if name in SDK:
+            require(path.name == SDK[name]['filename'] and path.stat().st_size == SDK[name]['size'], 'agent_wheelhouse_invalid')
+        found.add(name)
+    require(found == set(selected), 'agent_wheelhouse_invalid')
+
+
+def source_sdk_identity(python, records):
+    installed_versions(python, {item['name']: item['version'] for item in records})
+    code = ("import importlib.metadata as m,pathlib,sys,mcp; from mcp import Client; "
+            "assert pathlib.Path(mcp.__file__).resolve().is_relative_to(pathlib.Path(sys.prefix).resolve()); "
+            "assert m.version('mcp')=='2.3.0'; assert m.version('mcp-types')=='2.3.0'")
+    run([python, '-I', '-c', code], 'agent_sdk_import_failed')
+
+
+def prepare_source(source):
+    python, lock, records, base = source_identity(source)
+    cache = ROOT / '.tools/agent-source' / source
+    output = ROOT / 'artifacts/ci-agent-source' / source
+    for path in (cache, output):
+        no_links(path)
+        require(not path.exists(), 'agent_output_not_fresh')
+        path.mkdir(parents=True)
+    run([python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'download',
+        '--index-url', 'https://pypi.org/simple', '--only-binary=:all:', '--no-deps', '--require-hashes',
+        '--dest', cache, '-r', lock], 'agent_wheel_download_failed')
+    verify_source_cache(records, cache)
+    install_locked(python, cache, lock, force_reinstall=True)
+    installed_versions(python, base)
+    source_sdk_identity(python, records)
+    source_identity(source)
+    write_json(output / 'input-receipt.json', dict(schema_version=1, source_commit=source,
+        agent_lock_sha256=AGENT_LOCK_SHA, base_lock_sha256=BASE_LOCK_SHA,
+        sdk_versions={name: pin['version'] for name, pin in SDK.items()},
+        base_versions_preserved=True, closure_reinstalled=True, no_index=True, no_dependency_resolution=True,
+        pip_check=True, prepared=True, verified_before_tests=False, full_suite_passed=False, windows_validation=[]))
+    verify_source(source)
+
+
+def verify_prepared_source(source):
+    path = ROOT / 'artifacts/ci-agent-source' / source / 'input-receipt.json'
+    try:
+        no_links(path)
+        require(path.is_file() and path.stat().st_size <= 65536, 'agent_source_receipt_invalid')
+        receipt = json.loads(path.read_text(encoding='utf-8'))
+        expected = dict(schema_version=1, source_commit=source, agent_lock_sha256=AGENT_LOCK_SHA,
+            base_lock_sha256=BASE_LOCK_SHA, sdk_versions={name: pin['version'] for name, pin in SDK.items()},
+            base_versions_preserved=True, closure_reinstalled=True, no_index=True, no_dependency_resolution=True,
+            pip_check=True, prepared=True, verified_before_tests=False, full_suite_passed=False, windows_validation=[])
+        require(type(receipt) is dict and set(receipt) == set(expected)
+            and type(receipt.get('verified_before_tests')) is bool, 'agent_source_receipt_invalid')
+        expected['verified_before_tests'] = receipt['verified_before_tests']
+        require(all(type(receipt[key]) is type(value) and receipt[key] == value for key, value in expected.items()),
+                'agent_source_receipt_invalid')
+    except (OSError, ValueError):
+        raise ResolverError('agent_source_receipt_invalid') from None
+    python, _, records, _ = source_identity(source)
+    source_sdk_identity(python, records)
+    receipt['verified_before_tests'] = True
+    temporary = path.with_name('verified-input.next.json')
+    write_json(temporary, receipt)
+    os.replace(temporary, path)
+    verify_source(source)
+    print('CI agent SDK: source_venv=true approved_lock=true base_versions=true sdk_identity=true verified_before_tests=true')
 
 
 def resolve(source):
@@ -237,10 +368,20 @@ def resolve(source):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-commit', required=True)
+    parser.add_argument('--prepare-source', action='store_true')
+    parser.add_argument('--verify-source', action='store_true')
     args = parser.parse_args()
     try:
         require(re.fullmatch('[0-9a-f]{40}', args.source_commit), 'agent_source_invalid')
-        resolve(args.source_commit)
+        if args.prepare_source or args.verify_source:
+            require(not (args.prepare_source and args.verify_source) and os.name == 'nt'
+                and sys.version_info[:3] == (3, 12, 10) and sys.maxsize > 2**32
+                and os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('BUILD_MODE') == 'source'
+                and os.environ.get('AGENT_SDK') == 'true' and os.environ.get('DESKTOP_STACK') == 'false'
+                and os.environ.get('SOURCE_SHA') == args.source_commit, 'agent_source_scope_invalid')
+            (prepare_source if args.prepare_source else verify_prepared_source)(args.source_commit)
+        else:
+            resolve(args.source_commit)
         return 0
     except Exception as error:
         print(str(error) if isinstance(error, ResolverError) else 'agent_resolver_failed', file=sys.stderr)
