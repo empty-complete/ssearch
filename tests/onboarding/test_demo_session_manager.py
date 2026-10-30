@@ -199,32 +199,37 @@ def test_one_active_or_cleanup_pending_session_bounds_materialization(tmp_path):
             assert failure.code == 'demo_session_not_found'
 
 
-def test_close_stops_admission_then_drains_real_provider_operation_before_cleanup(tmp_path, monkeypatch):
+@pytest.mark.parametrize('operation', ['search', 'fetch'])
+def test_close_stops_admission_then_drains_real_provider_operation_before_cleanup(tmp_path, monkeypatch, operation):
     api()
     from atom_search.onboarding.demo_provider import DemoSearchProvider
     subject = manager(tmp_path)
     session = subject.open()
+    selected = subject.search(session.session_id, SearchRequest('спецификация')).results[0]
     entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
-    original_search, original_begin = DemoSearchProvider.search, subject.begin_close
+    original_operation = getattr(DemoSearchProvider, operation)
+    original_begin = subject.begin_close
     paths = []
 
-    def admitted_search(provider, search_request):
-        response = original_search(provider, search_request)
-        paths.extend(Path(row.full_path) for row in response.results)
+    def admitted_operation(provider, *args, **kwargs):
+        result = original_operation(provider, *args, **kwargs)
+        rows = result.results if isinstance(result, SearchResponse) else (result,)
+        paths.extend(Path(row.full_path) for row in rows)
         entered.set()
         assert release.wait(10), 'admitted operation was never released'
         assert all(path.is_file() for path in paths), 'cleanup raced an admitted operation'
-        return response
+        return result
 
     def observed_begin(session_id):
         original_begin(session_id)
         stopped.set()
 
     with monkeypatch.context() as patch:
-        patch.setattr(DemoSearchProvider, 'search', admitted_search)
+        patch.setattr(DemoSearchProvider, operation, admitted_operation)
         patch.setattr(subject, 'begin_close', observed_begin)
         with ThreadPoolExecutor(max_workers=2) as executor:
-            searching = executor.submit(subject.search, session.session_id, SearchRequest('спецификация'))
+            argument = SearchRequest('спецификация') if operation == 'search' else selected.result_id
+            searching = executor.submit(getattr(subject, operation), session.session_id, argument)
             closing = None
             try:
                 assert entered.wait(10)
@@ -235,10 +240,9 @@ def test_close_stops_admission_then_drains_real_provider_operation_before_cleanu
                 assert_error('demo_session_closed', lambda: subject.fetch(session.session_id, 'unknown'))
             finally:
                 release.set()
-            assert searching.result(timeout=10).results
+            assert isinstance(searching.result(timeout=10), (SearchResponse, ResultMetadata))
             assert closing is not None and not closing.result(timeout=10).deferred
-    assert all(not path.exists() for path in paths)
-
+    assert paths and all(not path.exists() for path in paths)
 
 def test_inflight_admission_is_bounded_and_released_after_real_response(tmp_path, monkeypatch):
     api()
@@ -318,3 +322,25 @@ def test_registration_must_acknowledge_the_none_return_contract_before_creating_
     subject = manager(tmp_path, register=lambda path: False)
     assert_error('access_denied', subject.open)
     assert not (tmp_path / 'profile/runtime/onboarding-demo').exists()
+
+
+def test_registration_private_failure_is_sanitized_and_failed_open_can_retry(tmp_path):
+    attempts = []
+
+    def registration(path):
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise RuntimeError('secret-token=do-not-leak; C:/private/profile')
+
+    subject = manager(tmp_path, register=registration)
+    with pytest.raises(ServiceError) as failure:
+        subject.open()
+    assert failure.value.code == 'access_denied' and failure.value.details == {}
+    assert 'secret-token' not in str(failure.value) and 'C:/private' not in str(failure.value)
+    assert not (tmp_path / 'profile/runtime/onboarding-demo').exists()
+    session = subject.open()
+    try:
+        assert len(attempts) == 2
+        assert subject.search(session.session_id, SearchRequest('спецификация')).results
+    finally:
+        subject.close(session.session_id)

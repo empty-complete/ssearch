@@ -103,3 +103,22 @@ def test_broker_never_resolves_ids_owned_by_another_manager_or_closed_session(tm
     finally:
         first.close_demo(session.session_id)
     assert_error('demo_session_not_found', lambda: first.search_demo(session.session_id, SearchRequest('ПМ')))
+
+
+def test_close_info_redacts_paths_and_reports_preserved_files_truthfully(tmp_path):
+    from dataclasses import FrozenInstanceError
+
+    subject = adapter(tmp_path)
+    session = subject.open_demo()
+    row = subject.search_demo(session.session_id, SearchRequest('спецификация')).results[0]
+    modified = Path(row.full_path)
+    modified.write_text('user changed this tutorial file', encoding='utf-8')
+    result = subject.close_demo(session.session_id)
+    assert result.session_id == session.session_id
+    assert result.cleanup_pending is False and result.deferred_count == 0
+    assert result.removed_count == 7 and result.preserved_count == 1
+    assert modified.read_text(encoding='utf-8') == 'user changed this tutorial file'
+    assert not hasattr(result, 'root') and not hasattr(result, 'removed') and not hasattr(result, 'preserved')
+    assert all(type(value) in (str, bool, int) for value in vars(result).values())
+    with pytest.raises(FrozenInstanceError):
+        result.cleanup_pending = True
