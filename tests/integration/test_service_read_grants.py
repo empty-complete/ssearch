@@ -5,6 +5,7 @@ identifies missing disabled-route behavior rather than a future module import.
 Policy/consent, TTL and revocation cases follow once that internal seam is agreed.
 """
 import uuid
+from dataclasses import dataclass
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 import http.client
@@ -100,6 +101,18 @@ def grants(owner_profile, owner_client, monkeypatch):
 
 def grant_key(request):
     return {name: request[name] for name in ('consumer_id', 'operation_id')}
+
+
+def limit_operations(grants, limit):
+    from atom_search.service.read_grants import ReadGrantPolicy
+    # A real immutable policy subtype supplies the future explicit bound. The
+    # current store accepts it but ignores the bound: RED is an actual bad mint,
+    # not an absent-field/constructor error.
+    @dataclass(frozen=True)
+    class LimitedPolicy(ReadGrantPolicy):
+        max_operations: int
+    grants.store.policy = LimitedPolicy(min_ttl_seconds=1, max_ttl_seconds=120,
+        allowed_capabilities=grants.policy.allowed_capabilities, max_operations=limit)
 
 
 def issue(grants, **changes):
@@ -252,10 +265,10 @@ def test_revoke_cleanup_failure_cannot_revive_token(grants, monkeypatch):
 def test_slow_grant_create_does_not_block_existing_authentication(grants, monkeypatch):
     entered, release = threading.Event(), threading.Event()
     original = grants.owner.credentials.create
-    def slow(profile):
+    def slow(*args, **kwargs):
         entered.set()
         assert release.wait(4)
-        return original(profile)
+        return original(*args, **kwargs)
     monkeypatch.setattr(grants.owner.credentials, 'create', slow)
     request = issue_request(grants.owner)
     grants.approve(request)
@@ -294,6 +307,7 @@ def test_revoke_ack_blocks_new_auth_but_captured_inflight_scope_can_finish(grant
 def test_budget_and_post_create_failure_leave_no_grant_or_orphan(grants, monkeypatch):
     from atom_search.runtime.credentials import CredentialError
     from atom_search.runtime.storage import StorageBudgetError
+    limit_operations(grants, 1)  # Failed reservations/creation must release capacity.
     request = issue_request(grants.owner)
     grants.approve(request)
     before = credential_inventory(grants.owner)
@@ -322,6 +336,136 @@ def test_budget_and_post_create_failure_leave_no_grant_or_orphan(grants, monkeyp
             grants.client.read_grant_issue(**request)
     assert len(calls) == 2 and credential_inventory(grants.owner) == before
     assert grants.client.read_grant_issue(**request)['state'] == 'active'
+
+
+@pytest.mark.parametrize('terminal', ['revoke', 'expire'])
+def test_operation_limit_retains_terminal_tombstones_before_any_allocation(grants, monkeypatch, terminal):
+    limit_operations(grants, 1)
+    request, first = issue(grants)
+    if terminal == 'revoke':
+        grants.client.read_grant_revoke(**grant_key(request))
+        state = 'revoked'
+    else:
+        grants.now[0] += request['ttl_seconds']
+        state = 'expired'
+    # Existing operations remain queryable/replayable without renewal at the limit.
+    assert grants.client.read_grant_issue(**request)['state'] == state
+    assert grants.client.read_grant_get(**grant_key(request))['grant_id'] == first['grant_id']
+    grants.client.read_grant_revoke(**grant_key(request))
+    before = credential_inventory(grants.owner)
+    calls = []
+    original_provider = grants.consent.approve
+    original_create = grants.owner.credentials.create
+    original_reserve = grants.owner.repository.budget.reserve
+    def approve(value):
+        calls.append('provider')
+        return original_provider(value)
+    def create(*args, **kwargs):
+        calls.append('create')
+        return original_create(*args, **kwargs)
+    @contextmanager
+    def reserve(*args, **kwargs):
+        calls.append('budget')
+        with original_reserve(*args, **kwargs) as value:
+            yield value
+    monkeypatch.setattr(grants.consent, 'approve', approve)
+    monkeypatch.setattr(grants.owner.credentials, 'create', create)
+    monkeypatch.setattr(grants.owner.repository.budget, 'reserve', reserve)
+    second = issue_request(grants.owner)
+    grants.approve(second)
+    with pytest.raises(ServiceError) as failure:
+        grants.client.read_grant_issue(**second)
+    assert (failure.value.code, failure.value.status_code) == ('too_many_requests', 429)
+    assert not calls and credential_inventory(grants.owner) == before
+
+
+def test_operation_limit_concurrent_boundary_admits_only_one_distinct_operation(grants):
+    limit_operations(grants, 1)
+    requests = [issue_request(grants.owner) for _ in range(2)]
+    for request in requests:
+        grants.approve(request)
+    def attempt(request):
+        try:
+            return grants.client.read_grant_issue(**request)
+        except ServiceError as failure:
+            return failure.code
+    before = credential_inventory(grants.owner)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        replies = list(pool.map(attempt, requests))
+    assert replies.count('too_many_requests') == 1
+    admitted = [reply for reply in replies if isinstance(reply, dict)]
+    assert len(admitted) == 1
+    after = credential_inventory(grants.owner)
+    assert len(after[0] - before[0]) == len(after[1] - before[1]) == 1
+    key = grant_key(requests[replies.index(admitted[0])])
+    assert grants.client.read_grant_get(**key)['grant_id'] == admitted[0]['grant_id']
+    assert grants.client.read_grant_revoke(**key)['state'] == 'revoked'
+
+
+def test_post_create_replacement_before_manager_identity_capture_is_not_deleted(grants, monkeypatch):
+    original = grants.owner.credentials.create
+    replacements = []
+    def replace_after_create(*args, **kwargs):
+        reference = original(*args, **kwargs)  # Genuine DPAPI create/readback.
+        path = grants.owner.credentials.directory / (reference + '.dpapi')
+        other = grants.owner.credentials.directory / 'foreign-replacement'
+        other.write_bytes(b'foreign replacement must remain')
+        other.replace(path)
+        replacements.append(path)
+        return reference
+    monkeypatch.setattr(grants.owner.credentials, 'create', replace_after_create)
+    request = issue_request(grants.owner)
+    grants.approve(request)
+    before_refs = credential_inventory(grants.owner)[0]
+    with pytest.raises(ServiceError):
+        grants.client.read_grant_issue(**request)  # Real resolve rejects replaced bytes.
+    assert len(replacements) == 1 and replacements[0].exists()
+    assert replacements[0].read_bytes() == b'foreign replacement must remain'
+    assert credential_inventory(grants.owner)[0] == before_refs
+    with pytest.raises(ServiceError) as missing:
+        grants.client.read_grant_get(**grant_key(request))
+    assert missing.value.code == 'result_not_found'
+
+
+@pytest.mark.parametrize('prior', ['revoked_grant', 'legacy_access'])
+def test_reused_reference_never_overwrites_prior_grant_or_legacy_access(grants, monkeypatch, prior):
+    if prior == 'revoked_grant':
+        original_request, original_grant = issue(grants)
+        reference = original_grant['credential_ref']
+        token = grants.owner.credentials.resolve(reference)
+        grants.client.read_grant_revoke(**grant_key(original_request))
+        expected_auth = 401
+    else:
+        from atom_search.service.contracts import AccessContext
+        reference = grants.owner.issue_credential(AccessContext('legacy-reader', frozenset({'search'}), ()))
+        token = grants.owner.credentials.resolve(reference)
+        # A live cache entry must not be overwritten even when its file is gone.
+        grants.owner.credentials.remove(reference)
+        expected_auth = 200
+    path = grants.owner.credentials.directory / (reference + '.dpapi')
+    assert not path.exists()
+    request = issue_request(grants.owner)
+    grants.approve(request)
+    before_refs = credential_inventory(grants.owner)[0]
+    failure = None
+    with monkeypatch.context() as patch:
+        patch.setattr('atom_search.runtime.credentials.secrets.token_hex',
+                      lambda _: reference.removeprefix('dpapi-v1-'))
+        try:
+            grants.client.read_grant_issue(**request)
+        except ServiceError as caught:
+            failure = caught
+    # Fresh reference proof cannot become the new grant's authority; the old
+    # token/cache semantics and old operation tombstone must remain unchanged.
+    assert raw_read(grants.owner, reference=reference) == expected_auth
+    assert raw_read(grants.owner, token=token) == expected_auth
+    assert failure is not None and not path.exists()
+    assert credential_inventory(grants.owner)[0] == before_refs
+    if prior == 'revoked_grant':
+        assert grants.client.read_grant_issue(**original_request)['state'] == 'revoked'
+        assert grants.client.read_grant_get(**grant_key(original_request))['grant_id'] == original_grant['grant_id']
+        assert grants.client.read_grant_revoke(**grant_key(original_request))['state'] == 'revoked'
+    assert grants.client.status().api_version == '1'
 
 
 @pytest.mark.parametrize('failure_kind', ['readback', 'collision', 'replacement'])
