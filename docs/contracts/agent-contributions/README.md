@@ -66,7 +66,9 @@ not for every fix. Source success cannot satisfy Quick, Full, frozen or native g
 `ReceiptStore` starts empty. A trusted developer host must authenticate the exact
 GitHub repository, workflow revision/recipe, run, job, source SHA, verified clean
 checkout, working-tree fingerprint, check targets, job outcome and artifact bytes
-before calling `add_verified(ReceiptPin(...))`. This is a privileged host API, like
+before calling `add_verified(ReceiptPin(...))`. For regression it also supplies
+`test_phases`: authenticated exact-node setup/call/teardown outcomes, in that order.
+This is a privileged host API, like
 the owner grant, **not an authentication implementation**. This slice ships no
 authenticated GitHub importer, registry JSON loader or evidence-recording CLI.
 An issue, caller-created JSON report, hash, run URL or self-asserted pin is not
@@ -76,8 +78,14 @@ The parser verifies actual `run_ci_build.ps1` Source receipts (including the fin
 owned-job exit code and source verification), current Quick/Full build-manifest
 scope/targets, and explicitly required flat fields in frozen runtime receipts.
 RED must be the approved single regression test failing with test exit code 1;
-collection/configuration/no-test and cleanup-only failures cannot be RED. GREEN
-must pass that same test. Suite/browser/native PASS adapters are not implemented
+collection/configuration/no-test and cleanup-only failures cannot be RED. The
+aggregate Source receipt cannot prove this: RED additionally requires exact-node
+call failure with passing setup/teardown; GREEN requires all three phases passing
+for that same node. Absent phases, a different node, setup/teardown-only failures
+or a skipped GREEN are refused. Phase metadata must come from authenticated job
+reports, never from agent prose or the aggregate exit code. Generic Source suites
+remain recipe/host-admitted evidence and do not imply individual node execution.
+Suite/browser/native PASS adapters are not implemented
 here: required unsupported checks stay pending rather than accepting generic
 `passed: true` JSON. A host can supply a future reviewed adapter separately.
 Existing Source wrapper tests which actually run delegated TypeScript checks
@@ -93,6 +101,12 @@ queries execute in the evidence API, with hooks/fsmonitor disabled. A later sour
 or HEAD change, dirty commit/build, altered report, mismatched SHA/tree/manifest,
 missing required scope or frozen proof invalidates readiness. Reports and pins
 are rechecked when `ready()` is queried, not just when recorded.
+Clean source also requires the actual index blob IDs/modes to match HEAD and the
+working bytes to match those blobs. Skip-worktree/assume-unchanged entries are
+refused; index, flags, attributes and HEAD are reread to reject changes during a
+snapshot. Git's text/eol CRLF normalization is supported conservatively through
+read-only attribute queries; clean filters, ident and encoding transformations
+are never executed. Unknown transformed inputs are refused, not declared clean.
 
 Unavailable Windows/model/compiler/UNC checks use `not_run`, null exit/hash and a
 concrete limitation. A required pending gate blocks readiness; an optional honest

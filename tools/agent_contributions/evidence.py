@@ -25,6 +25,21 @@ class ContributionRun:
     def _invalidate_later(self):
         self._review = self._target = self._build = None
 
+    def _verified_regression(self, red, green):
+        red_pin = self.receipts.verify(red, self.recipe)
+        green_pin = self.receipts.verify(green, self.recipe)
+        require(red_pin is not None and green_pin is not None, "invalid_regression")
+        spec = self.recipe.spec(red.command_id)
+        if spec.report_kind == "source":
+            # Aggregate pytest exit codes do not distinguish assertion failures
+            # from setup/teardown errors, or a genuine GREEN from a skipped test.
+            # The host authenticates phase reports; Source JSON has no phases.
+            for pin, outcome in ((red_pin, "failed"), (green_pin, "passed")):
+                require(pin.test_phases == ((spec.targets[0], "setup", "passed"),
+                    (spec.targets[0], "call", outcome), (spec.targets[0], "teardown", "passed")),
+                    "regression_phase_attestation_required")
+        return red_pin, green_pin
+
     def record_regression(self, red: CheckEvidence, green: CheckEvidence) -> None:
         require(isinstance(red, CheckEvidence) and isinstance(green, CheckEvidence)
                 and red.command_id == green.command_id, "regression_id_mismatch")
@@ -32,8 +47,7 @@ class ContributionRun:
         require(spec.scope == "regression" and spec.report_kind in {"source", "synthetic"}
                 and len(spec.targets) == 1 and red.status == "failed" and red.exit_code == 1
                 and green.status == "passed" and green.exit_code == 0, "invalid_regression")
-        red_pin = self.receipts.verify(red, self.recipe)
-        green_pin = self.receipts.verify(green, self.recipe)
+        red_pin, green_pin = self._verified_regression(red, green)
         require(red_pin is not None and green_pin is not None
                 and red.report_sha256 != green.report_sha256, "invalid_regression")
         current = snapshot(self.workspace)
@@ -70,7 +84,7 @@ class ContributionRun:
         require(self._regression is not None, "missing_regression")
         current = snapshot(self.workspace)
         require(review.reviewed_tree_sha256 == current.tree_sha256, "review_tree_mismatch")
-        green = self.receipts.verify(self._regression[1], self.recipe)
+        _, green = self._verified_regression(*self._regression)
         require(green is not None and green.tree_sha256 == current.tree_sha256, "review_tree_mismatch")
         self._review = review
         self._target = self._build = None
@@ -82,7 +96,7 @@ class ContributionRun:
         current = snapshot(self.workspace)
         require(current.clean and current.source_sha == target_sha
                 and current.tree_sha256 == self._review.reviewed_tree_sha256, "commit_source_mismatch")
-        green = self.receipts.verify(self._regression[1], self.recipe)
+        _, green = self._verified_regression(*self._regression)
         require(green is not None and green.tree_sha256 == current.tree_sha256, "commit_source_mismatch")
         self._target = target_sha
         self._build = None
@@ -125,8 +139,7 @@ class ContributionRun:
             if not current.clean or current.source_sha != self._target \
                     or current.tree_sha256 != self._review.reviewed_tree_sha256:
                 return False
-            self.receipts.verify(self._regression[0], self.recipe)
-            green = self.receipts.verify(self._regression[1], self.recipe)
+            _, green = self._verified_regression(*self._regression)
             if green is None or green.tree_sha256 != current.tree_sha256:
                 return False
             for scope in self.recipe.required_scopes:

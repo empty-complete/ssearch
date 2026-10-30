@@ -3,7 +3,9 @@ from dataclasses import replace
 import hashlib
 import importlib
 import json
+import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -37,7 +39,7 @@ def api():
 
 
 def git(path, *args):
-    result = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=path,
+    result = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", *args], cwd=path,
                             capture_output=True, text=True, shell=False, timeout=30)
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
@@ -74,7 +76,8 @@ def scenario(api):
         yield state
 
 
-def report(s, command="python", *, exit_code=0, status=None, payload=None, trusted=True):
+def report(s, command="python", *, exit_code=0, status=None, payload=None, trusted=True,
+           phase_attestation=True):
     current = s.api.snapshot(s.repo)
     spec = next(item for item in s.recipe.commands if item.command_id == command)
     s.serial += 1
@@ -87,8 +90,13 @@ def report(s, command="python", *, exit_code=0, status=None, payload=None, trust
     path.write_bytes(raw)
     digest = hashlib.sha256(raw).hexdigest()
     if trusted:
+        phases = None
+        if spec.scope == "regression" and spec.report_kind == "source" and phase_attestation:
+            phases = ((spec.targets[0], "setup", "passed"),
+                      (spec.targets[0], "call", "failed" if exit_code else "passed"),
+                      (spec.targets[0], "teardown", "passed"))
         pin = s.api.ReceiptPin(path, digest, REPOSITORY, "41000000001", "52000000001",
-            current.source_sha, current.tree_sha256, command, spec.report_kind)
+            current.source_sha, current.tree_sha256, command, spec.report_kind, test_phases=phases)
         # The owner host imports authenticated GitHub metadata, never issue JSON.
         s.store.add_verified(pin)
     return s.api.CheckEvidence(command, command, current.source_sha, exit_code, digest,
@@ -245,9 +253,9 @@ def test_snapshot_rejects_index_mutation_during_fingerprint_read(scenario, monke
     query = validation._query
     changed = False
 
-    def mutate_after_index_read(workspace, operation):
+    def mutate_after_index_read(workspace, operation, **kwargs):
         nonlocal changed
-        result = query(workspace, operation)
+        result = query(workspace, operation, **kwargs)
         if operation == "index" and not changed:
             changed = True
             git(s.repo, "update-index", "--assume-unchanged", "--", "defect.py")
@@ -259,14 +267,87 @@ def test_snapshot_rejects_index_mutation_during_fingerprint_read(scenario, monke
     assert changed is True
 
 
-def test_source_red_without_authenticated_call_phase_failure_is_not_regression(scenario):
+def test_snapshot_binds_head_blobs_with_explicit_text_newline_normalization(scenario):
+    s = scenario
+    (s.repo / ".gitattributes").write_text("*.py text eol=lf\n", encoding="utf-8")
+    git(s.repo, "add", ".")
+    git(s.repo, "commit", "-m", "fixture text attributes")
+    # Windows working bytes may contain CRLF; only the declared text transform
+    # can match canonical HEAD. Changed Python content still cannot match it.
+    (s.repo / "defect.py").write_bytes(b"def answer(): return 0\r\n")
+    assert s.api.snapshot(s.repo).clean is True
+    (s.repo / "defect.py").write_bytes(b"def answer(): return 42\r\n")
+    assert s.api.snapshot(s.repo).clean is False
+
+
+def test_snapshot_refuses_configured_clean_filter_before_git_status_can_execute_it(scenario):
+    s = scenario
+    (s.repo / ".gitattributes").write_text("*.py filter=sentinel\n", encoding="utf-8")
+    git(s.repo, "add", ".")
+    git(s.repo, "commit", "-m", "fixture unsupported filter attribute")
+    marker = s.root / "filter-executed.marker"
+    script = s.root / "sentinel_filter.py"
+    script.write_text("from pathlib import Path\nimport sys\n"
+        "Path(sys.argv[1]).write_text('executed', encoding='utf-8')\n"
+        "sys.stdout.buffer.write(sys.stdin.buffer.read())\n", encoding="utf-8")
+    # Install the fixed sentinel only after commits: it must not execute while
+    # constructing the fixture. Git runs filter config through its own shell.
+    command = shlex.join((Path(sys.executable).as_posix(), script.as_posix(), marker.as_posix()))
+    git(s.repo, "config", "filter.sentinel.clean", command)
+    git(s.repo, "config", "filter.sentinel.required", "true")
+    path = s.repo / "defect.py"
+    previous = path.stat()
+    os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 4_000_000_000))
+    assert not marker.exists()
+    try:
+        s.api.snapshot(s.repo)
+    except s.api.ContributionError:
+        pass
+    else:
+        pytest.fail("Unsupported filter must be refused even for unchanged working bytes")
+    finally:
+        assert not marker.exists(), "Source snapshot must never execute a Git clean filter"
+
+
+def test_readiness_rechecks_authenticated_regression_phase_attestation(scenario):
+    s = scenario
+    target = reviewed(s)
+    s.run.record_commit(target)
+    assert s.run.ready() is True
+    red_pin = next(pin for pin in s.store.pins if pin.command_id == "regression")
+    s.store.add_verified(replace(red_pin, test_phases=None))
+    assert s.run.ready() is False
+
+
+@pytest.mark.parametrize("phase_fault", ["absent", "wrong_node", "setup_only", "teardown_only",
+                                       "green_skipped"])
+def test_source_regression_requires_exact_node_call_outcomes(scenario, phase_fault):
     s = scenario
     # Source receipt exit 1 is also produced by setup/teardown errors. Its
     # existing aggregate fields do not attest a call-phase regression failure.
-    red = report(s, "regression", exit_code=1)
+    red = report(s, "regression", exit_code=1, phase_attestation=False)
     (s.repo / "defect.py").write_text("def answer(): return 42\n", encoding="utf-8")
     git(s.repo, "commit", "-am", "synthetic fix")
-    green = report(s, "regression")
+    green = report(s, "regression", phase_attestation=False)
+    if phase_fault != "absent":
+        red_pin, green_pin = s.store.pins[-2:]
+        red_phases = ((TARGET, "setup", "passed"), (TARGET, "call", "failed"),
+                      (TARGET, "teardown", "passed"))
+        green_phases = ((TARGET, "setup", "passed"), (TARGET, "call", "passed"),
+                        (TARGET, "teardown", "passed"))
+        if phase_fault == "wrong_node":
+            red_phases = tuple(("tests/other.py::test_other", phase, status)
+                               for _, phase, status in red_phases)
+        elif phase_fault == "setup_only":
+            red_phases = ((TARGET, "setup", "failed"), (TARGET, "teardown", "passed"))
+        elif phase_fault == "teardown_only":
+            red_phases = ((TARGET, "setup", "passed"), (TARGET, "call", "passed"),
+                          (TARGET, "teardown", "failed"))
+        elif phase_fault == "green_skipped":
+            green_phases = ((TARGET, "setup", "passed"), (TARGET, "call", "skipped"),
+                            (TARGET, "teardown", "passed"))
+        s.store.add_verified(replace(red_pin, test_phases=red_phases))
+        s.store.add_verified(replace(green_pin, test_phases=green_phases))
     with pytest.raises(s.api.ContributionError):
         s.run.record_regression(red, green)
 

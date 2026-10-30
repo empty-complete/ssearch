@@ -28,12 +28,16 @@ class SourceSnapshot:
     clean: bool
 
 
-def _query(workspace: Path, operation: str) -> bytes:
+def _query(workspace: Path, operation: str, *, input_data: bytes | None = None) -> bytes:
     # This is an enumerated read-only interface, never an issue command runner.
     operations = {
         "root": ["rev-parse", "--show-toplevel"],
         "head": ["rev-parse", "--verify", "HEAD"],
         "index": ["ls-files", "--stage", "-z"],
+        "flags": ["ls-files", "-v", "-z"],
+        "head_tree": ["ls-tree", "--full-tree", "-r", "-z", "HEAD"],
+        "attributes": ["check-attr", "-z", "--stdin", "text", "eol", "filter", "ident",
+                       "working-tree-encoding"],
         "untracked": ["ls-files", "--others", "--exclude-standard", "-z"],
         "status": ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     }
@@ -47,11 +51,41 @@ def _query(workspace: Path, operation: str) -> bytes:
         result = subprocess.run([executable, "-c", "core.hooksPath=/dev/null",
             "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
             *operations[operation]], cwd=local_path(workspace), env=env, shell=False,
-            capture_output=True, timeout=30)
+            input=input_data, capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         raise ContributionError("source_unavailable") from None
     require(result.returncode == 0 and len(result.stdout) <= 16 * 1024 * 1024, "source_unavailable")
     return result.stdout
+
+
+def _blob_id(raw: bytes) -> str:
+    return hashlib.sha1(b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw).hexdigest()
+
+
+def _matches_blob(raw: bytes, oid: str, attributes: dict[str, str]) -> bool:
+    if _blob_id(raw) == oid:
+        return True
+    # Never invoke Git clean filters, external diff, encoding converters or
+    # ident expansion. Only the documented text/eol newline transform is safe.
+    require(all(attributes.get(name, "unspecified") in {"unset", "unspecified"}
+                for name in ("filter", "ident", "working-tree-encoding")), "unsupported_source_transform")
+    text, eol = attributes.get("text", "unspecified"), attributes.get("eol", "unspecified")
+    require(text in {"set", "unset", "auto", "unspecified"}
+            and eol in {"lf", "crlf", "unset", "unspecified"}, "unsupported_source_transform")
+    normalize = text == "set" or (text != "unset" and eol in {"lf", "crlf"}) or text == "auto"
+    if not normalize:
+        return False
+    if text in {"auto", "unspecified"}:
+        # Conservative text-auto support: never reinterpret binary/control data
+        # or lone CR as a newline-converted source file.
+        if b"\0" in raw or b"\r" in raw.replace(b"\r\n", b"") \
+                or any(byte < 32 and byte not in (9, 10, 13) for byte in raw):
+            return False
+        try:
+            raw.decode("utf-8")
+        except UnicodeError:
+            return False
+    return _blob_id(raw.replace(b"\r\n", b"\n")) == oid
 
 
 def snapshot(workspace: Path) -> SourceSnapshot:
@@ -67,35 +101,67 @@ def snapshot(workspace: Path) -> SourceSnapshot:
         require(root == workspace, "source_root_mismatch")
         head = _query(workspace, "head").decode("ascii").strip()
         require(SHA.fullmatch(head) is not None, "source_unavailable")
+        index = _query(workspace, "index")
+        flags = _query(workspace, "flags")
+        # Lowercase tags mean assume-unchanged; S means skip-worktree. Neither
+        # may suppress source verification, even when status claims clean.
+        require(all(row[:2] == b"H " for row in flags.split(b"\0") if row), "concealed_source_entry")
         entries = {}
-        for row in _query(workspace, "index").split(b"\0"):
+        for row in index.split(b"\0"):
             if not row:
                 continue
             metadata, name = row.split(b"\t", 1)
             mode, _oid, stage = metadata.decode("ascii").split()
             require(stage == "0" and mode in {"100644", "100755"}, "unsupported_source_entry")
-            entries[name.decode("utf-8")] = mode
+            require(SHA.fullmatch(_oid) is not None, "unsupported_source_entry")
+            entries[name.decode("utf-8")] = (mode, _oid)
+        head_entries = {}
+        head_tree = _query(workspace, "head_tree")
+        for row in head_tree.split(b"\0"):
+            if row:
+                metadata, name = row.split(b"\t", 1)
+                mode, kind, oid = metadata.decode("ascii").split()
+                require(kind == "blob" and mode in {"100644", "100755"}
+                        and SHA.fullmatch(oid) is not None, "unsupported_source_entry")
+                head_entries[name.decode("utf-8")] = (mode, oid)
+        attributes = {name: {} for name in entries}
+        names = b"".join(name.encode("utf-8") + b"\0" for name in entries)
+        attr_raw = _query(workspace, "attributes", input_data=names)
+        fields = attr_raw.split(b"\0")
+        require(fields[-1:] == [b""] and (len(fields) - 1) % 3 == 0, "unsupported_source_transform")
+        for offset in range(0, len(fields) - 1, 3):
+            name, attr, value = (item.decode("utf-8") for item in fields[offset:offset + 3])
+            require(name in attributes and attr not in attributes[name], "unsupported_source_transform")
+            attributes[name][attr] = value
+        require(all(set(value) == {"text", "eol", "filter", "ident", "working-tree-encoding"}
+                    for value in attributes.values()), "unsupported_source_transform")
+        indexed = dict(entries)
+        working_matches_index = True
         for raw in _query(workspace, "untracked").split(b"\0"):
             if raw:
-                entries[raw.decode("utf-8")] = "100644"
+                entries[raw.decode("utf-8")] = ("100644", None)
+                working_matches_index = False
         rows = []
-        for name, mode in sorted(entries.items()):
+        for name, (mode, oid) in sorted(entries.items()):
             relative = Path(name)
             require(not relative.is_absolute() and ".." not in relative.parts, "unsafe_source_entry")
             path = local_path(workspace / relative)
             require(path.is_relative_to(workspace), "unsafe_source_entry")
             if not path.exists():
                 rows.append([name, mode, "missing"])
+                working_matches_index = False
                 continue
             require(path.is_file(), "unsupported_source_entry")
-            digest = hashlib.sha256()
-            with path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            rows.append([name, mode, digest.hexdigest()])
-        clean = not _query(workspace, "status")
+            raw = path.read_bytes()
+            rows.append([name, mode, hashlib.sha256(raw).hexdigest()])
+            if oid is not None and not _matches_blob(raw, oid, attributes[name]):
+                working_matches_index = False
+        clean = not _query(workspace, "status") and indexed == head_entries and working_matches_index
         # Reject a HEAD/index change during the fingerprint read.
-        require(_query(workspace, "head").decode("ascii").strip() == head, "source_changed")
+        require(_query(workspace, "head").decode("ascii").strip() == head
+                and _query(workspace, "index") == index and _query(workspace, "flags") == flags
+                and _query(workspace, "head_tree") == head_tree
+                and _query(workspace, "attributes", input_data=names) == attr_raw, "source_changed")
         tree = hashlib.sha256(json.dumps(rows, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
         return SourceSnapshot(head, tree, clean)
     except (OSError, UnicodeError, ValueError) as exc:
@@ -183,6 +249,7 @@ class ReceiptPin:
     command_id: str
     report_kind: str
     clean: bool = True
+    test_phases: tuple[tuple[str, str, str], ...] | None = None
 
 
 def _json(path: Path, digest: str):
@@ -235,6 +302,14 @@ class ReceiptStore:
                 and isinstance(pin.job_id, str) and re.fullmatch(r"[1-9][0-9]{0,19}", pin.job_id) is not None
                 and type(pin.clean) is bool and isinstance(pin.command_id, str)
                 and IDENTIFIER.fullmatch(pin.command_id) is not None, "invalid_pin")
+        if pin.test_phases is not None:
+            require(isinstance(pin.test_phases, tuple) and all(isinstance(item, tuple) and len(item) == 3
+                    and all(isinstance(value, str) for value in item)
+                    and 0 < len(item[0]) <= 2048 and not any(ord(char) < 32 for char in item[0])
+                    and item[1] in {"setup", "call", "teardown"}
+                    and item[2] in {"passed", "failed", "skipped"} for item in pin.test_phases), "invalid_pin")
+            require(len({(node, phase) for node, phase, _ in pin.test_phases}) == len(pin.test_phases),
+                    "invalid_pin")
         local_path(pin.report_path)
         # Host corrections replace the same artifact anchor. Consumers reverify
         # pins/files at readiness; an old recorded assertion never bypasses it.
