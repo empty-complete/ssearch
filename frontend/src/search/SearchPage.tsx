@@ -34,7 +34,7 @@ export function SearchPage({ client, scope, mode, onReveal, initialQuery = '', o
     try {
       const outcome = await onReveal(id);
       if (search.controller.getSnapshot().generation !== generation) return;
-      setNotice(outcome.status === 'revealed' ? 'Файл показан в Проводнике.'
+      setNotice(outcome.status === 'revealed' ? 'Запрос на показ передан Проводнику.'
         : outcome.status === 'unavailable' ? 'Показ в Проводнике пока недоступен.'
           : 'Не удалось показать файл. Повторите попытку.');
     } catch {

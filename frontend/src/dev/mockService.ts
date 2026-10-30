@@ -32,7 +32,7 @@ export const mockService: SearchService = {
       error: null,
       data: {
         results: request.query === 'пусто' || request.source_ids?.length === 0 ? [] : request.query === 'длинный'
-          ? Array.from({ length: 60 }, (_, index) => ({
+          ? Array.from({ length: 50 }, (_, index) => ({
             ...row(`90000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`, index % 2 ? 'КМ' : 'АР'),
             name: `Длинный документ ${index + 1}.xlsx`,
           })) : [
@@ -56,6 +56,6 @@ export const mockService: SearchService = {
         warnings: request.query === 'частично' ? ['source_unavailable'] : [],
       },
     };
-    return envelope.data;
+    return { ...envelope.data, results: envelope.data.results.slice(0, request.limit ?? 50) };
   },
 };

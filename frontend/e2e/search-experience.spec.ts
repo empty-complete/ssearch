@@ -41,11 +41,11 @@ test('long results scroll the active row while query stays visible and Tab leave
   const input = page.getByRole('searchbox');
   await input.fill('длинный'); await input.press('Enter');
   const results = page.getByRole('listbox', { name: listName });
-  await expect(results.getByRole('option')).toHaveCount(60);
+  await expect(results.getByRole('option')).toHaveCount(50);
   await input.press('ArrowDown');
   await expect(results.getByRole('option', { selected: true })).toContainText('Длинный документ 1.xlsx');
   await page.keyboard.press('End');
-  await expect(results.getByRole('option', { selected: true })).toContainText('Длинный документ 60.xlsx');
+  await expect(results.getByRole('option', { selected: true })).toContainText('Длинный документ 50.xlsx');
   await expect(results.getByRole('option', { selected: true })).toBeInViewport();
   await expect(input).toBeInViewport();
   await expect(page.locator('body')).toHaveJSProperty('scrollWidth', 640);
