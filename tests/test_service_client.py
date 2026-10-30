@@ -107,6 +107,9 @@ def test_remote_desktop_uses_the_owner_for_search_status_and_manual_cancel(owner
     source = owner.repository.snapshot().settings['sources'][0]['path']
     assert len(remote.search('drawing', root=source)) == 1
     assert remote.status(root=source)['files'] == 1
+    target = owner.repository.snapshot().settings['sources'][0]['id']
+    neighbor_states_before = {job.job_id: job.state for job in owner.scheduler.snapshot()
+                              if job.source_id != target}
     entered, cancel = threading.Event(), threading.Event()
     original = owner.core.source.snapshots
     def blocked(root, cancellation, *, excluded_roots=()):
@@ -126,9 +129,14 @@ def test_remote_desktop_uses_the_owner_for_search_status_and_manual_cancel(owner
             cancel.set()
         assert future.result(timeout=10)['status'] == 'cancelled'
     assert owner.runtime.status().state == 'ready'
-    target = owner.repository.snapshot().settings['sources'][0]['id']
     neighbors = [job for job in owner.scheduler.snapshot() if job.source_id != target]
-    assert neighbors and all(job.state != 'cancelled' for job in neighbors)
+    # Retained terminal history may already contain cancelled jobs from a prior
+    # wave. This cancellation must leave real new neighbors and any previously
+    # uncancelled retained neighbors untouched.
+    new_neighbors = [job for job in neighbors if job.job_id not in neighbor_states_before]
+    assert new_neighbors and all(job.state != 'cancelled' for job in new_neighbors)
+    assert all(job.state != 'cancelled' for job in neighbors
+               if neighbor_states_before.get(job.job_id) not in (None, 'cancelled'))
 
 
 def test_catalog_cancel_returns_typed_job_and_unknown_job_is_404(owner_profile, owner_client, catalog_wave):
