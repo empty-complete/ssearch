@@ -118,10 +118,24 @@ jobs:
             $scopeArguments = @('tools/ci_publish.py', 'classify', '--pr-number', $prNumber, '--head-sha', $testedSha)
             if ($env:EVENT_NAME -eq 'push') { $scopeArguments += @('--merge-sha', $env:SOURCE_SHA) }
             $classification = & python @scopeArguments
-            if ($LASTEXITCODE -ne 0 -or $classification -notin @('true', 'false', 'candidate-source', 'installer-source')) {
+            if ($LASTEXITCODE -ne 0 -or $classification -notin @('true', 'false', 'candidate-source', 'installer-source', 'owner-source')) {
               throw 'Could not safely classify the exact PR head.'
             }
-            $required = $classification -in @('true', 'candidate-source', 'installer-source')
+            $required = $classification -in @('true', 'candidate-source', 'installer-source', 'owner-source')
+            if ($classification -ceq 'owner-source') {
+              $route = $classification
+              $ownerArguments = @('tools/ci_source_scopes.py', 'settings', '--pr-number', $prNumber, '--head-sha', $testedSha)
+              if ($env:EVENT_NAME -eq 'push') { $ownerArguments += @('--merge-sha', $env:SOURCE_SHA) }
+              $settingsJson = & python @ownerArguments
+              if ($LASTEXITCODE -ne 0) { throw 'Owner source settings unavailable.' }
+              $settings = $settingsJson | ConvertFrom-Json
+              if ($settings.route -cne 'owner-source' -or $settings.mode -cne 'source' -or
+                  $settings.desktop_stack -ne $false -or $settings.publish -ne $false -or
+                  @($settings.test_targets).Count -eq 0) { throw 'Invalid owner source settings.' }
+              $reviewMode = $settings.mode
+              $reviewTargets = ConvertTo-Json -InputObject @($settings.test_targets) -Compress
+              $authentication = 'owner'
+            }
             if ($classification -in @('candidate-source', 'installer-source')) {
               $route = $classification
               $settingsJson = & python tools/ci_p4_candidate.py --settings $route
@@ -186,6 +200,14 @@ jobs:
           $arguments = @('tools/ci_p4_candidate.py', '--head-sha', $env:SOURCE_SHA, '--pr-number', '${{ needs.changes.outputs.pr_number }}')
           if ('${{ needs.changes.outputs.authentication }}' -ceq 'full6a') { $arguments += '--installer-review' }
           & python @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Authenticate the exact owner source scope
+        if: needs.changes.outputs.route == 'owner-source'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & python tools/ci_source_scopes.py authenticate --pr-number '${{ needs.changes.outputs.pr_number }}' --head-sha $env:SOURCE_SHA
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate requested build scope
         shell: pwsh
@@ -313,6 +335,7 @@ jobs:
       always() && !cancelled() && needs.changes.outputs.build == 'true' &&
       needs.changes.outputs.route != 'candidate-source' &&
       needs.changes.outputs.route != 'installer-source' &&
+      needs.changes.outputs.route != 'owner-source' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
         inputs.publish && inputs.mode == 'full' && needs.build.result == 'success'))
