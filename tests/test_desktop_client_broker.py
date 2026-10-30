@@ -1,6 +1,9 @@
 """Desktop framing/authority contracts, using the real P2 client and owner."""
+from datetime import datetime, timezone
 from io import BytesIO
+import os
 import struct
+import subprocess
 import uuid
 
 import pytest
@@ -155,3 +158,96 @@ def test_idle_session_is_not_a_partial_frame_timeout(owner_profile, monkeypatch)
     sent = request(owner_profile, 'status')
     assert desktop_client.run_desktop_client(Idle(frame(sent)), output, profile=owner_profile.profile_dir) == 0
     assert replies(output)[0]['envelope']['data']['api_version'] == '1'
+
+
+@pytest.mark.parametrize('arguments', [
+    {},
+    {'selected_path': 'C:/fictional/access', 'source_id': 'a0000000-0000-4000-8000-000000000001'},
+    {'selected_path': None},
+    {'selected_path': True},
+    {'selected_path': 'relative/folder'},
+    {'source_id': 'not-a-uuid'},
+    {'path': 'C:/fictional/not-host-retained'},
+])
+def test_folder_access_requires_exactly_one_private_identity(owner_profile, arguments):
+    code, result = run(owner_profile, [request(owner_profile, 'check_folder_access', arguments)])
+    assert code == 0 and len(result) == 1
+    reply = result[0]['envelope']
+    assert reply['data'] is None
+    assert reply['error']['code'] == 'invalid_request'
+    assert reply['error']['details'] == {}
+    assert 'fictional' not in str(reply)
+
+
+def test_folder_access_owner_checks_selected_directory_without_saving_it(owner_profile, tmp_path):
+    selected = tmp_path / 'Explicit selection Папка'
+    selected.mkdir()
+    before = owner_profile.repository.snapshot()
+    session = str(uuid.uuid4())
+    started = datetime.now(timezone.utc)
+    code, result = run(owner_profile, [
+        request(owner_profile, 'check_folder_access', {'selected_path': str(selected)}, session=session),
+        request(owner_profile, 'settings_get', session=session),
+        request(owner_profile, 'status', session=session),
+    ])
+    finished = datetime.now(timezone.utc)
+    assert code == 0 and len(result) == 3
+    reply = result[0]['envelope']
+    assert reply['error'] is None
+    access = reply['data']
+    assert set(access) == {'state', 'checked_at', 'message'}
+    assert access['state'] == 'accessible'
+    checked = datetime.fromisoformat(access['checked_at'])
+    assert checked.utcoffset() == timezone.utc.utcoffset(checked) and started <= checked <= finished
+    assert type(access['message']) is str and access['message']
+    assert str(selected) not in str(reply) and selected.name not in str(reply)
+    saved = result[1]['envelope']['data']
+    assert saved['settings']['sources'] == before.settings['sources']
+    assert saved['revision'] == before.revision
+    assert result[2]['envelope']['data']['config_version']['revision'] == before.revision
+    assert {item['generation'] for item in result} == {owner_profile.generation}
+
+
+def test_folder_access_reader_is_denied_before_native_io(owner_profile, read_client, tmp_path, monkeypatch):
+    from atom_search.service import desktop_client
+
+    selected = tmp_path / 'Never probe reader supplied folder'
+    touched = []
+    original_stat = os.stat
+
+    def guarded_stat(path, *args, **kwargs):
+        if isinstance(path, (str, bytes, os.PathLike)) and os.fspath(path) == str(selected):
+            touched.append('stat')
+            raise AssertionError('unauthorized native path access')
+        return original_stat(path, *args, **kwargs)
+
+    def forbidden_child(*args, **kwargs):
+        touched.append('process')
+        raise AssertionError('unauthorized probe worker launch')
+
+    # Substitute only credential selection; discovery, DPAPI, nonce, HTTP and
+    # owner IPC authorization still use the actual live P2 implementation.
+    def reader(endpoint, credential_ref):
+        assert endpoint == owner_profile.endpoint_file and credential_ref is None
+        read_client._verified = False
+        return read_client
+
+    monkeypatch.setattr(desktop_client, 'ServiceClient', reader)
+    monkeypatch.setattr(os, 'stat', guarded_stat)
+    monkeypatch.setattr(subprocess, 'Popen', forbidden_child)
+    session = str(uuid.uuid4())
+    source_id = owner_profile.repository.snapshot().settings['sources'][0]['id']
+    code, result = run(owner_profile, [
+        request(owner_profile, 'check_folder_access', {'selected_path': str(selected)}, session=session),
+        request(owner_profile, 'check_folder_access', {'source_id': source_id}, session=session),
+        request(owner_profile, 'status', session=session),
+    ])
+    assert code == 0 and len(result) == 3 and touched == []
+    for received in result[:2]:
+        reply = received['envelope']
+        assert reply['data'] is None
+        assert reply['error']['code'] == 'access_denied'
+        assert reply['error']['details'] == {}
+        assert str(selected) not in str(reply)
+    assert result[2]['envelope']['error'] is None
+    assert result[2]['envelope']['data']['api_version'] == '1'
