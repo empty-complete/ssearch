@@ -11,6 +11,10 @@ Set-StrictMode -Version Latest
 
 # Only the disposable hosted VM creates an account. Never use this launcher on
 # a contributor's computer, and never relax the application's own guards.
+$agentSdk=if ($null -ne [Environment]::GetEnvironmentVariable('AGENT_SDK','Process')) { $env:AGENT_SDK } else { 'false' }
+if ($agentSdk -cnotin @('true','false') -or ($agentSdk -ceq 'true' -and $env:BUILD_MODE -cne 'source')) {
+    throw 'CI_AGENT_SDK_SCOPE_INVALID'
+}
 if ($env:GITHUB_ACTIONS -cne 'true') { throw 'CI_ACTIONS_REQUIRED' }
 if ($Child -and (-not $ExpectedSid -or -not $RunDirectory)) { throw 'CI_OWNED_CHILD_REQUIRED' }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -236,6 +240,7 @@ print('CI preflight: standard_user=true loaded_profile=true clean_pg_environment
         exit $installerExit
     }
     if ($env:BUILD_MODE -eq 'source') {
+        if ($agentSdk -ceq 'true' -and $desktopStack) { throw 'CI_AGENT_SDK_SCOPE_INVALID' }
         if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'CI_SOURCE_SHA_REQUIRED' }
         $helper = Join-Path $repository 'packaging/build_support.py'
         $selectionArguments = @($helper, 'test-selection', '--root', $repository, '--quick', '--development')
@@ -245,6 +250,12 @@ print('CI preflight: standard_user=true loaded_profile=true clean_pg_environment
         $selection = ([string]$selectionOutput) | ConvertFrom-Json
         & $python $helper verify-source --root $repository --commit $env:SOURCE_SHA
         if ($LASTEXITCODE -ne 0) { throw 'CI_SOURCE_CHECKOUT_INVALID' }
+        if ($agentSdk -ceq 'true') {
+            # This runs only after loaded-profile/standard-user preflight, in
+            # the same source interpreter that will execute pytest below.
+            & $python (Join-Path $repository 'tools/ci_agent_dependencies.py') --source-commit $env:SOURCE_SHA --verify-source
+            if ($LASTEXITCODE -ne 0) { throw 'CI_AGENT_SDK_UNAVAILABLE' }
+        }
         # Public, explicit receipt only: never export the owned profile or logs.
         $receiptDirectory = Join-Path $repository 'artifacts/ci-source'
         $null = New-Item -ItemType Directory -Path $receiptDirectory
@@ -404,6 +415,7 @@ try {
             SOURCE_SHA = $env:SOURCE_SHA; BUILD_MODE = $env:BUILD_MODE
             TEST_TARGETS_JSON = $env:TEST_TARGETS_JSON; PYTHONUTF8 = '1'
             DESKTOP_STACK = $env:DESKTOP_STACK
+            AGENT_SDK = $agentSdk
             FRONTEND_TEST_TARGETS_JSON = $env:FRONTEND_TEST_TARGETS_JSON
             DESKTOP_TEST_TARGETS_JSON = $env:DESKTOP_TEST_TARGETS_JSON
             SSEARCH_INSTALLER_INPUT_SET = $installerInputSet
@@ -417,7 +429,7 @@ try {
     $data = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'launch.json') -Raw | ConvertFrom-Json
     foreach ($name in @('GITHUB_ACTIONS', 'GITHUB_WORKSPACE', 'SOURCE_SHA', 'BUILD_MODE',
                         'TEST_TARGETS_JSON', 'DESKTOP_STACK', 'FRONTEND_TEST_TARGETS_JSON',
-                        'DESKTOP_TEST_TARGETS_JSON', 'PYTHONUTF8', 'PIP_DISABLE_PIP_VERSION_CHECK', 'SSEARCH_INSTALLER_INPUT_SET')) {
+                        'DESKTOP_TEST_TARGETS_JSON', 'PYTHONUTF8', 'PIP_DISABLE_PIP_VERSION_CHECK', 'SSEARCH_INSTALLER_INPUT_SET', 'AGENT_SDK')) {
         [Environment]::SetEnvironmentVariable($name, [string]$data.context.$name, 'Process')
     }
 } catch {
