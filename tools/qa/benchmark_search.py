@@ -55,3 +55,14 @@ def quality_at_k(ranked_ids: tuple[str, ...], relevant_ids: frozenset[str],
                             if identifier in relevant_ids), 0.0)
     return dict(precision_at_k=hits / k, recall_at_k=hits / len(relevant_ids),
                 hit_at_k=float(bool(hits)), reciprocal_rank_at_k=reciprocal_rank)
+
+
+def _scan_metadata(owner, source_id, *, cancel=None):
+    """Importable call seam for the test-first disposable runner checkpoint."""
+    return {'status': 'not_run'}
+
+
+def run_benchmark(corpus, judgments, *, profile, queries, repetitions=30,
+                  cancel=None, max_files=128):
+    """Runner contract placeholder; no runtime operations before observed RED."""
+    return {'status': 'not_run', 'coverage': 'unknown', 'total': None}
