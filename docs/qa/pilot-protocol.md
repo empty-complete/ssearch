@@ -75,6 +75,8 @@ also requires `platform.windows-10` and the wider release/signing/Full acceptanc
 policy; this initial evaluator alone cannot approve Stable.
 
 `ui.browser` requires browser evidence; `platform.*` requires native evidence.
+Other technical gates accept automated or native evidence; browser/pilot labels
+cannot substitute for runtime, backend or security checks.
 Win11 receipts require a Windows 11 x64 environment, and final Win10 receipts
 require Windows 10 x64. `ux.primary-flow` requires actual pilot evidence on Windows
 11 x64. Browser work may confirm its own checks while these gates remain open.

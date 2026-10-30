@@ -191,6 +191,8 @@ def evaluate_release(evidence: dict, *, required_gates: tuple[str, ...]) -> dict
                          'native' if gate_id.startswith('platform.') else None)
         if expected_kind and gate['evidence_kind'] != expected_kind:
             blockers.add('evidence_kind_mismatch')
+        if expected_kind is None and gate['evidence_kind'] not in ('automated', 'native'):
+            blockers.add('evidence_kind_mismatch')
         if expected_kind in ('pilot', 'native') and environment is not None:
             expected_os = 'Windows 10' if gate_id == 'platform.windows-10' else 'Windows 11'
             if environment['os'] != expected_os or environment['architecture'] != 'x64':

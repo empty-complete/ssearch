@@ -330,3 +330,10 @@ def test_cli_refuses_invalid_evidence_without_actions(matrix, tmp_path, capsys, 
 def test_cli_missing_file_fails_closed(matrix, tmp_path, capsys):
     assert matrix.main([str(tmp_path / 'absent.json')]) == 1
     assert json.loads(capsys.readouterr().out)['blockers'] == ['evidence_unreadable']
+
+
+@pytest.mark.parametrize('kind', ['browser', 'pilot'])
+def test_browser_or_pilot_cannot_replace_frozen_runtime_proof(matrix, kind):
+    data = candidate()
+    next(g for g in data['gates'] if g['gate_id'] == 'runtime.frozen')['evidence_kind'] = kind
+    assert 'evidence_kind_mismatch' in check(matrix, data)['blockers']
