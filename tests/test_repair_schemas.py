@@ -17,7 +17,8 @@ from referencing import Registry
 
 from atom_search.service.contracts import ServiceError
 from test_repair_incidents import (
-    A, INCIDENT, KEY, NEW_PATH, NOW, PRIVATE_PATH, action, attempt, builder, fixed_attempt,
+    A, AGENT_TEXT, INCIDENT, KEY, NEW_PATH, NOW, PRIVATE_PATH, RAW_LOG,
+    action, attempt, builder, fixed_attempt,
 )
 
 
@@ -143,6 +144,17 @@ def test_actual_keyed_aliases_and_utf8_truncated_report_match_schema(formats):
 def test_incident_schema_closes_actual_report_objects(path, formats):
     _, data = report(attempt(config_diff=(dict(path='ui.theme', before='dark', after='light'),)))
     at_path(data, path)['unrecognized_secret'] = 'must never be accepted'
+    with pytest.raises(ValidationError):
+        validator('incident.schema.json', formats).validate(data)
+
+
+@pytest.mark.parametrize('path', [('symptoms', 0), ('agent_explanation',), ('rollback', 'explanation')])
+@pytest.mark.parametrize('untrusted_text', [AGENT_TEXT, RAW_LOG])
+def test_incident_server_template_channels_reject_agent_text_and_raw_logs(path, untrusted_text, formats):
+    # These public report channels are server templates, not free-text inputs.
+    # Start with genuine output; no particular wording is asserted here.
+    _, data = report()
+    at_path(data, path[:-1])[path[-1]] = untrusted_text
     with pytest.raises(ValidationError):
         validator('incident.schema.json', formats).validate(data)
 
