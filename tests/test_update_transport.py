@@ -11,6 +11,8 @@ import pytest
 from atom_search.updates.contracts import UpdateError, UpdateVersions
 from test_update_manifest import NOW, encode, key, versions
 from test_update_staging import api, release
+from test_update_staging import _schedule_initial_root_swap
+import shutil
 
 
 def test_local_source_requires_explicit_fixture_mode(release):
@@ -125,3 +127,23 @@ def test_cli_refuses_non_qa_profile_without_writing_a_receipt(release):
     result = _cli(release, profile)
     assert result.returncode == 1
     assert list(profile.iterdir()) == [marker] and marker.read_bytes() == b'foreign settings'
+
+
+def test_initial_source_root_swap_never_adopts_foreign_directory(release, monkeypatch):
+    route = release.base / 'source-route'
+    route.mkdir()
+    requested = route / 'release'
+    release.source.rename(requested)
+    release.source = requested
+    foreign = release.base / 'foreign-source-route'
+    shutil.copytree(route, foreign)
+    state = _schedule_initial_root_swap(monkeypatch, requested, route, foreign,
+                                       release.base / 'retired-source-route')
+    try:
+        with release.transport().open_artifact(release.verified(), 'application') as stream:
+            raw = stream.read()
+    except UpdateError as error:
+        assert error.code == 'update_path'
+    else:
+        assert state['blocked'] and raw == release.archive
+    assert state['attempted']

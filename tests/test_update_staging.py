@@ -9,6 +9,7 @@ import stat
 import struct
 import subprocess
 import sys
+import shutil
 import zlib
 import zipfile
 
@@ -450,3 +451,96 @@ def test_zero_byte_files_have_exact_stream_end_and_hash(release):
     release.rebuild()
     result = stage(release)
     assert len(result.files) == 2 and all(path.read_bytes() == b'' for path in result.files)
+
+
+def _schedule_initial_root_swap(monkeypatch, requested_root, ancestor, foreign, retired):
+    """Schedule real filesystem replacement immediately before the native open."""
+    boundary = api('transports.unc')
+    native_call = boundary._call
+    state = dict(attempted=False, swapped=False, blocked=False)
+
+    def schedule(dll, name, arguments, *rest, **kwargs):
+        native = native_call(dll, name, arguments, *rest, **kwargs)
+        if name != 'CreateFileW':
+            return native
+        def opened(*values):
+            text = str(values[0])
+            if text.startswith('\\\\?\\'):
+                text = text[4:]
+            if state['attempted'] or Path(text) != requested_root:
+                return native(*values)
+            state['attempted'] = True
+            try:
+                ancestor.rename(retired)
+            except OSError:
+                state['blocked'] = True
+                return native(*values)
+            linked = False
+            try:
+                result = subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(ancestor), str(foreign)],
+                                        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                assert result.returncode == 0, 'required race junction could not be created'
+                linked = True
+                state['swapped'] = True
+                return native(*values)
+            finally:
+                if linked:
+                    os.rmdir(ancestor)
+                retired.rename(ancestor)
+        return opened
+    monkeypatch.setattr(boundary, '_call', schedule)
+    return state
+
+
+def test_initial_destination_root_swap_never_writes_outside_budget(release, monkeypatch):
+    foreign = _windows.private_directory(release.base / 'foreign-private')
+    foreign_data = _windows.private_directory(foreign / 'data')
+    marker = foreign_data / 'keep.txt'
+    marker.write_bytes(b'foreign destination')
+    state = _schedule_initial_root_swap(monkeypatch, release.data, release.owned,
+                                       foreign, release.base / 'retired-private')
+    try:
+        result = stage(release)
+    except UpdateError as error:
+        assert error.code == 'update_path'
+    else:
+        assert state['blocked'] and result.directory.is_relative_to(release.data)
+    assert state['attempted']
+    assert list(foreign_data.iterdir()) == [marker]
+    assert marker.read_bytes() == b'foreign destination'
+
+
+@pytest.mark.parametrize('mode', ['failure', 'cancel'])
+def test_cleanup_never_deletes_foreign_private_replacement(release, monkeypatch, mode):
+    original_assert = _windows.assert_private
+    state = dict(armed=False, attempted=False, blocked=False, replaced=False, path=None)
+    marker = b'foreign replacement must survive cleanup'
+
+    def schedule(path):
+        original_assert(path)  # A real ACL check; its result is never fabricated.
+        path = Path(path)
+        if state['armed'] and not state['attempted'] and path.suffix == '.inventory':
+            state['attempted'], state['path'] = True, path
+            try:
+                path.rename(release.data / 'retired-own-inventory')
+            except OSError:
+                state['blocked'] = True
+                return
+            path.write_bytes(marker)
+            state['replaced'] = True
+    monkeypatch.setattr(_windows, 'assert_private', schedule)
+    transport = release.transport()
+    original_open = transport.open_artifact
+    def interrupted(*args):
+        state['armed'] = True
+        if mode == 'failure':
+            raise OSError('fictional source disconnect')
+        return original_open(*args)
+    transport.open_artifact = interrupted
+    with pytest.raises(UpdateError):
+        stage(release, transport, cancelled=(lambda: state['armed']) if mode == 'cancel' else None)
+    assert state['attempted'], 'cleanup never reached the scheduled ownership boundary'
+    if state['replaced']:
+        assert state['path'].is_file() and state['path'].read_bytes() == marker
+    else:
+        assert state['blocked']
