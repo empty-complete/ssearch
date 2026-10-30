@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SearchApp } from '../src/SearchApp';
@@ -142,4 +142,60 @@ it('retains the selected UUID after a reordered same-query refresh but never rev
   } finally {
     controller.dispose();
   }
+});
+
+it('selects the first result with ArrowDown from the query without intercepting composition or text navigation', async () => {
+  const service: SearchService = {
+    async search(request) {
+      return response(request.query, [result(firstResultId, 'АР'), result(secondResultId, 'КМ')]);
+    },
+  };
+  render(<SearchApp service={service} />);
+  const user = userEvent.setup();
+  const input = screen.getByRole<HTMLInputElement>('searchbox');
+  await user.type(input, 'ведомость');
+  await user.keyboard('{Enter}');
+  const results = await screen.findByRole('listbox', { name: 'Найденные документы' });
+  const options = within(results).getAllByRole('option');
+  expect(input).toHaveFocus();
+
+  fireEvent.compositionStart(input);
+  fireEvent.keyDown(input, { key: 'ArrowDown', isComposing: true, keyCode: 229 });
+  expect(input).toHaveFocus();
+  expect(within(results).queryAllByRole('option', { selected: true })).toHaveLength(0);
+  fireEvent.compositionEnd(input);
+
+  input.setSelectionRange(4, 4);
+  await user.keyboard('{ArrowLeft}');
+  expect(input.selectionStart).toBe(3);
+  await user.keyboard('{ArrowRight}');
+  expect(input.selectionStart).toBe(4);
+  await user.keyboard('{Home}');
+  expect(input.selectionStart).toBe(0);
+  await user.keyboard('{End}');
+  expect(input.selectionStart).toBe(9);
+  expect(input).toHaveFocus();
+  expect(within(results).queryAllByRole('option', { selected: true })).toHaveLength(0);
+
+  await user.keyboard('{ArrowDown}');
+  expect(within(results).getByRole('option', { selected: true })).toBe(options[0]);
+  expect(options[0]).toHaveAccessibleName(/Ведомость.xlsx/);
+  expect(input).toHaveValue('ведомость');
+});
+
+it('keeps the default Explorer action disabled and explains its unavailability after selecting a result', async () => {
+  const service: SearchService = {
+    async search(request) {
+      return response(request.query, [result(firstResultId, 'АР')]);
+    },
+  };
+  render(<SearchApp service={service} />);
+  const user = userEvent.setup();
+  await user.type(screen.getByRole('searchbox'), 'ведомость');
+  await user.keyboard('{Enter}');
+  const results = await screen.findByRole('listbox', { name: 'Найденные документы' });
+  await user.click(within(results).getByRole('option'));
+
+  expect(screen.getByRole('button', { name: 'Показать в Проводнике' })).toBeDisabled();
+  expect(screen.getByText(/Показ в Проводнике.*(?:недоступен|будет доступен)/)).toBeVisible();
 });
