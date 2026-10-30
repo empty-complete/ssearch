@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssearch owner-controlled developer contribution configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository_id", "remote", "base_sha", "developer_credential_ref", "proposal_destination", "policy", "workspace_root"],
+  "properties": {
+    "schema_version": {"const": 1, "type": "integer"},
+    "repository_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"},
+    "remote": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/remote"}]},
+    "base_sha": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/sha"}]},
+    "developer_credential_ref": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/credentialRef"}]},
+    "proposal_destination": {"type": ["string", "null"], "description": "Reserved delivery setting; this capability never submits a proposal."},
+    "policy": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/policy"}]},
+    "workspace_root": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/localRoot"}]}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "credentialRef": {"type": "string", "pattern": "^developer:[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$", "description": "Opaque reference, never a credential value. Search/runtime references are forbidden."},
+    "remote": {"type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^(https://[^\\s/@?#]+/[^\\s?#]+|\\\\\\\\[A-Za-z0-9_.-]+\\\\[^\\s]+)$", "description": "Exact owner-approved HTTPS or UNC repository. Runtime additionally rejects credentials, dot paths, unsafe URL escapes, helpers and options."},
+    "localRoot": {"type": "string", "minLength": 1, "description": "Absolute existing local developer-only directory; runtime rejects UNC, traversal, symlinks and Windows reparse points in its ancestor chain."},
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_bundle_bytes", "max_queued_proposals", "max_queued_bytes", "sent_retention_days", "allowed_target_branches"],
+      "properties": {
+        "max_bundle_bytes": {"type": "integer", "minimum": 1},
+        "max_queued_proposals": {"type": "integer", "minimum": 1},
+        "max_queued_bytes": {"type": "integer", "minimum": 1},
+        "sent_retention_days": {"type": "integer", "minimum": 1},
+        "allowed_target_branches": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"}}
+      },
+      "description": "All limits are owner supplied, with no defaults. Runtime also requires max_bundle_bytes <= max_queued_bytes and valid Git target branch names. No delivery/retention implementation is enabled here."
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "incident_id", "repository_id", "granted_by", "expires_at", "remote", "base_sha", "workspace_root", "branch", "developer_credential_ref"],
+      "properties": {
+        "task_id": {"$ref": "#/$defs/uuid"},
+        "incident_id": {"$ref": "#/$defs/uuid"},
+        "repository_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"},
+        "granted_by": {"type": "string", "minLength": 1, "maxLength": 200},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "remote": {"$ref": "#/$defs/remote"},
+        "base_sha": {"$ref": "#/$defs/sha"},
+        "workspace_root": {"$ref": "#/$defs/localRoot"},
+        "branch": {"type": "string", "pattern": "^codex/agent-fix-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+        "developer_credential_ref": {"$ref": "#/$defs/credentialRef"}
+      },
+      "description": "Trusted owner grant, supplied separately from an issue. Runtime binds config remote/base/repository/credential/local root exactly, branch to incident UUID, and expiry to the current aware timestamp."
+    }
+  }
+}
