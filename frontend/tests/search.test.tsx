@@ -1,11 +1,16 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SearchApp } from '../src/SearchApp';
 import { SearchController } from '../src/searchController';
 import type {
   ResultMetadata, SearchRequest, SearchResponse, SearchService,
 } from '../src/bridge/types';
+
+// Only static text assets are substituted. The real page, controls and search
+// state remain under test without widening Vite's filesystem permissions.
+vi.mock('../../LICENSE.txt?raw', () => ({ default: 'Static license text fixture.' }));
+vi.mock('../THIRD_PARTY_NOTICES.txt?raw', () => ({ default: 'Static notices text fixture.' }));
 
 const sourceId = '11111111-1111-4111-8111-111111111111';
 const motorsProjectId = '22222222-2222-4222-8222-222222222222';
@@ -30,12 +35,12 @@ function result(result_id: string, folder: string): ResultMetadata {
   };
 }
 
-function response(results: ResultMetadata[] = []): SearchResponse {
+function response(query: string, results: ResultMetadata[] = []): SearchResponse {
   return {
     results,
     query_interpretation: {
-      original_query: 'ПМ спецификация',
-      normalized_query: 'пм спецификация',
+      original_query: query,
+      normalized_query: query.toLowerCase(),
       project_id: null,
       expanded_terms: [],
     },
@@ -62,7 +67,7 @@ describe('search page source scope', () => {
     const service: SearchService = {
       async search(request) {
         requests.push(request);
-        return response();
+        return response(request.query);
       },
     };
     // Exercise the existing page without a missing-component or type-error RED.
@@ -80,8 +85,7 @@ describe('search page source scope', () => {
 
 it('offers full project choices and refines the project without rewriting or remounting the query', async () => {
   const requests: SearchRequest[] = [];
-  const ambiguous = response();
-  ambiguous.ambiguities = [{
+  const ambiguities: SearchResponse['ambiguities'] = [{
     term: 'ПМ',
     options: [
       { project_id: motorsProjectId, canonical_name: 'Пермские моторы', source_ids: [sourceId] },
@@ -91,7 +95,7 @@ it('offers full project choices and refines the project without rewriting or rem
   const service: SearchService = {
     async search(request) {
       requests.push(request);
-      return ambiguous;
+      return { ...response(request.query), ambiguities };
     },
   };
   render(<SearchApp service={service} />);
@@ -119,10 +123,10 @@ it('retains the selected UUID after a reordered same-query refresh but never rev
   let completeRefresh!: (reply: SearchResponse) => void;
   let requests = 0;
   const controller = new SearchController({
-    search: () => {
+    search: request => {
       requests += 1;
       return requests === 1
-        ? Promise.resolve(response([first, second]))
+        ? Promise.resolve(response(request.query, [first, second]))
         : new Promise(resolve => { completeRefresh = resolve; });
     },
   });
@@ -134,7 +138,7 @@ it('retains the selected UUID after a reordered same-query refresh but never rev
 
     const refreshing = controller.submit();
     expect(controller.revealCandidate()).toBeNull();
-    completeRefresh(response([second, first]));
+    completeRefresh(response('ведомость', [second, first]));
     await refreshing;
 
     expect(controller.getSnapshot().selectedId).toBe('44444444-4444-4444-8444-444444444444');
