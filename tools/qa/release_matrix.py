@@ -57,7 +57,7 @@ def _validate(value, rule, schema, path='$'):
     """
     supported = {'$schema', '$defs', '$ref', 'title', 'description', 'type', 'enum',
         'properties', 'required', 'additionalProperties', 'minProperties',
-        'minLength', 'pattern', 'minimum', 'items', 'minItems', 'maxItems', 'uniqueItems'}
+        'minLength', 'maxLength', 'pattern', 'minimum', 'items', 'minItems', 'maxItems', 'uniqueItems'}
     if set(rule) - supported:
         raise ValueError('unsupported_schema_keyword')
     if '$ref' in rule:
@@ -95,7 +95,9 @@ def _validate(value, rule, schema, path='$'):
         for index, item in enumerate(value):
             errors.extend(_validate(item, rule.get('items', {}), schema, f'{path}[{index}]'))
     elif type(value) is str:
-        if len(value) < rule.get('minLength', 0) or ('pattern' in rule and re.search(rule['pattern'], value) is None):
+        if (len(value) < rule.get('minLength', 0)
+                or len(value) > rule.get('maxLength', math.inf)
+                or ('pattern' in rule and re.search(rule['pattern'], value) is None)):
             errors.append(path + ':string')
     elif type(value) in (int, float):
         if not math.isfinite(value) or value < rule.get('minimum', -math.inf):
